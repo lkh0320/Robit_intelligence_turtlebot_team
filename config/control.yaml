@@ -1,0 +1,9 @@
+control_node:
+  ros__parameters:
+    max_linear_mps: 0.20
+    max_angular_rps: 1.5
+    obstacle_stop_mm: 150         # 중앙 PSD가 이 거리보다 가까우면 정지
+    manual_cmd_timeout_s: 0.5     # 수동 조종 명령이 끊기면 정지
+    line_kp: 0.005
+    line_ki: 0.0
+    line_kd: 0.001

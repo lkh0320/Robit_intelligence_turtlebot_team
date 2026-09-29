@@ -1,0 +1,8 @@
+# Windows에서 작업해도 Jetson(Linux)에서 스크립트가 깨지지 않도록 LF로 통일
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.pdf binary
+*.mp4 binary

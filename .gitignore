@@ -1,0 +1,81 @@
+# ===== ROS 2 / colcon (레포 루트가 워크스페이스) =====
+build/
+install/
+log/
+
+# ===== C / C++ / CMake =====
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.so
+*.out
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ===== Qt / Qt Creator =====
+*.pro.user
+*.pro.user.*
+CMakeLists.txt.user*
+build-*/
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+*.autosave
+
+# ===== STM32CubeIDE =====
+# 빌드 결과
+stm32/**/Debug/
+stm32/**/Release/
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.su
+*.cyclo
+# PC마다 다른 설정 (디버그 설정, 인덱서 캐시)
+stm32/**/*.launch
+stm32/**/.settings/language.settings.xml
+# 워크스페이스는 레포 밖에 두지만 혹시 모를 경우
+.metadata/
+RemoteSystemsTempFiles/
+
+# ===== IDE / 에디터 =====
+.vscode/
+.idea/
+*.swp
+*~
+.#*
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 실행 로그 / 녹화 =====
+*.log
+logs/
+bags/
+rosbag2_*/
+*.db3
+*.mcap
+recordings/
+
+# ===== 개인·환경 전용 설정 (카메라 개인 캘리브레이션 등) =====
+*.local.yaml
+
+# ===== 비밀 정보 =====
+.env
+*.pem
+*.key
+secrets/
