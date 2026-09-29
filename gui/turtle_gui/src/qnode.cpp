@@ -1,8 +1,14 @@
+// QNode 구현: GUI 의 ROS 2 통신을 전부 여기서 처리
+//  1) 생성자: 토픽 구독/발행, 서비스 클라이언트 만들기
+//  2) run(): 별도 스레드에서 콜백 처리(spin)
+//  3) 나머지: MainWindow 가 부르는 명령 함수 (조종, 서비스 호출, 파라미터)
+// 새 토픽을 GUI 에 표시하려면 생성자에 구독을 하나 추가하고, 콜백에서 signal 을 emit 하면 된다.
 #include "turtle_gui/qnode.hpp"
 
 #include <chrono>
 #include <vector>
 
+// ---- 이 파일 안에서만 쓰는 도우미 함수 (파라미터 탭의 문자열 ↔ ROS 파라미터 변환) ----
 namespace
 {
 
@@ -69,6 +75,7 @@ bool toRosParameter(const ParamData & p, rclcpp::Parameter & out)     // 문자�
 
 QNode::QNode()
 {
+  // 커스텀 구조체를 스레드 간 signal 로 보낼 수 있게 Qt 에 등록 (gui_types.hpp 의 Q_DECLARE_METATYPE 과 짝)
   qRegisterMetaType<PsdData>();
   qRegisterMetaType<MotorData>();
   qRegisterMetaType<RobotStateData>();
@@ -76,9 +83,13 @@ QNode::QNode()
   qRegisterMetaType<ParamData>();
   qRegisterMetaType<QVector<ParamData>>();
 
-  node_ = rclcpp::Node::make_shared("turtle_gui");
+  node_ = rclcpp::Node::make_shared("turtle_gui");                   // ros2 node list 에 /turtle_gui 로 보임
   const auto qos = rclcpp::SensorDataQoS();                           // best effort: 어떤 발행 QoS와도 연결됨
 
+  // ---- 구독: 메시지가 오면 람다 콜백이 실행됨 → 구조체로 바꿔서 emit ----
+  // 주의: 콜백은 QNode 스레드에서 실행되므로 여기서 화면(ui)을 직접 건드리면 안 됨. 반드시 emit 으로 넘길 것
+
+  // PSD 3개 거리
   psd_sub_ = node_->create_subscription<turtle_interfaces::msg::PsdArray>(
     "/sensor/psd", qos,
     [this](const turtle_interfaces::msg::PsdArray::SharedPtr msg) {
@@ -90,12 +101,14 @@ QNode::QNode()
       emit psdReceived(d);
     });
 
+  // 바퀴 실제 속도
   motor_sub_ = node_->create_subscription<turtle_interfaces::msg::MotorState>(
     "/motor/state", qos,
     [this](const turtle_interfaces::msg::MotorState::SharedPtr msg) {
       emit motorReceived({msg->left_mps, msg->right_mps, msg->left_error, msg->right_error});
     });
 
+  // 로봇 모드/실행/비상정지/STM32 연결 상태
   state_sub_ = node_->create_subscription<turtle_interfaces::msg::RobotState>(
     "/robot/state", qos,
     [this](const turtle_interfaces::msg::RobotState::SharedPtr msg) {
@@ -103,19 +116,22 @@ QNode::QNode()
                                msg->mcu_error_flags, QString::fromStdString(msg->message)});
     });
 
+  // 영상처리 결과 (검출 여부, 위치)
   vision_sub_ = node_->create_subscription<turtle_interfaces::msg::VisionResult>(
     "/vision/result", qos,
     [this](const turtle_interfaces::msg::VisionResult::SharedPtr msg) {
       emit visionReceived({msg->detected, msg->offset, QString::fromStdString(msg->label)});
     });
 
+  // ---- 발행: 수동 조종 명령 (MANUAL 모드에서 control_node 가 사용) ----
   cmd_pub_ = node_->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_manual", 10);
 
+  // ---- 서비스 클라이언트: 서버는 control_node (로봇 없이 테스트할 땐 fake_robot.py) ----
   run_client_ = node_->create_client<std_srvs::srv::SetBool>("/robot/run");
   estop_client_ = node_->create_client<std_srvs::srv::SetBool>("/robot/estop");
   mode_client_ = node_->create_client<turtle_interfaces::srv::SetMode>("/robot/set_mode");
 
-  setImageSource(IMAGE_CAMERA);
+  setImageSource(IMAGE_CAMERA);                                       // 처음엔 카메라 원본 영상 구독
   start();                                                            // run() 스레드 시작
 }
 
@@ -125,6 +141,8 @@ QNode::~QNode()
   wait();
 }
 
+// QThread 가 새 스레드에서 실행하는 부분. 50 ms 마다 도착한 메시지의 콜백을 처리
+// (spin() 대신 spin_once 루프를 쓰는 이유: 창을 닫을 때 isInterruptionRequested() 로 빠져나오기 위해)
 void QNode::run()
 {
   rclcpp::executors::SingleThreadedExecutor executor;
@@ -136,6 +154,8 @@ void QNode::run()
   if (!rclcpp::ok()) emit rosShutdown();                              // Ctrl+C 등으로 ROS 종료 시 창 닫기
 }
 
+// 영상 토픽 바꾸기. 두 영상을 동시에 받으면 Wi-Fi 대역폭이 두 배로 들어서 선택한 것 하나만 구독한다
+// image_sub_ 에 새 구독을 넣으면 이전 구독은 자동으로 해제됨 (shared_ptr)
 void QNode::setImageSource(int source)
 {
   const std::string topic = (source == IMAGE_VISION) ? "/vision/debug_image/compressed"
@@ -151,6 +171,7 @@ void QNode::setImageSource(int source)
   emit logMessage(QString("영상 토픽: %1").arg(QString::fromStdString(topic)));
 }
 
+// 수동 주행 명령 발행. linear: 전진 속도 [m/s] (+ 앞), angular: 회전 속도 [rad/s] (+ 왼쪽)
 void QNode::publishManualCmd(double linear, double angular)
 {
   geometry_msgs::msg::Twist msg;
@@ -159,9 +180,12 @@ void QNode::publishManualCmd(double linear, double angular)
   cmd_pub_->publish(msg);
 }
 
+// /robot/run, /robot/estop 공통 호출 함수
+// async_send_request: 응답을 기다리지 않고 바로 반환 → 응답이 오면 람다가 실행되어 로그에 결과 표시
+// (여기서 기다리면 GUI 가 멈추므로 동기 호출은 쓰지 않는다)
 void QNode::callSetBool(rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr client, const QString & name, bool value)
 {
-  if (!client->service_is_ready()) {
+  if (!client->service_is_ready()) {                                  // 서버(control_node)가 안 떠 있으면 바로 알림
     emit logMessage(QString("%1 서비스 없음 (control_node 실행 중인지 확인)").arg(name));
     return;
   }
@@ -177,16 +201,19 @@ void QNode::callSetBool(rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr client
     });
 }
 
+// Start(true) / Stop(false)
 void QNode::callRun(bool run)
 {
   callSetBool(run_client_, "/robot/run", run);
 }
 
+// 비상정지(true) / 해제(false)
 void QNode::callEstop(bool on)
 {
   callSetBool(estop_client_, "/robot/estop", on);
 }
 
+// 모드 변경: 0 = 수동, 1 = 자율 (SetMode.srv 의 MODE_* 상수)
 void QNode::callSetMode(int mode)
 {
   if (!mode_client_->service_is_ready()) {
@@ -205,6 +232,7 @@ void QNode::callSetMode(int mode)
     });
 }
 
+// 지금 네트워크에 보이는 노드 이름 목록 (파라미터 탭 [노드 찾기])
 QStringList QNode::nodeNames()
 {
   QStringList names;
@@ -217,6 +245,7 @@ QStringList QNode::nodeNames()
   return names;
 }
 
+// 노드별 파라미터 클라이언트. 매번 새로 만들면 서비스 연결에 시간이 걸려서 map 에 저장해 두고 재사용
 std::shared_ptr<rclcpp::AsyncParametersClient> QNode::paramClient(const std::string & node_name)
 {
   auto it = param_clients_.find(node_name);
@@ -226,6 +255,8 @@ std::shared_ptr<rclcpp::AsyncParametersClient> QNode::paramClient(const std::str
   return client;
 }
 
+// 파라미터 전체 읽기: ① 이름 목록 요청(list) → ② 그 이름들의 값 요청(get) → ③ parametersLoaded emit
+// 모두 비동기라 콜백 안에서 다음 요청을 보내는 구조 (ros2 param dump 와 같은 동작)
 void QNode::loadParameters(const QString & node_name)
 {
   auto client = paramClient(node_name.toStdString());
@@ -253,12 +284,14 @@ void QNode::loadParameters(const QString & node_name)
     });
 }
 
+// 파라미터 적용 (ros2 param set 과 같은 동작). 바뀐 값만 넘어옴
+// 노드가 값을 거부할 수 있음 (예: read_only 파라미터, 범위 밖 값) → 결과를 항목별로 로그에 표시
 void QNode::setParameters(const QString & node_name, const QVector<ParamData> & params)
 {
   std::vector<rclcpp::Parameter> ros_params;
   for (const ParamData & p : params) {
     rclcpp::Parameter rp;
-    if (!toRosParameter(p, rp)) {
+    if (!toRosParameter(p, rp)) {                                     // 하나라도 형식이 틀리면 아무것도 보내지 않음
       emit logMessage(QString("%1 값 형식 오류: \"%2\" (%3)").arg(p.name, p.value, p.type_name));
       return;
     }

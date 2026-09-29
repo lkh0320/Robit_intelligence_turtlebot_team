@@ -1,7 +1,12 @@
+# 수동/자율 모드 전환 요청
+# 서버: control_node   클라이언트: turtle_gui (조종 탭의 수동/자율 라디오 버튼)
+# 호출 예: ros2 service call /robot/set_mode turtle_interfaces/srv/SetMode "{mode: 1}"
+
+# mode 값으로 쓰는 상수 (RobotState.msg의 상수와 같은 값)
 uint8 MODE_MANUAL=0
 uint8 MODE_AUTO=1
 
-uint8 mode
+uint8 mode          # 바꾸고 싶은 모드
 ---
-bool success
-string message
+bool success        # 모드가 바뀌었으면 true, 거부했으면 false
+string message      # 결과 설명 (GUI 로그 창에 그대로 표시됨)

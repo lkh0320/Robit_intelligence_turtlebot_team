@@ -9,14 +9,16 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <!-- C++ GUI 본체(qnode.cpp)가 쓰는 ROS 2 패키지 -->
   <depend>rclcpp</depend>
-  <depend>rcl_interfaces</depend>
-  <depend>sensor_msgs</depend>
-  <depend>geometry_msgs</depend>
-  <depend>std_srvs</depend>
-  <depend>turtle_interfaces</depend>
-  <depend>qtbase5-dev</depend>
+  <depend>rcl_interfaces</depend>      <!-- 파라미터 목록/설정 결과 타입 -->
+  <depend>sensor_msgs</depend>         <!-- CompressedImage (카메라 영상) -->
+  <depend>geometry_msgs</depend>       <!-- Twist (수동 조종 명령) -->
+  <depend>std_srvs</depend>            <!-- SetBool (Start/Stop, E-STOP) -->
+  <depend>turtle_interfaces</depend>   <!-- 팀 커스텀 msg/srv -->
+  <depend>qtbase5-dev</depend>         <!-- Qt5 Widgets (rosdep 으로 설치 가능) -->
 
+  <!-- scripts/fake_robot.py (로봇 없이 테스트용 가짜 노드)가 실행될 때 필요 -->
   <exec_depend>rclpy</exec_depend>
 
   <export>

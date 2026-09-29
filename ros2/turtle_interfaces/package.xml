@@ -7,13 +7,17 @@
   <maintainer email="lkh060320@gmail.com">Robit TurtleBot Team</maintainer>
   <license>TODO: License declaration</license>
 
+  <!-- msg/srv 패키지에 꼭 필요한 빌드 도구 (코드 생성기) -->
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
+  <!-- msg 안에서 std_msgs/Header 를 사용 -->
   <depend>std_msgs</depend>
 
+  <!-- 생성된 msg 코드를 실행할 때 필요 -->
   <exec_depend>rosidl_default_runtime</exec_depend>
 
+  <!-- "이 패키지는 인터페이스 패키지"라고 알려 주는 표시 (지우면 안 됨) -->
   <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>
