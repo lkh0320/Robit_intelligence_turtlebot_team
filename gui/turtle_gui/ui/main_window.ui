@@ -1,0 +1,884 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindowDesign</class>
+ <widget class="QMainWindow" name="MainWindowDesign">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1180</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Robit TurtleBot GUI</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QHBoxLayout" name="horizontalLayout_main">
+    <item>
+     <layout class="QVBoxLayout" name="verticalLayout_left" stretch="3,1">
+      <item>
+       <widget class="QGroupBox" name="groupBox_camera">
+        <property name="title">
+         <string>카메라</string>
+        </property>
+        <layout class="QVBoxLayout" name="verticalLayout_camera" stretch="0,1">
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_camera_top">
+           <item>
+            <widget class="QComboBox" name="comboBox_image_source">
+             <item>
+              <property name="text">
+               <string>카메라 원본</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>영상처리 결과</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_camera">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_fps">
+             <property name="text">
+              <string>0 fps</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <widget class="QLabel" name="label_image">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Ignored" vsizetype="Ignored">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="minimumSize">
+            <size>
+             <width>480</width>
+             <height>360</height>
+            </size>
+           </property>
+           <property name="styleSheet">
+            <string>background-color: #202020; color: #909090;</string>
+           </property>
+           <property name="text">
+            <string>영상 없음</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="groupBox_log">
+        <property name="title">
+         <string>로그</string>
+        </property>
+        <layout class="QVBoxLayout" name="verticalLayout_log">
+         <item>
+          <widget class="QPlainTextEdit" name="plainTextEdit_log">
+           <property name="readOnly">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QVBoxLayout" name="verticalLayout_right">
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayout_estop">
+        <item>
+         <widget class="QPushButton" name="pushButton_estop">
+          <property name="minimumSize">
+           <size>
+            <width>0</width>
+            <height>60</height>
+           </size>
+          </property>
+          <property name="focusPolicy">
+           <enum>Qt::NoFocus</enum>
+          </property>
+          <property name="styleSheet">
+           <string>QPushButton { background-color: #d32f2f; color: white; font-size: 18px; font-weight: bold; border-radius: 6px; }
+QPushButton:pressed { background-color: #9a0007; }</string>
+          </property>
+          <property name="text">
+           <string>E-STOP (Space)</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="pushButton_estop_release">
+          <property name="minimumSize">
+           <size>
+            <width>0</width>
+            <height>60</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>90</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="focusPolicy">
+           <enum>Qt::NoFocus</enum>
+          </property>
+          <property name="text">
+           <string>해제</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QTabWidget" name="tabWidget">
+        <property name="minimumSize">
+         <size>
+          <width>420</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>480</width>
+          <height>16777215</height>
+         </size>
+        </property>
+        <property name="focusPolicy">
+         <enum>Qt::NoFocus</enum>
+        </property>
+        <property name="currentIndex">
+         <number>0</number>
+        </property>
+        <widget class="QWidget" name="tab_status">
+         <attribute name="title">
+          <string>상태</string>
+         </attribute>
+         <layout class="QVBoxLayout" name="verticalLayout_status">
+          <item>
+           <widget class="QGroupBox" name="groupBox_conn">
+            <property name="title">
+             <string>연결 상태 (1초 이상 수신 없으면 빨강)</string>
+            </property>
+            <layout class="QGridLayout" name="gridLayout_conn">
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_lamp_camera">
+               <property name="text">
+                <string>카메라</string>
+               </property>
+               <property name="alignment">
+                <set>Qt::AlignCenter</set>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QLabel" name="label_lamp_vision">
+               <property name="text">
+                <string>비전</string>
+               </property>
+               <property name="alignment">
+                <set>Qt::AlignCenter</set>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="2">
+              <widget class="QLabel" name="label_lamp_psd">
+               <property name="text">
+                <string>PSD</string>
+               </property>
+               <property name="alignment">
+                <set>Qt::AlignCenter</set>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_lamp_motor">
+               <property name="text">
+                <string>모터</string>
+               </property>
+               <property name="alignment">
+                <set>Qt::AlignCenter</set>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QLabel" name="label_lamp_robot">
+               <property name="text">
+                <string>로봇 상태</string>
+               </property>
+               <property name="alignment">
+                <set>Qt::AlignCenter</set>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="2">
+              <widget class="QLabel" name="label_lamp_stm32">
+               <property name="text">
+                <string>STM32</string>
+               </property>
+               <property name="alignment">
+                <set>Qt::AlignCenter</set>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="groupBox_robot">
+            <property name="title">
+             <string>로봇 (/robot/state)</string>
+            </property>
+            <layout class="QFormLayout" name="formLayout_robot">
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_mode_title">
+               <property name="text">
+                <string>모드</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QLabel" name="label_mode">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_running_title">
+               <property name="text">
+                <string>실행</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QLabel" name="label_running">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="label_estop_title">
+               <property name="text">
+                <string>비상정지</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QLabel" name="label_estop">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="0">
+              <widget class="QLabel" name="label_mcu_error_title">
+               <property name="text">
+                <string>MCU 에러</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="1">
+              <widget class="QLabel" name="label_mcu_error">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="0">
+              <widget class="QLabel" name="label_state_msg_title">
+               <property name="text">
+                <string>메시지</string>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="1">
+              <widget class="QLabel" name="label_state_msg">
+               <property name="text">
+                <string>-</string>
+               </property>
+               <property name="wordWrap">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="groupBox_psd">
+            <property name="title">
+             <string>PSD 거리 (/sensor/psd)</string>
+            </property>
+            <layout class="QGridLayout" name="gridLayout_psd">
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_psd_left_title">
+               <property name="text">
+                <string>좌</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QProgressBar" name="progressBar_psd_left">
+               <property name="maximum">
+                <number>800</number>
+               </property>
+               <property name="value">
+                <number>0</number>
+               </property>
+               <property name="format">
+                <string>%v mm</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="2">
+              <widget class="QLabel" name="label_psd_left_raw">
+               <property name="text">
+                <string>raw -</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_psd_center_title">
+               <property name="text">
+                <string>중앙</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QProgressBar" name="progressBar_psd_center">
+               <property name="maximum">
+                <number>800</number>
+               </property>
+               <property name="value">
+                <number>0</number>
+               </property>
+               <property name="format">
+                <string>%v mm</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="2">
+              <widget class="QLabel" name="label_psd_center_raw">
+               <property name="text">
+                <string>raw -</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="label_psd_right_title">
+               <property name="text">
+                <string>우</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QProgressBar" name="progressBar_psd_right">
+               <property name="maximum">
+                <number>800</number>
+               </property>
+               <property name="value">
+                <number>0</number>
+               </property>
+               <property name="format">
+                <string>%v mm</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="2">
+              <widget class="QLabel" name="label_psd_right_raw">
+               <property name="text">
+                <string>raw -</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="groupBox_motor">
+            <property name="title">
+             <string>모터 (/motor/state)</string>
+            </property>
+            <layout class="QFormLayout" name="formLayout_motor">
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_motor_left_title">
+               <property name="text">
+                <string>왼쪽</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QLabel" name="label_motor_left">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_motor_right_title">
+               <property name="text">
+                <string>오른쪽</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QLabel" name="label_motor_right">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="groupBox_vision">
+            <property name="title">
+             <string>비전 (/vision/result)</string>
+            </property>
+            <layout class="QFormLayout" name="formLayout_vision">
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_vision_detected_title">
+               <property name="text">
+                <string>검출</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QLabel" name="label_vision_detected">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_vision_offset_title">
+               <property name="text">
+                <string>offset</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QLabel" name="label_vision_offset">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <spacer name="verticalSpacer_status">
+            <property name="orientation">
+             <enum>Qt::Vertical</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>20</width>
+              <height>0</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="tab_drive">
+         <attribute name="title">
+          <string>조종</string>
+         </attribute>
+         <layout class="QVBoxLayout" name="verticalLayout_drive">
+          <item>
+           <widget class="QGroupBox" name="groupBox_run">
+            <property name="title">
+             <string>실행 (/robot/run)</string>
+            </property>
+            <layout class="QHBoxLayout" name="horizontalLayout_run">
+             <item>
+              <widget class="QPushButton" name="pushButton_start">
+               <property name="minimumSize">
+                <size>
+                 <width>0</width>
+                 <height>40</height>
+                </size>
+               </property>
+               <property name="focusPolicy">
+                <enum>Qt::NoFocus</enum>
+               </property>
+               <property name="text">
+                <string>Start</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="pushButton_stop">
+               <property name="minimumSize">
+                <size>
+                 <width>0</width>
+                 <height>40</height>
+                </size>
+               </property>
+               <property name="focusPolicy">
+                <enum>Qt::NoFocus</enum>
+               </property>
+               <property name="text">
+                <string>Stop</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="groupBox_mode">
+            <property name="title">
+             <string>모드 (/robot/set_mode)</string>
+            </property>
+            <layout class="QHBoxLayout" name="horizontalLayout_mode">
+             <item>
+              <widget class="QRadioButton" name="radioButton_manual">
+               <property name="focusPolicy">
+                <enum>Qt::NoFocus</enum>
+               </property>
+               <property name="text">
+                <string>수동 (Manual)</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QRadioButton" name="radioButton_auto">
+               <property name="focusPolicy">
+                <enum>Qt::NoFocus</enum>
+               </property>
+               <property name="text">
+                <string>자율 (Auto)</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="groupBox_manual">
+            <property name="title">
+             <string>수동 주행 (/cmd_vel_manual)</string>
+            </property>
+            <layout class="QVBoxLayout" name="verticalLayout_manual">
+             <item>
+              <layout class="QGridLayout" name="gridLayout_wasd">
+               <item row="0" column="1">
+                <widget class="QPushButton" name="pushButton_w">
+                 <property name="minimumSize">
+                  <size>
+                   <width>80</width>
+                   <height>55</height>
+                  </size>
+                 </property>
+                 <property name="focusPolicy">
+                  <enum>Qt::NoFocus</enum>
+                 </property>
+                 <property name="text">
+                  <string>W
+전진</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="0">
+                <widget class="QPushButton" name="pushButton_a">
+                 <property name="minimumSize">
+                  <size>
+                   <width>80</width>
+                   <height>55</height>
+                  </size>
+                 </property>
+                 <property name="focusPolicy">
+                  <enum>Qt::NoFocus</enum>
+                 </property>
+                 <property name="text">
+                  <string>A
+좌회전</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="QPushButton" name="pushButton_s">
+                 <property name="minimumSize">
+                  <size>
+                   <width>80</width>
+                   <height>55</height>
+                  </size>
+                 </property>
+                 <property name="focusPolicy">
+                  <enum>Qt::NoFocus</enum>
+                 </property>
+                 <property name="text">
+                  <string>S
+후진</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="2">
+                <widget class="QPushButton" name="pushButton_d">
+                 <property name="minimumSize">
+                  <size>
+                   <width>80</width>
+                   <height>55</height>
+                  </size>
+                 </property>
+                 <property name="focusPolicy">
+                  <enum>Qt::NoFocus</enum>
+                 </property>
+                 <property name="text">
+                  <string>D
+우회전</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+             <item>
+              <layout class="QFormLayout" name="formLayout_speed">
+               <item row="0" column="0">
+                <widget class="QLabel" name="label_linear_title">
+                 <property name="text">
+                  <string>직진 속도</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="1">
+                <layout class="QHBoxLayout" name="horizontalLayout_linear">
+                 <item>
+                  <widget class="QSlider" name="horizontalSlider_linear">
+                   <property name="focusPolicy">
+                    <enum>Qt::NoFocus</enum>
+                   </property>
+                   <property name="maximum">
+                    <number>30</number>
+                   </property>
+                   <property name="value">
+                    <number>10</number>
+                   </property>
+                   <property name="orientation">
+                    <enum>Qt::Horizontal</enum>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLabel" name="label_linear">
+                   <property name="minimumSize">
+                    <size>
+                     <width>80</width>
+                     <height>0</height>
+                    </size>
+                   </property>
+                   <property name="text">
+                    <string>0.10 m/s</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item row="1" column="0">
+                <widget class="QLabel" name="label_angular_title">
+                 <property name="text">
+                  <string>회전 속도</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <layout class="QHBoxLayout" name="horizontalLayout_angular">
+                 <item>
+                  <widget class="QSlider" name="horizontalSlider_angular">
+                   <property name="focusPolicy">
+                    <enum>Qt::NoFocus</enum>
+                   </property>
+                   <property name="maximum">
+                    <number>30</number>
+                   </property>
+                   <property name="value">
+                    <number>10</number>
+                   </property>
+                   <property name="orientation">
+                    <enum>Qt::Horizontal</enum>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLabel" name="label_angular">
+                   <property name="minimumSize">
+                    <size>
+                     <width>80</width>
+                     <height>0</height>
+                    </size>
+                   </property>
+                   <property name="text">
+                    <string>1.0 rad/s</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+              </layout>
+             </item>
+             <item>
+              <widget class="QLabel" name="label_cmd">
+               <property name="text">
+                <string>명령: 정지</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="label_key_hint">
+            <property name="text">
+             <string>키보드: W/A/S/D 주행, Space 비상정지 (파라미터 탭에서는 꺼짐)
+수동 명령은 수동 모드일 때만 control_node가 사용합니다.</string>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="verticalSpacer_drive">
+            <property name="orientation">
+             <enum>Qt::Vertical</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>20</width>
+              <height>0</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="tab_param">
+         <attribute name="title">
+          <string>파라미터</string>
+         </attribute>
+         <layout class="QVBoxLayout" name="verticalLayout_param">
+          <item>
+           <layout class="QHBoxLayout" name="horizontalLayout_param_top">
+            <item>
+             <widget class="QComboBox" name="comboBox_param_node">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="editable">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pushButton_refresh_nodes">
+              <property name="text">
+               <string>노드 찾기</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pushButton_load_params">
+              <property name="text">
+               <string>불러오기</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <widget class="QTableWidget" name="tableWidget_params">
+            <property name="columnCount">
+             <number>3</number>
+            </property>
+            <column>
+             <property name="text">
+              <string>이름</string>
+             </property>
+            </column>
+            <column>
+             <property name="text">
+              <string>타입</string>
+             </property>
+            </column>
+            <column>
+             <property name="text">
+              <string>값</string>
+             </property>
+            </column>
+           </widget>
+          </item>
+          <item>
+           <layout class="QHBoxLayout" name="horizontalLayout_param_bottom">
+            <item>
+             <widget class="QLabel" name="label_param_hint">
+              <property name="text">
+               <string>값을 고치면 노란색, [적용]을 눌러야 반영됩니다.
+영구 저장은 config/*.yaml 에 옮겨 적으세요.</string>
+              </property>
+              <property name="wordWrap">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pushButton_apply_params">
+              <property name="minimumSize">
+               <size>
+                <width>80</width>
+                <height>36</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>적용</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
