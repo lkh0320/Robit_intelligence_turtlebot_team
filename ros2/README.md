@@ -26,13 +26,41 @@ camera_node ──/camera/image_raw──▶ vision_node ──/vision/result─
 
 ## 패키지 생성 (처음 1회)
 
+`turtle_interfaces`는 이미 있으니 나머지만 만듭니다. (`ros2`가 안 되면 `source /opt/ros/jazzy/setup.bash` 먼저)
+
 ```bash
 cd ros2
-ros2 pkg create turtle_interfaces   --build-type ament_cmake
 ros2 pkg create turtle_bringup      --build-type ament_cmake
 ros2 pkg create turtle_vision       --build-type ament_cmake --dependencies rclcpp sensor_msgs cv_bridge image_transport turtle_interfaces
 ros2 pkg create turtle_control      --build-type ament_cmake --dependencies rclcpp geometry_msgs std_srvs turtle_interfaces
 ros2 pkg create turtle_stm32_bridge --build-type ament_cmake --dependencies rclcpp turtle_interfaces
+```
+
+## Jazzy에서 주의할 점
+
+인터넷 예제는 Humble/Foxy 기준이 많아서 그대로 쓰면 경고나 오류가 납니다.
+
+| 항목 | Jazzy에서 쓰는 방식 |
+|---|---|
+| cv_bridge 헤더 | `#include <cv_bridge/cv_bridge.hpp>` (`.h`는 deprecated 경고) |
+| 로컬 통신만 쓰기 | `ROS_LOCALHOST_ONLY` 대신 `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` (팀 기본값은 `SUBNET`) |
+| `declare_parameter` | 기본값 없이 타입 없는 선언 불가 → `declare_parameter<int>("fps", 30)`처럼 기본값 지정 |
+| 의존 패키지 설치 | `rosdep install --from-paths ros2 --ignore-src -y` (rosdep 키는 `package.xml`의 `<depend>`) |
+| Python launch | `get_package_share_directory`는 `ament_index_python.packages`에서 import |
+
+### 새 패키지 `package.xml`에 넣을 것
+
+`ros2 pkg create --dependencies`로 넣은 것 외에, 실행할 때만 필요한 것은 `exec_depend`로 추가합니다.
+
+```xml
+<!-- turtle_bringup -->
+<exec_depend>launch_ros</exec_depend>
+<exec_depend>turtle_vision</exec_depend>
+<exec_depend>turtle_control</exec_depend>
+<exec_depend>turtle_stm32_bridge</exec_depend>
+
+<!-- turtle_vision: GUI로 compressed 토픽을 보내려면 필요 -->
+<exec_depend>image_transport_plugins</exec_depend>
 ```
 
 ## 규칙

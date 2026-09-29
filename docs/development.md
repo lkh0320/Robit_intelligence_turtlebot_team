@@ -39,7 +39,11 @@ ros2 run rqt_image_view rqt_image_view # 영상 확인
 
 | 증상 | 확인할 것 |
 |---|---|
-| 노트북에서 토픽이 안 보임 | 같은 Wi-Fi? `ROS_DOMAIN_ID` 같은지? 방화벽? talker/listener 테스트 |
+| `ros2: command not found` | `source /opt/ros/jazzy/setup.bash`가 `~/.bashrc`에 있는지 (`jetson/README.md` 2장) |
+| `Package 'turtle_xxx' not found` | 레포 루트에서 `source install/setup.bash` 했는지, 빌드가 성공했는지 |
+| 노트북에서 토픽이 안 보임 | 같은 Wi-Fi? `ROS_DOMAIN_ID` 같은지? `ROS_LOCALHOST_ONLY`가 남아 있지 않은지? 방화벽? `ros2 daemon stop` 후 talker/listener 테스트 (`jetson/README.md` 4장) |
+| `ping`은 되는데 토픽이 안 보임 | 멀티캐스트 차단 → `ros2 multicast send/receive`로 확인, 안 되면 `ROS_STATIC_PEERS` 설정 |
+| 커스텀 msg 토픽만 안 보이거나 echo 실패 | 양쪽 `turtle_interfaces`가 같은 버전으로 빌드됐는지 (`git pull` 후 재빌드), 둘 다 Jazzy인지 |
 | `/sensor/psd` 안 들어옴 | `ls -l /dev/stm32`, dialout 권한, 보드레이트, STATUS 패킷의 `protocol_version` |
 | 모터가 가다가 멈춤 | STM32 `ERR_CMD_TIMEOUT` (Jetson 명령 주기가 200 ms보다 느린지) |
 | 영상이 느림 | GUI가 `compressed` 토픽을 구독하는지, `jpeg_quality`, 해상도 |

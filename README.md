@@ -3,6 +3,8 @@
 Jetson Orin Nano + STM32 기반 **TurtleBot형 자율주행 로봇** 프로젝트입니다.
 노트북의 Qt GUI에서 ROS 2로 카메라 영상·센서값·로봇 상태를 보고, 파라미터를 바꾸고, 로봇을 조종합니다.
 
+> **ROS 2 버전: Jetson, 노트북 모두 `Jazzy`로 통일합니다.** 모든 명령과 경로는 Jazzy(`/opt/ros/jazzy`) 기준입니다.
+
 > 🚧 **현재 상태:** `turtle_interfaces`(msg/srv)와 Qt GUI(`gui/turtle_gui`, 로봇 없이 테스트용 `fake_robot.py` 포함)까지 작성됨. 나머지 ROS 2 패키지와 펌웨어는 각 폴더 README의 방법대로 생성해 주세요.
 >
 > 처음 clone 했다면 **1. 시스템 구성 → 2. 폴더 구조 → 5. 내가 수정할 곳**만 먼저 읽어도 충분합니다.
@@ -14,7 +16,7 @@ Jetson Orin Nano + STM32 기반 **TurtleBot형 자율주행 로봇** 프로젝�
 ```text
  [노트북]   Qt GUI  (영상/센서/상태 보기, 파라미터 변경, 조종)
                │
-               │  ROS 2  (같은 Wi-Fi + 같은 ROS_DOMAIN_ID)
+               │  ROS 2 Jazzy  (같은 Wi-Fi + 같은 ROS_DOMAIN_ID)
                ▼
  [Jetson]   ROS 2 노드
                ├─ turtle_vision        USB 웹캠 + OpenCV 영상처리
@@ -83,10 +85,10 @@ ROS 2 패키지 구성 (예정):
 | 장치 | 필요한 것 |
 |---|---|
 | 노트북 | Ubuntu 24.04, ROS 2 Jazzy, Qt 5, OpenCV, colcon |
-| Jetson | JetPack, ROS 2, OpenCV, cv_bridge, image_transport (설정 방법: `jetson/README.md`) |
+| Jetson | JetPack, ROS 2 Jazzy, OpenCV, cv_bridge, image_transport (설정 방법: `jetson/README.md`) |
 | STM32 | STM32CubeIDE |
 
-> ⚠️ Jetson과 노트북의 ROS 2 버전을 맞추는 것이 안전합니다. JetPack 버전에 따라 설치 가능한 ROS 2가 다르니 `jetson/README.md`를 먼저 확인하세요.
+> ⚠️ 커스텀 msg(`turtle_interfaces`)를 주고받으므로 **Jetson과 노트북은 반드시 같은 배포판(Jazzy)** 이어야 합니다. 다른 배포판끼리의 통신은 공식 지원이 아닙니다.
 
 ---
 
@@ -101,31 +103,50 @@ cd Robit_intelligence_turtlebot_team
 
 **레포 루트가 그대로 colcon 워크스페이스입니다.** 빌드하면 루트에 `build/ install/ log/`가 생기고, 이 폴더들은 git에서 제외됩니다.
 
-모든 PC에서 ROS 도메인을 맞춰 주세요 (`~/.bashrc`에 추가):
+### 4.2 환경 변수 (Jetson, 노트북 둘 다 · 처음 1회)
+
+`~/.bashrc` 맨 아래에 추가하고 `source ~/.bashrc` (또는 터미널 새로 열기):
 
 ```bash
-export ROS_DOMAIN_ID=30   # 팀 공용 값
+# ROS 2 Jazzy
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=30                      # 팀 공용 값 (모든 PC 동일)
+export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET  # 같은 네트워크의 다른 PC와 통신
 ```
 
-### 4.2 Jetson (로봇)
+- 터미널에서 `ros2: command not found`가 나오면 첫 줄(`source /opt/ros/jazzy/setup.bash`)이 빠진 것입니다.
+- Jazzy에서 `ROS_LOCALHOST_ONLY`는 더 이상 쓰지 않습니다. `~/.bashrc`에 `ROS_LOCALHOST_ONLY=1`이 남아 있으면 **지워 주세요** (다른 PC와 통신이 막힘).
+- 환경 변수를 바꾼 뒤에는 `ros2 daemon stop` 한 번 실행 (예전 설정의 데몬이 남아 있으면 토픽 목록이 이상하게 보임).
+- 학교 Wi-Fi 등에서 서로 발견이 안 되면 `ROS_STATIC_PEERS` 설정: [`jetson/README.md` 4장](jetson/README.md#4-노트북과-ros-2-통신)
+
+통신 확인 (Jetson ↔ 노트북):
 
 ```bash
-source /opt/ros/$ROS_DISTRO/setup.bash
+# Jetson                                # 노트북
+ros2 run demo_nodes_cpp talker          ros2 run demo_nodes_cpp listener
+```
+
+노트북에 `I heard: [Hello World: N]`이 찍히면 성공. 반대 방향도 한 번 확인하세요.
+
+### 4.3 Jetson (로봇)
+
+```bash
+source /opt/ros/jazzy/setup.bash     # ~/.bashrc에 넣었다면 생략
 bash scripts/build_robot.sh          # ros2/ 아래 패키지 전체 빌드
 source install/setup.bash
 ros2 launch turtle_bringup robot.launch.py
 ```
 
-### 4.3 노트북 (GUI)
+### 4.4 노트북 (GUI)
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/jazzy/setup.bash     # ~/.bashrc에 넣었다면 생략
 bash scripts/build_gui.sh            # turtle_interfaces + turtle_gui만 빌드
 source install/setup.bash
 ros2 run turtle_gui turtle_gui
 ```
 
-### 4.4 STM32
+### 4.5 STM32
 
 1. STM32CubeIDE → `File > Import > Existing Projects into Workspace`
 2. `stm32/turtle_fw` 선택, **"Copy projects into workspace"는 체크 해제**
@@ -189,4 +210,4 @@ GUI의 파라미터 변경은 각 노드의 **ROS 2 Parameter**를 직접 바꾸
 | [`docs/ros2_interfaces.md`](docs/ros2_interfaces.md) | 토픽 / 서비스 / 파라미터 목록 |
 | [`docs/development.md`](docs/development.md) | 빌드, 실행, 디버깅 방법 |
 | [`protocol/PROTOCOL.md`](protocol/PROTOCOL.md) | Jetson ↔ STM32 패킷 규약 |
-| [`jetson/README.md`](jetson/README.md) | Jetson 환경 설정 |
+| [`jetson/README.md`](jetson/README.md) | Jetson 환경 설정 (ROS 2 Jazzy, 장치 이름, 노트북과 통신) |
