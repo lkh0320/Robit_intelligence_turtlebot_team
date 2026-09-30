@@ -2,6 +2,7 @@
 //   수신: 카메라 3종(원본 / 선·벡터 검출 / 객체 인식), psd, dxl_state, cmd_vel, control_mode, 비전 인식 결과 6종
 //   송신: cmd_vel (수동 주행), control_mode (모드 강제 변경)
 //   카메라 노드(v4l2_camera) 파라미터를 원격으로 읽고 바꾼다 (밝기, 노출 등)
+//   조절한 값은 ROS 파라미터 YAML로 저장/적용 (카메라 노드 --params-file 로도 사용 가능)
 // ROS 콜백은 QTimer에서 spin_some으로 GUI 스레드에서 처리한다 (스레드 동기화 불필요).
 #ifndef TURTLE_GUI__MAIN_WINDOW_HPP_
 #define TURTLE_GUI__MAIN_WINDOW_HPP_
@@ -102,6 +103,10 @@ private:
     const std::vector<rclcpp::Parameter> & values);
   void queueCameraParam(const rclcpp::Parameter & param);
   void flushCameraParams();
+  rclcpp::Parameter cameraParamValue(const std::string & name, const CamParamWidget & w) const;
+  void setCameraParamWidget(const CamParamWidget & w, const rclcpp::Parameter & param);
+  bool saveCameraParams(const QString & path);
+  bool applyCameraParamsFile(const QString & path);
 
   void touch(const QString & key);
   void refreshLamps();
@@ -145,6 +150,9 @@ private:
   std::map<std::string, rclcpp::Parameter> pending_params_;
   bool cam_loaded_ = false;
   bool cam_loading_ = false;
+  bool cam_apply_saved_ = true;     // 다음 불러오기 후 저장 파일을 자동 적용할지
+  QString cam_params_file_;
+  QCheckBox * cam_auto_apply_;
   QTimer * cam_poll_timer_;
   QTimer * param_send_timer_;
 

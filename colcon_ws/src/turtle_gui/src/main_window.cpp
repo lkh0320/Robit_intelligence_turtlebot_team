@@ -9,6 +9,10 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGridLayout>
@@ -28,8 +32,11 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QTextStream>
 #include <QTimer>
 #include <QVBoxLayout>
+
+#include "rclcpp/parameter_map.hpp"
 
 namespace
 {
@@ -125,6 +132,8 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   psd_max_range_ = node_->declare_parameter("psd_max_range", 0.80);
 
   camera_node_ = node_->declare_parameter("camera_node", std::string("v4l2_camera"));
+  cam_params_file_ = QString::fromStdString(node_->declare_parameter(
+    "camera_params_file", QDir::homePath().toStdString() + "/.ros/turtle_gui_camera.yaml"));
   cams_[0].key = "cam_raw";
   cams_[0].topic = QString::fromStdString(
     node_->declare_parameter("image_topic", std::string("image_raw/compressed")));
@@ -590,11 +599,41 @@ QWidget * MainWindow::buildCameraParamPanel()
   reload->setFocusPolicy(Qt::NoFocus);
   connect(reload, &QPushButton::clicked, this, [this] {
     cam_loaded_ = false;
+    cam_apply_saved_ = false;   // 카메라의 현재 값을 그대로 보여준다
     pollCameraNode();
   });
   top->addWidget(cam_param_status_, 1);
   top->addWidget(reload);
   layout->addLayout(top);
+
+  // 저장 / 파일 적용
+  auto * file_row = new QHBoxLayout;
+  auto * save = new QPushButton("저장");
+  save->setFocusPolicy(Qt::NoFocus);
+  connect(save, &QPushButton::clicked, this, [this] {
+    const QString path = QFileDialog::getSaveFileName(
+      this, "카메라 파라미터 저장", cam_params_file_, "YAML (*.yaml *.yml)");
+    if (!path.isEmpty() && saveCameraParams(path)) {
+      cam_params_file_ = path;
+    }
+  });
+  auto * apply = new QPushButton("파일 적용");
+  apply->setFocusPolicy(Qt::NoFocus);
+  connect(apply, &QPushButton::clicked, this, [this] {
+    const QString path = QFileDialog::getOpenFileName(
+      this, "카메라 파라미터 적용", cam_params_file_, "YAML (*.yaml *.yml)");
+    if (!path.isEmpty() && applyCameraParamsFile(path)) {
+      cam_params_file_ = path;
+    }
+  });
+  cam_auto_apply_ = new QCheckBox("연결 시 저장값 자동 적용");
+  cam_auto_apply_->setChecked(true);
+  cam_auto_apply_->setFocusPolicy(Qt::NoFocus);
+  cam_auto_apply_->setToolTip("카메라 노드가 새로 뜨면 마지막으로 저장/적용한 파일을 적용");
+  file_row->addWidget(save);
+  file_row->addWidget(apply);
+  file_row->addWidget(cam_auto_apply_, 1);
+  layout->addLayout(file_row);
 
   cam_param_body_ = new QWidget;
   cam_param_form_ = new QFormLayout(cam_param_body_);
@@ -676,6 +715,7 @@ void MainWindow::pollCameraNode()
       log("카메라 노드 연결 끊김");
     }
     cam_loaded_ = false;
+    cam_apply_saved_ = true;   // 다시 뜨면 카메라가 기본값으로 돌아와 있으므로 저장값 적용
     cam_param_body_->setEnabled(false);
     cam_param_status_->setText(QString("<span style='color:#d32f2f'>/%1 노드 없음</span>")
       .arg(QString::fromStdString(camera_node_)));
@@ -815,6 +855,11 @@ void MainWindow::buildCameraParamRows(
   cam_param_status_->setText(QString("<span style='color:#2e7d32'>연결됨</span>  %1개")
     .arg(cam_params_.size()));
   log(QString("카메라 파라미터 %1개 불러옴").arg(cam_params_.size()));
+
+  if (cam_apply_saved_ && cam_auto_apply_->isChecked() && QFileInfo::exists(cam_params_file_)) {
+    applyCameraParamsFile(cam_params_file_);
+  }
+  cam_apply_saved_ = false;
 }
 
 void MainWindow::queueCameraParam(const rclcpp::Parameter & param)
@@ -849,4 +894,101 @@ void MainWindow::flushCameraParams()
         }
       }
     });
+}
+
+rclcpp::Parameter MainWindow::cameraParamValue(
+  const std::string & name, const CamParamWidget & w) const
+{
+  if (w.check) {
+    return rclcpp::Parameter(name, w.check->isChecked());
+  }
+  if (w.combo) {
+    return rclcpp::Parameter(name, w.combo->currentData().toInt());
+  }
+  return rclcpp::Parameter(name, w.spin->value());
+}
+
+void MainWindow::setCameraParamWidget(const CamParamWidget & w, const rclcpp::Parameter & param)
+{
+  // 위젯만 갱신 (값 변경 시그널로 다시 전송되지 않도록 막는다)
+  if (w.check && param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
+    QSignalBlocker b(w.check);
+    w.check->setChecked(param.as_bool());
+  } else if (param.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
+    const int v = static_cast<int>(param.as_int());
+    if (w.combo) {
+      QSignalBlocker b(w.combo);
+      w.combo->setCurrentIndex(std::max(0, w.combo->findData(v)));
+    }
+    if (w.spin) {
+      QSignalBlocker b(w.spin);
+      w.spin->setValue(v);
+    }
+    if (w.slider) {
+      QSignalBlocker b(w.slider);
+      w.slider->setValue(v);
+    }
+  }
+}
+
+bool MainWindow::saveCameraParams(const QString & path)
+{
+  if (cam_params_.empty()) {
+    log("저장 실패: 카메라 파라미터를 아직 불러오지 않음");
+    return false;
+  }
+  QDir().mkpath(QFileInfo(path).absolutePath());
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+    log(QString("저장 실패: %1 (%2)").arg(path, file.errorString()));
+    return false;
+  }
+  // 카메라 노드를 켤 때 --params-file 로도 그대로 쓸 수 있는 형식
+  QTextStream out(&file);
+  out << "# turtle_gui 카메라 파라미터 (" << QDateTime::currentDateTime().toString(Qt::ISODate)
+      << ")\n";
+  out << "# ros2 run v4l2_camera v4l2_camera_node --ros-args --params-file <이 파일>\n";
+  out << "/" << QString::fromStdString(camera_node_) << ":\n";
+  out << "  ros__parameters:\n";
+  for (const auto & [name, label] : kCameraParams) {
+    const auto it = cam_params_.find(name);
+    if (it != cam_params_.end()) {
+      out << "    " << QString::fromStdString(name) << ": "
+          << QString::fromStdString(cameraParamValue(name, it->second).value_to_string()) << "\n";
+    }
+  }
+  file.close();
+  log(QString("카메라 파라미터 저장: %1").arg(path));
+  return true;
+}
+
+bool MainWindow::applyCameraParamsFile(const QString & path)
+{
+  if (cam_params_.empty()) {
+    log("적용 실패: 카메라 노드에 연결되지 않음");
+    return false;
+  }
+  rclcpp::ParameterMap map;
+  const std::string fqn = "/" + camera_node_;
+  try {
+    map = rclcpp::parameter_map_from_yaml_file(path.toStdString(), fqn.c_str());
+  } catch (const std::exception & e) {
+    log(QString("적용 실패: %1 (%2)").arg(path, e.what()));
+    return false;
+  }
+  int count = 0;
+  for (const auto & [node, params] : map) {
+    for (const auto & p : params) {
+      const auto it = cam_params_.find(p.get_name());
+      if (it == cam_params_.end()) {
+        continue;
+      }
+      setCameraParamWidget(it->second, p);
+      queueCameraParam(p);
+      ++count;
+    }
+  }
+  flushCameraParams();
+  log(QString("카메라 파라미터 %1개 적용: %2").arg(count).arg(path));
+  return count > 0;
 }
