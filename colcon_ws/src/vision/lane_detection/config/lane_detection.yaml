@@ -1,36 +1,24 @@
-# 원근 영상 노드(lane_detection)와 BEV 노드(lane_detection_bev)가 같이 쓴다.
-# BEV 노드는 launch 에서 bev: true, image_topic: image_bev 로 덮어쓴다.
-/**:
+lane_detection:
   ros__parameters:
-    image_topic: image_raw
-    # (2) 색 범위 (OpenCV HSV: H 0~180)
-    white_s_max: 60
-    white_v_min: 200          # 바닥 반사광(V≈170)은 제외, 흰 선은 V≈250
-    yellow_h_min: 15
-    yellow_h_max: 40
-    yellow_s_min: 60
-    yellow_v_min: 100
-    # (4) 에지
-    blur_kernel: 5            # Gaussian 커널 크기 (홀수)
-    canny_low: 50
-    canny_high: 150
-    # (5) ROI 사다리꼴 (이미지 크기 비율). 아랫변은 화면 맨 아래 전체 폭 (bev 에서는 무시, 전체 화면)
-    roi_top_y: 0.55
-    roi_top_left_x: 0.2
-    roi_top_right_x: 0.8
-    # (6) Hough
-    hough_threshold: 20
-    hough_min_length: 20      # [px]
-    hough_max_gap: 30         # [px]
-    # (7) |기울기(dy/dx)| 가 이보다 작은 (수평에 가까운) 선은 버림
-    min_slope: 0.3
-    outlier_dist: 25.0        # 1차 회귀 직선에서 이 거리[px] 넘는 선분은 제외 후 재회귀
-    bev_min_angle: 45.0       # (bev) 수평에서 이 각도[deg] 이상인 선만 차선 후보
-    bev_peak_margin: 25       # (bev) 흰/노란 픽셀 열 히스토그램 최고점에서 이 거리[px] 안의 선분만 차선
-    bev_center_x: 0.521       # (bev) BEV 화면에서 로봇(카메라 중심)의 가로 위치 (bird_eye_view 보정값에서 계산)
-    hold_frames: 5            # 한쪽 차선을 놓쳐도 직전 값을 유지할 프레임 수
-    # (8) 소실점이 화면 중앙에서 이 비율 이상 벗어나면 Left / Right
-    turn_threshold: 0.05
-    # GUI 에 보낼 화면: final(최종) / color(색 필터) / edges(Canny) / roi(ROI + Hough 선)
+    image_topic: image_bev    # bird_eye_view 노드 출력
+    # 1. 색 (OpenCV LAB: L 0~255, a/b 는 128 이 무채색). 2026-10-01 실측: 노란 선 b≈188, 흰 선 L≈230~250, 바닥 L≈85
+    yellow_b_min: 150
+    yellow_l_min: 80
+    white_l_min: 190
+    white_ab_dev: 15          # 흰 선은 a, b 가 128 ± 이 값 안
+    # 2~5. 차선 탐색
+    lane_width_px: 267.0      # BEV 에서 두 차선 중심 사이 폭 (bird_eye_view 보정 시 차선이 1/6, 5/6 위치)
+    bev_center_x: 0.521       # BEV 에서 로봇(카메라 중심)의 가로 위치 (bird_eye_view 보정값에서 계산)
+    base_min_pixels: 30       # 시작점 열에 필요한 최소 픽셀 수
+    n_windows: 10
+    window_margin: 30         # 윈도우 반폭 / 직전 곡선 주변 탐색 폭 [px]
+    window_min_pixels: 20     # 이보다 많으면 다음 윈도우 중심을 옮긴다
+    min_lane_pixels: 150      # 곡선 맞춤에 필요한 최소 픽셀 수
+    min_curve_span: 0.4       # 픽셀 세로 범위가 이 비율보다 짧으면 직선으로 맞춤
+    width_tolerance: 0.35     # 차선 폭이 lane_width_px 에서 이 비율 넘게 다르면 픽셀이 적은 쪽을 버림
+    # 6. 시간 필터
+    smooth_alpha: 0.5         # 새 곡선 비중 (1 = 필터 없음)
+    hold_frames: 5            # 놓쳐도 직전 곡선을 유지할 프레임 수
+    # GUI 화면: final (최종) / mask (색 마스크 + 윈도우)
     debug_view: final
     debug_jpeg_quality: 70

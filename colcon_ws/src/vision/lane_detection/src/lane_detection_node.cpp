@@ -1,30 +1,26 @@
-// 주행용 선 검출
-//   구독: image_raw (sensor_msgs/Image)
+// 주행용 선 검출 (Bird's Eye View + 슬라이딩 윈도우 + 2차 곡선)
+//   구독: image_bev (sensor_msgs/Image, bird_eye_view 노드)
 //   발행: lane_info (interfaces/LaneInfo)
 //         vision/lane_debug/compressed (GUI 선·벡터 검출 화면, 구독자가 있을 때만)
 //   TODO: stop_line (interfaces/StopLine)
 //
 // 처리 순서
-//   (1) 원본 영상 읽기
-//   (2) 흰색 / 노란색 범위만 남겨 후보로 저장
-//   (3) GrayScale 변환
-//   (4) Gaussian 필터로 잡음 제거 후 Canny 에지 추출
-//   (5) 진행 방향 바닥의 차선만 보도록 사다리꼴 관심 영역(ROI) 지정
-//   (6) Hough 변환으로 직선 성분 추출
-//   (7) 기울기/위치로 좌우 차선 후보를 나누고, 각각 선형 회귀로 가장 적합한 직선 계산
-//       (선분 길이 가중 + 이상치 제거 후 재회귀)
-//   (8) 두 차선의 소실점으로 진행 방향 예측
-//   (9) 최종 차선을 선으로 그리고, 차선 사이 다각형을 색으로 채움
+//   1. LAB 색공간으로 노란 선(b 채널 높음) / 흰 선(밝고 b 중립) 마스크
+//      코스 규칙: 노란 선 = 왼쪽 차선, 흰 선 = 오른쪽 차선 (위치가 아니라 색으로 좌우 구분)
+//   2. 차선 시작점: 화면 아래 절반의 열 히스토그램 최고점
+//      흰 선은 노란 선에서 차선 폭만큼 오른쪽 근처에서만 찾는다 (옆 차선의 흰 선 제외)
+//   3. 슬라이딩 윈도우로 아래에서 위로 차선 픽셀을 따라간다
+//      직전 프레임 곡선이 있으면 그 곡선 근처만 탐색
+//   4. 차선 픽셀에 2차 곡선 x = a*y^2 + b*y + c 를 맞춘다
+//   5. 검사: 두 차선 폭이 lane_width_px 와 크게 다르면 픽셀이 적은 쪽을 버린다
+//      한쪽만 있으면 차선 폭의 절반만큼 옮겨 차선 중심을 추정한다
+//   6. 곡선 계수를 직전 값과 섞어(smooth_alpha) 흔들림을 줄이고, 놓치면 hold_frames 동안 유지
+//   7. 로봇 위치(BEV 아래, bev_center_x)에서 차선 중심까지 offset, 중심 곡선의 방향 angle
 //
-// bev:=true 면 Bird's Eye View 영상(image_bev)을 입력으로 쓴다. 차선이 세로로 평행하게 보이므로
-//   (5) ROI 는 전체 화면, (7) 좌우는 기울기 부호 대신 흰/노란 픽셀 열 히스토그램의 좌/우 최고점
-//   근처 선분만 쓰고 (BEV 에서 길게 늘어나는 바닥 반사광 제외), (8) 진행 방향은 소실점 대신
-//   차선 중심선의 기울기로 판단한다. 로봇 위치는 BEV 화면 가운데가 아니라 bev_center_x.
-//
-// offset 은 두 방식 모두 화면 맨 아래에서 (차선 중심 - 로봇 위치) / (차선 폭 / 2)
-//   0 = 차선 가운데, ±1 = 오른쪽/왼쪽 차선 위
+// offset: (차선 중심 - 로봇) / (차선 폭 / 2)  0 = 가운데, +1 = 차선 중심이 로봇보다 반 차선 오른쪽
+// angle : 로봇 위치에서 차선 중심 곡선이 향하는 방향 [rad], + 는 오른쪽
+//         (BEV 가로/세로 축척이 같다고 가정한 값. 실측 축척을 넣기 전까지는 제어 게인으로 보정)
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -42,52 +38,66 @@
 
 namespace
 {
-// 직선 x = a*y + b (이미지 좌표, y 는 아래로 증가). 차선은 세로에 가까워 x 를 y 의 함수로 둔다.
-struct Line
+// x = a*y^2 + b*y + c (BEV 이미지 좌표, y 는 아래로 증가)
+struct Poly
 {
-  double a;
-  double b;
-  double x(double y) const {return a * y + b;}
+  double a = 0, b = 0, c = 0;
+  double x(double y) const {return (a * y + b) * y + c;}
+  double dxdy(double y) const {return 2 * a * y + b;}
+  Poly shifted(double dx) const {return {a, b, c + dx};}
+  Poly blend(const Poly & o, double alpha) const   // alpha*this + (1-alpha)*o
+  {
+    return {alpha * a + (1 - alpha) * o.a, alpha * b + (1 - alpha) * o.b,
+      alpha * c + (1 - alpha) * o.c};
+  }
 };
 
-// 선분들의 끝점에 대해 x = a*y + b 가중 최소제곱 선형 회귀 (가중치 = 선분 길이)
-// 짧은 잡음 선분(바닥 반사광 등)의 영향을 줄인다
-std::optional<Line> linearRegression(const std::vector<cv::Vec4i> & segs)
+// 최소제곱 2차 곡선 맞춤 (점이 min_points 보다 적으면 nullopt)
+// 픽셀의 세로 범위가 min_span 보다 짧으면 휘어짐 추정이 발산하므로 직선으로 맞춘다
+std::optional<Poly> fitPoly(const std::vector<cv::Point> & pts, int min_points, int min_span)
 {
-  double sw = 0, sy = 0, sx = 0, syy = 0, sxy = 0;
-  for (const auto & l : segs) {
-    const double wgt = std::hypot(l[2] - l[0], l[3] - l[1]);
-    for (const cv::Point p : {cv::Point(l[0], l[1]), cv::Point(l[2], l[3])}) {
-      sw += wgt;
-      sy += wgt * p.y;
-      sx += wgt * p.x;
-      syy += wgt * p.y * p.y;
-      sxy += wgt * p.x * p.y;
-    }
-  }
-  const double den = sw * syy - sy * sy;
-  if (segs.empty() || std::abs(den) < 1e-6) {
-    return std::nullopt;   // 선분 없음, 또는 모든 점의 y 가 같음 (수평선)
-  }
-  const double a = (sw * sxy - sx * sy) / den;
-  return Line{a, (sx - a * sy) / sw};
-}
-
-// 한 번 회귀한 뒤 직선에서 max_dist[px] 넘게 떨어진 선분을 빼고 다시 회귀
-std::optional<Line> robustFit(const std::vector<cv::Vec4i> & segs, double max_dist)
-{
-  const auto first = linearRegression(segs);
-  if (!first) {
+  if (static_cast<int>(pts.size()) < min_points) {
     return std::nullopt;
   }
-  std::vector<cv::Vec4i> inliers;
-  for (const auto & l : segs) {
-    const double mid_x = (l[0] + l[2]) / 2.0, mid_y = (l[1] + l[3]) / 2.0;
-    if (std::abs(first->x(mid_y) - mid_x) <= max_dist) {
-      inliers.push_back(l);
-    }
+  int y_min = pts[0].y, y_max = pts[0].y;
+  cv::Mat A(static_cast<int>(pts.size()), 3, CV_64F), X(static_cast<int>(pts.size()), 1, CV_64F);
+  for (int i = 0; i < A.rows; ++i) {
+    const double y = pts[i].y;
+    A.at<double>(i, 0) = y * y;
+    A.at<double>(i, 1) = y;
+    A.at<double>(i, 2) = 1.0;
+    X.at<double>(i, 0) = pts[i].x;
+    y_min = std::min(y_min, pts[i].y);
+    y_max = std::max(y_max, pts[i].y);
   }
-  return inliers.empty() ? first : linearRegression(inliers);
+  cv::Mat coef;
+  if (y_max - y_min >= min_span) {
+    if (!cv::solve(A, X, coef, cv::DECOMP_QR)) {
+      return std::nullopt;
+    }
+    return Poly{coef.at<double>(0), coef.at<double>(1), coef.at<double>(2)};
+  }
+  if (!cv::solve(A.colRange(1, 3), X, coef, cv::DECOMP_QR)) {
+    return std::nullopt;
+  }
+  return Poly{0.0, coef.at<double>(0), coef.at<double>(1)};
+}
+
+// mask 의 [x0, x1) 열 중 아래 절반에서 픽셀이 가장 많은 열 (min_count 미만이면 -1)
+int histogramPeak(const cv::Mat & mask, int x0, int x1, int min_count)
+{
+  x0 = std::clamp(x0, 0, mask.cols);
+  x1 = std::clamp(x1, 0, mask.cols);
+  if (x1 - x0 < 1) {
+    return -1;
+  }
+  cv::Mat hist;
+  cv::reduce(mask(cv::Rect(x0, mask.rows / 2, x1 - x0, mask.rows - mask.rows / 2)), hist, 0,
+    cv::REDUCE_SUM, CV_32S);
+  double max_val;
+  cv::Point loc;
+  cv::minMaxLoc(hist, nullptr, &max_val, nullptr, &loc);
+  return max_val / 255 >= min_count ? x0 + loc.x : -1;
 }
 }  // namespace
 
@@ -97,40 +107,26 @@ public:
   LaneDetectionNode()
   : Node("lane_detection")
   {
-    bev_ = declare_parameter("bev", false);
-    const auto image_topic = declare_parameter(
-      "image_topic", std::string(bev_ ? "image_bev" : "image_raw"));
-    // (2) 색 범위 (OpenCV HSV: H 0~180)
-    declare_parameter("white_s_max", 60);
-    declare_parameter("white_v_min", 200);         // 바닥 반사광(V≈170)은 제외
-    declare_parameter("yellow_h_min", 15);
-    declare_parameter("yellow_h_max", 40);
-    declare_parameter("yellow_s_min", 60);
-    declare_parameter("yellow_v_min", 100);
-    // (4) 에지
-    declare_parameter("blur_kernel", 5);
-    declare_parameter("canny_low", 50);
-    declare_parameter("canny_high", 150);
-    // (5) ROI 사다리꼴 (이미지 크기 비율). 아랫변은 화면 맨 아래 전체 폭
-    declare_parameter("roi_top_y", 0.55);
-    declare_parameter("roi_top_left_x", 0.2);
-    declare_parameter("roi_top_right_x", 0.8);
-    // (6) Hough
-    declare_parameter("hough_threshold", 20);
-    declare_parameter("hough_min_length", 20);     // [px]
-    declare_parameter("hough_max_gap", 30);        // [px]
-    // (7) 좌우 차선 후보: |기울기(dy/dx)| 가 이보다 작은 (수평에 가까운) 선은 버린다
-    declare_parameter("min_slope", 0.3);
-    declare_parameter("bev_min_angle", 45.0);      // (bev) 수평에서 이 각도[deg] 이상인 선만 차선 후보
-    declare_parameter("bev_peak_margin", 25);      // (bev) 히스토그램 최고점에서 이 거리[px] 안의 선분만 차선
-    // (bev) BEV 화면에서 로봇(카메라 중심)의 가로 위치 (폭 비율). bird_eye_view 보정값에서 계산:
-    //       원본 맨 아래 가운데 (320, 480) 이 BEV 의 어디로 가는지
-    declare_parameter("bev_center_x", 0.521);
-    declare_parameter("outlier_dist", 25.0);       // 1차 회귀 직선에서 이 거리[px] 넘는 선분은 제외 후 재회귀
-    declare_parameter("hold_frames", 5);           // 한쪽 차선을 놓쳐도 직전 값을 유지할 프레임 수
-    // (8) 진행 방향: 소실점이 화면 중앙에서 이 비율 이상 벗어나면 좌/우 회전으로 판단
-    declare_parameter("turn_threshold", 0.05);
-    // GUI 에 보낼 화면: final / color / edges / roi
+    const auto image_topic = declare_parameter("image_topic", std::string("image_bev"));
+    // 1. 색 (OpenCV LAB: L 0~255, a/b 는 128 이 무채색)
+    declare_parameter("yellow_b_min", 150);        // 노란 선 b ≈ 188
+    declare_parameter("yellow_l_min", 80);
+    declare_parameter("white_l_min", 190);         // 흰 선 L ≈ 230~250, 바닥 ≈ 85
+    declare_parameter("white_ab_dev", 15);         // 흰 선은 a, b 가 128 ± 이 값 안
+    // 2~5. 차선 탐색
+    declare_parameter("lane_width_px", 267.0);     // BEV 에서 두 차선 중심 사이 폭 (bird_eye_view 보정값)
+    declare_parameter("bev_center_x", 0.521);      // BEV 에서 로봇(카메라 중심)의 가로 위치 (폭 비율)
+    declare_parameter("base_min_pixels", 30);      // 시작점 열에 필요한 최소 픽셀 수
+    declare_parameter("n_windows", 10);
+    declare_parameter("window_margin", 30);        // 윈도우 반폭 / 직전 곡선 주변 탐색 폭 [px]
+    declare_parameter("window_min_pixels", 20);    // 이보다 많으면 다음 윈도우 중심을 옮긴다
+    declare_parameter("min_lane_pixels", 150);     // 곡선 맞춤에 필요한 최소 픽셀 수
+    declare_parameter("min_curve_span", 0.4);      // 픽셀 세로 범위가 이 비율보다 짧으면 직선으로 맞춤
+    declare_parameter("width_tolerance", 0.35);    // 차선 폭이 lane_width_px 에서 이 비율 넘게 다르면 이상
+    // 6. 시간 필터
+    declare_parameter("smooth_alpha", 0.5);        // 새 곡선 비중 (1 = 필터 없음)
+    declare_parameter("hold_frames", 5);
+    // 디버그: final (최종) / mask (색 마스크 + 윈도우)
     declare_parameter("debug_view", std::string("final"));
     declare_parameter("debug_jpeg_quality", 70);
 
@@ -141,248 +137,221 @@ public:
     debug_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
       "vision/lane_debug/compressed", qos);
 
-    RCLCPP_INFO(get_logger(), "%s 시작 (구독: %s, %s)", get_name(), image_topic.c_str(),
-      bev_ ? "BEV" : "원근 영상");
+    RCLCPP_INFO(get_logger(), "lane_detection 시작 (구독: %s)", image_topic.c_str());
   }
 
 private:
+  // 차선 하나의 추적 상태
+  struct Track
+  {
+    std::optional<Poly> fit;   // 필터를 거친 곡선
+    int miss = 0;              // 연속으로 놓친 프레임 수
+    // 이번 프레임 결과 (디버그용)
+    std::vector<cv::Point> pixels;
+    std::vector<cv::Rect> windows;
+  };
+
   int intParam(const std::string & name) {return static_cast<int>(get_parameter(name).as_int());}
   double dblParam(const std::string & name) {return get_parameter(name).as_double();}
 
-  // 이번 프레임에서 못 찾으면 hold_frames 동안 직전 차선을 유지
-  std::optional<Line> hold(const std::optional<Line> & found, std::optional<Line> & last, int & miss)
+  // 3. 차선 픽셀 모으기: 직전 곡선이 있으면 그 주변, 없으면 base_x 에서 슬라이딩 윈도우
+  void collect(const std::vector<cv::Point> & nonzero, const cv::Mat & mask, int base_x,
+    Track & t)
+  {
+    t.pixels.clear();
+    t.windows.clear();
+    const int margin = intParam("window_margin");
+    if (t.fit && t.miss == 0) {
+      for (const auto & p : nonzero) {
+        if (std::abs(p.x - t.fit->x(p.y)) <= margin) {
+          t.pixels.push_back(p);
+        }
+      }
+      return;
+    }
+    if (base_x < 0) {
+      return;
+    }
+    const int n = std::max(1, intParam("n_windows"));
+    const int win_h = mask.rows / n;
+    const int min_pix = intParam("window_min_pixels");
+    int x = base_x;
+    for (int i = 0; i < n; ++i) {
+      const int y1 = mask.rows - i * win_h, y0 = std::max(0, y1 - win_h);
+      const cv::Rect win = cv::Rect(x - margin, y0, 2 * margin, y1 - y0) &
+        cv::Rect(0, 0, mask.cols, mask.rows);
+      if (win.area() == 0) {
+        break;
+      }
+      t.windows.push_back(win);
+      std::vector<cv::Point> found;
+      cv::findNonZero(mask(win), found);
+      long sum_x = 0;
+      for (auto & p : found) {
+        p += win.tl();
+        sum_x += p.x;
+        t.pixels.push_back(p);
+      }
+      if (static_cast<int>(found.size()) >= min_pix) {
+        x = static_cast<int>(sum_x / static_cast<long>(found.size()));
+      }
+    }
+  }
+
+  // 6. 시간 필터: 새 곡선을 직전 값과 섞고, 놓치면 hold_frames 동안 유지
+  void update(Track & t, const std::optional<Poly> & found)
   {
     if (found) {
-      last = found;
-      miss = 0;
-    } else if (last && ++miss > intParam("hold_frames")) {
-      last.reset();
+      t.fit = t.fit ? found->blend(*t.fit, dblParam("smooth_alpha")) : *found;
+      t.miss = 0;
+    } else if (t.fit && ++t.miss > intParam("hold_frames")) {
+      t.fit.reset();
     }
-    return last;
   }
 
   void onImage(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
   {
-    const auto t0 = std::chrono::steady_clock::now();
-
-    // (1) 원본 영상 읽기
-    cv::Mat frame;
+    cv::Mat bev;
     try {
-      frame = cv_bridge::toCvShare(msg, "bgr8")->image;
+      bev = cv_bridge::toCvShare(msg, "bgr8")->image;
     } catch (const cv_bridge::Exception & e) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "cv_bridge: %s", e.what());
       return;
     }
-    const int w = frame.cols, h = frame.rows;
+    const int w = bev.cols, h = bev.rows;
+    const double lane_w = dblParam("lane_width_px");
+    const double robot_x = dblParam("bev_center_x") * w;
 
-    // (2) 흰색 / 노란색 범위만 후보로 저장
-    cv::Mat hsv, white, yellow, color_mask, candidate;
-    cv::cvtColor(frame, hsv, cv::COLOR_BGR2HSV);
-    cv::inRange(hsv, cv::Scalar(0, 0, intParam("white_v_min")),
-      cv::Scalar(180, intParam("white_s_max"), 255), white);
-    cv::inRange(hsv,
-      cv::Scalar(intParam("yellow_h_min"), intParam("yellow_s_min"), intParam("yellow_v_min")),
-      cv::Scalar(intParam("yellow_h_max"), 255, 255), yellow);
-    cv::bitwise_or(white, yellow, color_mask);
-    cv::bitwise_and(frame, frame, candidate, color_mask);
+    // 1. 색 마스크
+    cv::Mat lab, yellow, white;
+    cv::cvtColor(bev, lab, cv::COLOR_BGR2Lab);
+    const int dev = intParam("white_ab_dev");
+    cv::inRange(lab, cv::Scalar(intParam("yellow_l_min"), 0, intParam("yellow_b_min")),
+      cv::Scalar(255, 255, 255), yellow);
+    cv::inRange(lab, cv::Scalar(intParam("white_l_min"), 128 - dev, 128 - dev),
+      cv::Scalar(255, 128 + dev, 128 + dev), white);
+    const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+    cv::morphologyEx(yellow, yellow, cv::MORPH_OPEN, kernel);
+    cv::morphologyEx(white, white, cv::MORPH_OPEN, kernel);
 
-    // (3) GrayScale 변환
-    cv::Mat gray;
-    cv::cvtColor(candidate, gray, cv::COLOR_BGR2GRAY);
+    // 2. 시작점 (직전 곡선이 없을 때만 쓰인다)
+    const int base_min = intParam("base_min_pixels");
+    const int left_base = histogramPeak(yellow, 0, w, base_min);
+    const int right_base = left_base >= 0 ?
+      histogramPeak(white, left_base + static_cast<int>(0.5 * lane_w),
+      left_base + static_cast<int>(1.5 * lane_w), base_min) :
+      histogramPeak(white, static_cast<int>(robot_x), w, base_min);
 
-    // (4) Gaussian 필터 + Canny 에지
-    const int k = std::max(1, intParam("blur_kernel")) | 1;   // 홀수
-    cv::Mat blurred, edges;
-    cv::GaussianBlur(gray, blurred, cv::Size(k, k), 0);
-    cv::Canny(blurred, edges, intParam("canny_low"), intParam("canny_high"));
+    // 3~4. 픽셀 모으기 + 곡선 맞춤
+    std::vector<cv::Point> yellow_px, white_px;
+    cv::findNonZero(yellow, yellow_px);
+    cv::findNonZero(white, white_px);
+    collect(yellow_px, yellow, left_base, left_);
+    collect(white_px, white, right_base, right_);
+    const int min_pix = intParam("min_lane_pixels");
+    const int min_span = static_cast<int>(dblParam("min_curve_span") * h);
+    auto left_fit = fitPoly(left_.pixels, min_pix, min_span);
+    auto right_fit = fitPoly(right_.pixels, min_pix, min_span);
 
-    // (5) 관심 영역: 진행 방향 바닥의 사다리꼴 (BEV 는 이미 바닥만 펼친 영상이라 전체)
-    const int top_y = bev_ ? 0 :
-      std::clamp(static_cast<int>(dblParam("roi_top_y") * h), 0, h - 1);
-    const std::vector<cv::Point> roi_poly = bev_ ?
-      std::vector<cv::Point>{{0, h - 1}, {0, 0}, {w - 1, 0}, {w - 1, h - 1}} :
-      std::vector<cv::Point>{
-      {0, h - 1},
-      {static_cast<int>(dblParam("roi_top_left_x") * w), top_y},
-      {static_cast<int>(dblParam("roi_top_right_x") * w), top_y},
-      {w - 1, h - 1},
-    };
-    cv::Mat roi_mask = cv::Mat::zeros(edges.size(), CV_8U), roi_edges;
-    cv::fillPoly(roi_mask, std::vector<std::vector<cv::Point>>{roi_poly}, 255);
-    cv::bitwise_and(edges, roi_mask, roi_edges);
-
-    // (6) Hough 변환으로 직선 성분 추출
-    std::vector<cv::Vec4i> lines;
-    cv::HoughLinesP(roi_edges, lines, 1, CV_PI / 180, intParam("hough_threshold"),
-      intParam("hough_min_length"), intParam("hough_max_gap"));
-
-    // (7) 좌우 차선 후보 분리 -> 각각 선형 회귀
-    //     이미지 좌표(y 아래로 증가)에서 왼쪽 차선은 기울기 < 0, 오른쪽 차선은 > 0
-    //     기울기 부호와 화면 좌/우 위치가 모두 맞는 선만 쓴다
-    //     (bev) 차선이 세로로 평행하므로 세로에 가까운 선을 화면 좌/우 위치로만 나눈다
-    const double min_slope = dblParam("min_slope");
-    const double bev_min_angle = dblParam("bev_min_angle");
-    std::vector<cv::Vec4i> left_lines, right_lines;
-    int left_peak = -1, right_peak = -1;
-    if (bev_) {
-      // 차선은 세로로 곧으므로 흰/노란 픽셀이 가장 많이 몰린 열이 차선 위치
-      cv::Mat hist;
-      cv::reduce(color_mask, hist, 0, cv::REDUCE_SUM, CV_32S);
-      cv::Point loc;
-      cv::minMaxLoc(hist.colRange(0, w / 2), nullptr, nullptr, nullptr, &loc);
-      left_peak = loc.x;
-      cv::minMaxLoc(hist.colRange(w / 2, w), nullptr, nullptr, nullptr, &loc);
-      right_peak = w / 2 + loc.x;
-    }
-    const int peak_margin = intParam("bev_peak_margin");
-    for (const auto & l : lines) {
-      const double dx = l[2] - l[0], dy = l[3] - l[1];
-      if (bev_) {
-        const double deg = std::abs(std::atan2(dy, dx)) * 180.0 / CV_PI;
-        if (std::min(deg, 180.0 - deg) < bev_min_angle) {
-          continue;
-        }
-        auto near = [&](int peak) {
-            return std::abs(l[0] - peak) <= peak_margin && std::abs(l[2] - peak) <= peak_margin;
-          };
-        if (near(left_peak)) {
-          left_lines.push_back(l);
-        } else if (near(right_peak)) {
-          right_lines.push_back(l);
-        }
-        continue;
-      }
-      if (dx == 0) {
-        continue;   // 완전한 세로선은 좌우 판단 불가
-      }
-      const double slope = dy / dx;
-      if (std::abs(slope) < min_slope) {
-        continue;
-      }
-      const double mid_x = (l[0] + l[2]) / 2.0;
-      if (slope < 0 && mid_x < w / 2.0) {
-        left_lines.push_back(l);
-      } else if (slope > 0 && mid_x > w / 2.0) {
-        right_lines.push_back(l);
+    // 5. 두 차선 폭 검사 (아래 / 위), 이상하면 픽셀이 적은 쪽을 버린다
+    if (left_fit && right_fit) {
+      const double tol = dblParam("width_tolerance") * lane_w;
+      const double wb = right_fit->x(h - 1) - left_fit->x(h - 1);
+      const double wt = right_fit->x(0) - left_fit->x(0);
+      if (std::abs(wb - lane_w) > tol || std::abs(wt - lane_w) > tol) {
+        (left_.pixels.size() < right_.pixels.size() ? left_fit : right_fit).reset();
       }
     }
-    const double max_dist = dblParam("outlier_dist");
-    const auto left = hold(robustFit(left_lines, max_dist), last_left_, left_miss_);
-    const auto right = hold(robustFit(right_lines, max_dist), last_right_, right_miss_);
 
-    // (8) 진행 방향 예측: 차선 중심선이 향하는 앞쪽 점이 화면 중앙에서 얼마나 벗어났는지
-    //     원근 영상: 두 차선의 교점(소실점) / BEV: 차선 중심선의 맨 위 점
+    // 6. 시간 필터
+    update(left_, left_fit);
+    update(right_, right_fit);
+
+    // 7. 차선 중심 -> offset, angle
+    std::optional<Poly> center;
     interfaces::msg::LaneInfo lane;
     lane.header = msg->header;
+    if (left_.fit && right_.fit) {
+      center = left_.fit->blend(*right_.fit, 0.5);
+      lane.confidence = (left_.miss == 0 && right_.miss == 0) ? 0.9f : 0.6f;
+    } else if (left_.fit) {
+      center = left_.fit->shifted(lane_w / 2);
+      lane.confidence = left_.miss == 0 ? 0.6f : 0.3f;
+    } else if (right_.fit) {
+      center = right_.fit->shifted(-lane_w / 2);
+      lane.confidence = right_.miss == 0 ? 0.6f : 0.3f;
+    }
     const double y_bot = h - 1;
-    std::optional<cv::Point2d> ahead;
-    std::string direction = "-";
-    if (left && right) {
-      const double cx_bot = (left->x(y_bot) + right->x(y_bot)) / 2.0;
-      if (bev_) {
-        ahead = cv::Point2d((left->x(0) + right->x(0)) / 2.0, 0.0);
-      } else if (std::abs(left->a - right->a) > 1e-6) {
-        // a1*y + b1 = a2*y + b2
-        const double vy = (right->b - left->b) / (left->a - right->a);
-        ahead = cv::Point2d(left->x(vy), vy);
-      }
-      lane.detected = true;
-      lane.confidence = (left_miss_ == 0 && right_miss_ == 0) ? 0.9f : 0.6f;
-      // offset +: 차선 중심이 로봇보다 오른쪽 (차선 폭/2 로 정규화) / angle +: 진행 방향이 오른쪽
-      const double robot_x = bev_ ? dblParam("bev_center_x") * w : w / 2.0;
-      const double half_lane = std::max(1.0, (right->x(y_bot) - left->x(y_bot)) / 2.0);
-      lane.offset = static_cast<float>(std::clamp((cx_bot - robot_x) / half_lane, -1.0, 1.0));
-      if (ahead && ahead->y < y_bot) {
-        lane.angle = static_cast<float>(std::atan2(ahead->x - cx_bot, y_bot - ahead->y));
-        const double shift = (ahead->x - w / 2.0) / w;
-        const double thr = dblParam("turn_threshold");
-        direction = shift < -thr ? "Left" : shift > thr ? "Right" : "Straight";
-      }
+    lane.detected = center.has_value();
+    if (center) {
+      lane.offset = static_cast<float>(
+        std::clamp((center->x(y_bot) - robot_x) / (lane_w / 2), -1.0, 1.0));
+      // 위로(y 감소) 갈 때 x 가 늘면 오른쪽: dx/d(-y) = -dx/dy
+      lane.angle = static_cast<float>(std::atan(-center->dxdy(y_bot)));
     }
     lane_pub_->publish(lane);
 
-    // 처리 시간 (원근 / BEV 비교용), 5초마다 평균 출력
-    proc_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    if (++proc_frames_ >= 150) {
-      RCLCPP_INFO(get_logger(), "평균 처리 시간 %.2f ms (%d 프레임)", proc_ms_ / proc_frames_,
-        proc_frames_);
-      proc_ms_ = 0.0;
-      proc_frames_ = 0;
+    if (debug_pub_->get_subscription_count() > 0) {
+      publishDebug(bev, yellow, white, center, lane, robot_x, msg->header);
     }
+  }
 
-    // (9) 최종 차선 + 차선 사이 다각형 (GUI 선·벡터 검출 화면)
-    if (debug_pub_->get_subscription_count() == 0) {
-      return;
-    }
-    const std::string view = get_parameter("debug_view").as_string();
-    cv::Mat out;
-    if (view == "color") {
-      out = candidate;
-    } else if (view == "edges") {
-      cv::cvtColor(edges, out, cv::COLOR_GRAY2BGR);
-    } else if (view == "roi") {
-      cv::cvtColor(roi_edges, out, cv::COLOR_GRAY2BGR);
-      for (const auto & l : lines) {
-        cv::line(out, {l[0], l[1]}, {l[2], l[3]}, cv::Scalar(0, 255, 255), 2);
-      }
-    } else {
-      out = frame.clone();
-      if (left && right) {
-        const double y_top = top_y;
-        const std::vector<cv::Point> lane_poly{
-          {cvRound(left->x(y_bot)), cvRound(y_bot)}, {cvRound(left->x(y_top)), cvRound(y_top)},
-          {cvRound(right->x(y_top)), cvRound(y_top)}, {cvRound(right->x(y_bot)), cvRound(y_bot)},
-        };
-        cv::Mat overlay = out.clone();
-        cv::fillPoly(overlay, std::vector<std::vector<cv::Point>>{lane_poly}, cv::Scalar(0, 200, 0));
-        cv::addWeighted(overlay, 0.3, out, 0.7, 0, out);
-      }
-      for (const auto & l : left_lines) {
-        cv::line(out, {l[0], l[1]}, {l[2], l[3]}, cv::Scalar(255, 150, 0), 1);
-      }
-      for (const auto & l : right_lines) {
-        cv::line(out, {l[0], l[1]}, {l[2], l[3]}, cv::Scalar(255, 150, 0), 1);
-      }
-      for (const auto & line : {left, right}) {
-        if (line) {
-          cv::line(out, {cvRound(line->x(y_bot)), cvRound(y_bot)},
-            {cvRound(line->x(top_y)), top_y}, cv::Scalar(0, 0, 255), 4);
+  void publishDebug(const cv::Mat & bev, const cv::Mat & yellow, const cv::Mat & white,
+    const std::optional<Poly> & center, const interfaces::msg::LaneInfo & lane, double robot_x,
+    const std_msgs::msg::Header & header)
+  {
+    const int h = bev.rows;
+    const bool mask_only = get_parameter("debug_view").as_string() == "mask";
+    cv::Mat out = mask_only ? cv::Mat(bev.size(), CV_8UC3, cv::Scalar(0, 0, 0)) : bev * 0.6;
+    out.setTo(cv::Scalar(0, 220, 255), yellow);
+    out.setTo(cv::Scalar(255, 255, 255), white);
+
+    auto curve = [h](const Poly & p) {
+        std::vector<cv::Point> pts;
+        for (int y = 0; y < h; y += 5) {
+          pts.emplace_back(cvRound(p.x(y)), y);
         }
-      }
-      if (lane.detected) {
-        const cv::Point base(cvRound((left->x(y_bot) + right->x(y_bot)) / 2.0), cvRound(y_bot));
-        const double len = y_bot - top_y;
-        const cv::Point tip(cvRound(base.x + len * std::sin(lane.angle)),
-          cvRound(base.y - len * std::cos(lane.angle)));
-        cv::arrowedLine(out, base, tip, cv::Scalar(255, 0, 255), 3, cv::LINE_8, 0, 0.15);
-      }
-      cv::polylines(out, roi_poly, true, cv::Scalar(255, 200, 0), 1);
-      if (bev_) {
-        const int rx = cvRound(dblParam("bev_center_x") * w);
-        cv::line(out, {rx, 0}, {rx, h - 1}, cv::Scalar(255, 255, 255), 1);   // 로봇 위치
-        for (const int peak : {left_peak, right_peak}) {
-          cv::rectangle(out, {peak - peak_margin, 0}, {peak + peak_margin, h - 1},
-            cv::Scalar(0, 255, 255), 1);   // 차선 후보 창
-        }
-      }
-      char text[96];
-      std::snprintf(text, sizeof(text), "%s  offset %+.2f  angle %+.2f", direction.c_str(),
-        lane.offset, lane.angle);
-      cv::putText(out, text, {8, 24}, cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 255, 255), 2);
+        pts.emplace_back(cvRound(p.x(h - 1)), h - 1);
+        return pts;
+      };
+    const double lane_w = dblParam("lane_width_px");
+    if (!mask_only && center) {
+      // 차선 사이 영역 채우기
+      auto l = curve(center->shifted(-lane_w / 2)), r = curve(center->shifted(lane_w / 2));
+      std::vector<cv::Point> poly(l.begin(), l.end());
+      poly.insert(poly.end(), r.rbegin(), r.rend());
+      cv::Mat overlay = out.clone();
+      cv::fillPoly(overlay, std::vector<std::vector<cv::Point>>{poly}, cv::Scalar(0, 200, 0));
+      cv::addWeighted(overlay, 0.3, out, 0.7, 0, out);
     }
+    for (const Track * t : {&left_, &right_}) {
+      for (const auto & win : t->windows) {
+        cv::rectangle(out, win, cv::Scalar(0, 255, 0), 1);
+      }
+      if (t->fit) {
+        cv::polylines(out, curve(*t->fit), false,
+          t->miss == 0 ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 0, 128), 3);
+      }
+    }
+    if (center) {
+      cv::polylines(out, curve(*center), false, cv::Scalar(255, 0, 255), 2);
+    }
+    const int rx = cvRound(robot_x);
+    cv::line(out, {rx, h - 40}, {rx, h - 1}, cv::Scalar(255, 255, 0), 3);   // 로봇 위치
+    char text[96];
+    std::snprintf(text, sizeof(text), "L%s R%s off %+.2f ang %+.2f", left_.fit ? "o" : "x",
+      right_.fit ? "o" : "x", lane.offset, lane.angle);
+    cv::putText(out, text, {6, 20}, cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 255), 2);
 
     sensor_msgs::msg::CompressedImage jpeg;
-    jpeg.header = msg->header;
+    jpeg.header = header;
     jpeg.format = "jpeg";
-    cv::imencode(".jpg", out, jpeg.data, {cv::IMWRITE_JPEG_QUALITY, intParam("debug_jpeg_quality")});
+    cv::imencode(".jpg", out, jpeg.data,
+      {cv::IMWRITE_JPEG_QUALITY, intParam("debug_jpeg_quality")});
     debug_pub_->publish(jpeg);
   }
 
-  bool bev_;
-  double proc_ms_ = 0.0;
-  int proc_frames_ = 0;
-  std::optional<Line> last_left_, last_right_;
-  int left_miss_ = 0, right_miss_ = 0;
+  Track left_, right_;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Publisher<interfaces::msg::LaneInfo>::SharedPtr lane_pub_;

@@ -3,7 +3,7 @@
 <package format="3">
   <name>lane_detection</name>
   <version>0.0.0</version>
-  <description>주행용 선 검출: 노란/흰 차선과 정지선을 허프 변환으로 검출 -> lane_info, stop_line</description>
+  <description>주행용 선 검출: BEV 에서 노란(왼쪽)/흰(오른쪽) 차선을 슬라이딩 윈도우 + 2차 곡선으로 추적 -> lane_info</description>
   <maintainer email="nano2@todo.todo">nano2</maintainer>
   <license>TODO: License declaration</license>
 

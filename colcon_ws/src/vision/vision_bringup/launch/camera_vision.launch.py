@@ -8,7 +8,6 @@
 # v4l2_camera 노드는 켜질 때 장치 설정을 자기 기본값으로 되돌리므로, 같은 파일을 노드 파라미터로도 넘기고
 # (GUI 에 보이는 값), 노드가 적용 순서를 지키지 않아 거부되는 항목(색온도 등)을 위해 3초 뒤 다시 적용한다.
 #   lane:=false sign:=false obstacle:=false          원하는 노드만 끄기
-#   lane_mode:=bev / both                            선 검출 입력 (원근 / BEV / 둘 다 비교)
 import os
 
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
@@ -87,15 +86,12 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_params', default_value='',
                               description='카메라 파라미터 YAML (기본: 없음, 장치에 저장된 설정 그대로)'),
         DeclareLaunchArgument('lane', default_value='true'),
-        DeclareLaunchArgument('lane_mode', default_value='perspective',
-                              description='선 검출 입력: perspective / bev / both'),
         DeclareLaunchArgument('sign', default_value='true'),
         DeclareLaunchArgument('obstacle', default_value='true'),
 
         OpaqueFunction(function=camera),
         include('bird_eye_view'),
-        include('lane_detection', IfCondition(LaunchConfiguration('lane')),
-                {'mode': LaunchConfiguration('lane_mode')}),
+        include('lane_detection', IfCondition(LaunchConfiguration('lane'))),
         include('sign_detection', IfCondition(LaunchConfiguration('sign'))),
         include('obstacle_detection', IfCondition(LaunchConfiguration('obstacle'))),
     ])
