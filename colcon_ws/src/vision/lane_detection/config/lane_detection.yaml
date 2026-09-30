@@ -1,0 +1,31 @@
+lane_detection:
+  ros__parameters:
+    image_topic: image_raw
+    # (2) 색 범위 (OpenCV HSV: H 0~180)
+    white_s_max: 60
+    white_v_min: 200          # 바닥 반사광(V≈170)은 제외, 흰 선은 V≈250
+    yellow_h_min: 15
+    yellow_h_max: 40
+    yellow_s_min: 60
+    yellow_v_min: 100
+    # (4) 에지
+    blur_kernel: 5            # Gaussian 커널 크기 (홀수)
+    canny_low: 50
+    canny_high: 150
+    # (5) ROI 사다리꼴 (이미지 크기 비율). 아랫변은 화면 맨 아래 전체 폭
+    roi_top_y: 0.55
+    roi_top_left_x: 0.2
+    roi_top_right_x: 0.8
+    # (6) Hough
+    hough_threshold: 20
+    hough_min_length: 20      # [px]
+    hough_max_gap: 30         # [px]
+    # (7) |기울기(dy/dx)| 가 이보다 작은 (수평에 가까운) 선은 버림
+    min_slope: 0.3
+    outlier_dist: 25.0        # 1차 회귀 직선에서 이 거리[px] 넘는 선분은 제외 후 재회귀
+    hold_frames: 5            # 한쪽 차선을 놓쳐도 직전 값을 유지할 프레임 수
+    # (8) 소실점이 화면 중앙에서 이 비율 이상 벗어나면 Left / Right
+    turn_threshold: 0.05
+    # GUI 에 보낼 화면: final(최종) / color(색 필터) / edges(Canny) / roi(ROI + Hough 선)
+    debug_view: final
+    debug_jpeg_quality: 70

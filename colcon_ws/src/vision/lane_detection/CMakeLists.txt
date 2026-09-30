@@ -18,7 +18,7 @@ ament_target_dependencies(lane_detection_node rclcpp sensor_msgs cv_bridge inter
 
 install(TARGETS lane_detection_node
   DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY launch
+install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()
