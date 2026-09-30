@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>vision_bringup</name>
+  <version>0.0.0</version>
+  <description>카메라 + 비전 노드(BEV, 선 검출, 표지판, 장애물)를 한 번에 실행하는 launch</description>
+  <maintainer email="nano2@todo.todo">nano2</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>v4l2_camera</exec_depend>
+  <exec_depend>bird_eye_view</exec_depend>
+  <exec_depend>lane_detection</exec_depend>
+  <exec_depend>sign_detection</exec_depend>
+  <exec_depend>obstacle_detection</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
