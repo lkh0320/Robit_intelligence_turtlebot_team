@@ -7,6 +7,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDateTime>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -21,6 +22,11 @@
 #include <QProgressBar>
 #include <QScreen>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QScrollArea>
+#include <QSignalBlocker>
+#include <QSlider>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -28,6 +34,39 @@
 namespace
 {
 constexpr int kStaleMs = 1000;   // 이 시간 이상 수신이 없으면 빨간 램프
+
+// GUI에서 조절할 카메라 파라미터 (표시 순서). 카메라 노드에 없는 이름은 건너뛴다.
+const std::vector<std::pair<std::string, QString>> kCameraParams = {
+  {"brightness", "밝기"},
+  {"contrast", "대비"},
+  {"saturation", "채도"},
+  {"hue", "색조"},
+  {"gamma", "감마"},
+  {"gain", "게인"},
+  {"sharpness", "선명도"},
+  {"backlight_compensation", "역광 보정"},
+  {"auto_exposure", "노출 모드"},
+  {"exposure_time_absolute", "노출 시간"},
+  {"exposure_dynamic_framerate", "노출에 따라 fps 변경"},
+  {"white_balance_automatic", "자동 화이트밸런스"},
+  {"white_balance_temperature", "색온도"},
+  {"power_line_frequency", "전원 주파수"},
+  {"image_raw.compressed.jpeg_quality", "JPEG 품질 (전송량)"},
+};
+
+// "1 - Manual Mode, 3 - Aperture Priority Mode" 같은 메뉴형 설명을 (값, 이름) 목록으로
+std::vector<std::pair<int, QString>> parseMenu(const std::string & constraints)
+{
+  std::vector<std::pair<int, QString>> items;
+  static const QRegularExpression re("^\\s*(-?\\d+)\\s+-\\s+(.+?)\\s*$");
+  for (const auto & part : QString::fromStdString(constraints).split(',')) {
+    const auto m = re.match(part);
+    if (m.hasMatch()) {
+      items.emplace_back(m.captured(1).toInt(), m.captured(2));
+    }
+  }
+  return items;
+}
 
 QString onOff(bool v)
 {
@@ -85,26 +124,39 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   wheel_separation_ = node_->declare_parameter("wheel_separation", 0.160);
   psd_max_range_ = node_->declare_parameter("psd_max_range", 0.80);
 
-  setWindowTitle("TurtleBot Test GUI");
-  // 기본 1280x760, 화면이 더 작으면 화면에 맞춤
-  const QSize avail = QGuiApplication::primaryScreen()->availableGeometry().size();
-  resize(QSize(1280, 760).boundedTo(avail));
+  camera_node_ = node_->declare_parameter("camera_node", std::string("v4l2_camera"));
+  cams_[0].key = "cam_raw";
+  cams_[0].topic = QString::fromStdString(
+    node_->declare_parameter("image_topic", std::string("image_raw/compressed")));
+  cams_[1].key = "cam_lane";
+  cams_[1].topic = QString::fromStdString(
+    node_->declare_parameter("lane_image_topic", std::string("vision/lane_debug/compressed")));
+  cams_[2].key = "cam_object";
+  cams_[2].topic = QString::fromStdString(
+    node_->declare_parameter("object_image_topic", std::string("vision/object_debug/compressed")));
 
-  // 왼쪽: 카메라 + 로그 / 오른쪽: 상태 + 조종
+  setWindowTitle("TurtleBot Test GUI");
+  // 기본 1600x900, 화면이 더 작으면 화면에 맞춤
+  const QSize avail = QGuiApplication::primaryScreen()->availableGeometry().size();
+  resize(QSize(1600, 900).boundedTo(avail));
+
+  // 왼쪽: 카메라 3개 + 카메라 파라미터 (2x2) + 로그 / 오른쪽: 상태 + 조종
   auto * left = new QWidget;
   auto * left_layout = new QVBoxLayout(left);
-  image_label_ = new QLabel("카메라 수신 대기 중");
-  image_label_->setAlignment(Qt::AlignCenter);
-  image_label_->setMinimumSize(320, 240);
-  image_label_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-  image_label_->setStyleSheet("background:#202020; color:#aaaaaa;");
-  image_info_ = new QLabel("-");
+  auto * cam_grid = new QGridLayout;
+  cam_grid->addWidget(buildCameraView(cams_[0], "원본"), 0, 0);
+  cam_grid->addWidget(buildCameraView(cams_[1], "선 · 벡터 검출"), 0, 1);
+  cam_grid->addWidget(buildCameraView(cams_[2], "객체 인식"), 1, 0);
+  cam_grid->addWidget(buildCameraParamPanel(), 1, 1);
+  cam_grid->setRowStretch(0, 1);
+  cam_grid->setRowStretch(1, 1);
+  cam_grid->setColumnStretch(0, 1);
+  cam_grid->setColumnStretch(1, 1);
   log_view_ = new QPlainTextEdit;
   log_view_->setReadOnly(true);
   log_view_->setMaximumBlockCount(500);
-  log_view_->setMaximumHeight(140);
-  left_layout->addWidget(image_label_, 1);
-  left_layout->addWidget(image_info_);
+  log_view_->setMaximumHeight(120);
+  left_layout->addLayout(cam_grid, 1);
   left_layout->addWidget(log_view_);
 
   auto * right = new QWidget;
@@ -115,7 +167,7 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   auto * splitter = new QSplitter;
   splitter->addWidget(left);
   splitter->addWidget(right);
-  splitter->setStretchFactor(0, 3);
+  splitter->setStretchFactor(0, 5);
   splitter->setStretchFactor(1, 2);
   setCentralWidget(splitter);
 
@@ -139,6 +191,14 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   connect(lamp_timer_, &QTimer::timeout, this, &MainWindow::refreshLamps);
   lamp_timer_->start(1000);
 
+  // 카메라 노드가 뜨면 파라미터를 자동으로 불러오고, 사라지면 패널을 비활성화
+  param_send_timer_ = new QTimer(this);
+  param_send_timer_->setSingleShot(true);
+  connect(param_send_timer_, &QTimer::timeout, this, &MainWindow::flushCameraParams);
+  cam_poll_timer_ = new QTimer(this);
+  connect(cam_poll_timer_, &QTimer::timeout, this, &MainWindow::pollCameraNode);
+  cam_poll_timer_->start(1000);
+
   // 창이 비활성화되면 눌린 키를 모두 뗀 것으로 처리 (키가 눌린 채로 남는 것 방지)
   connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState s) {
     if (s != Qt::ApplicationActive) {
@@ -147,7 +207,6 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   });
   qApp->installEventFilter(this);
 
-  fps_timer_.start();
   log("turtle_gui 시작");
 }
 
@@ -161,7 +220,9 @@ QWidget * MainWindow::buildStatusPanel()
   auto * topic_box = new QGroupBox("토픽 수신 상태");
   auto * grid = new QGridLayout(topic_box);
   int row = 0;
-  addTopicRow(grid, row++, "image", "카메라");
+  addTopicRow(grid, row++, "cam_raw", "카메라 원본");
+  addTopicRow(grid, row++, "cam_lane", "선 검출 화면");
+  addTopicRow(grid, row++, "cam_object", "객체 인식 화면");
   addTopicRow(grid, row++, "psd", "psd");
   addTopicRow(grid, row++, "dxl", "dxl_state");
   addTopicRow(grid, row++, "cmd", "cmd_vel");
@@ -313,65 +374,16 @@ QWidget * MainWindow::buildControlPanel()
 
 void MainWindow::setupRos()
 {
-  const bool compressed = node_->declare_parameter("image_compressed", true);
-  const std::string image_topic = node_->declare_parameter(
-    "image_topic", std::string(compressed ? "image_raw/compressed" : "image_raw"));
   const std::string cmd_topic = node_->declare_parameter("cmd_vel_topic", std::string("cmd_vel"));
 
   // 발행 측 QoS(best effort / reliable)에 상관없이 받도록 센서 QoS로 구독
   const auto qos = rclcpp::SensorDataQoS();
 
   // --- 카메라 ---
-  auto on_frame = [this](const QImage & img) {
-      touch("image");
-      ++fps_frames_;
-      if (fps_timer_.elapsed() >= 1000) {
-        fps_ = fps_frames_ * 1000.0 / fps_timer_.restart();
-        fps_frames_ = 0;
-      }
-      image_info_->setText(QString("%1 x %2   %3 fps").arg(img.width()).arg(img.height())
-        .arg(fps_, 0, 'f', 1));
-      showImage(img);
-    };
-
-  if (compressed) {
-    compressed_sub_ = node_->create_subscription<sensor_msgs::msg::CompressedImage>(
-      image_topic, qos, [this, on_frame](sensor_msgs::msg::CompressedImage::ConstSharedPtr msg) {
-        QImage img;
-        if (img.loadFromData(msg->data.data(), static_cast<int>(msg->data.size()))) {
-          on_frame(img);
-        } else {
-          RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
-            "Failed to decode compressed image (format=%s)", msg->format.c_str());
-        }
-      });
-  } else {
-    raw_sub_ = node_->create_subscription<sensor_msgs::msg::Image>(
-      image_topic, qos, [this, on_frame](sensor_msgs::msg::Image::ConstSharedPtr msg) {
-        const auto * data = msg->data.data();
-        const int w = static_cast<int>(msg->width), h = static_cast<int>(msg->height);
-        const int step = static_cast<int>(msg->step);
-        QImage img;
-        if (msg->encoding == "rgb8") {
-          img = QImage(data, w, h, step, QImage::Format_RGB888).copy();
-        } else if (msg->encoding == "bgr8") {
-          img = QImage(data, w, h, step, QImage::Format_RGB888).rgbSwapped();
-        } else if (msg->encoding == "mono8") {
-          img = QImage(data, w, h, step, QImage::Format_Grayscale8).copy();
-        } else if (msg->encoding == "rgba8") {
-          img = QImage(data, w, h, step, QImage::Format_RGBA8888).copy();
-        } else if (msg->encoding == "bgra8") {
-          img = QImage(data, w, h, step, QImage::Format_ARGB32).copy();
-        } else {
-          RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
-            "Unsupported image encoding: %s", msg->encoding.c_str());
-          return;
-        }
-        on_frame(img);
-      });
+  for (auto & view : cams_) {
+    subscribeCamera(view);
   }
-  log(QString("카메라 구독: %1 (%2)").arg(QString::fromStdString(image_topic))
-    .arg(compressed ? "compressed" : "raw"));
+  cam_client_ = std::make_shared<rclcpp::AsyncParametersClient>(node_, camera_node_);
 
   // --- stm ---
   psd_sub_ = node_->create_subscription<interfaces::msg::PsdArray>(
@@ -484,12 +496,6 @@ void MainWindow::refreshLamps()
   }
 }
 
-void MainWindow::showImage(const QImage & image)
-{
-  image_label_->setPixmap(QPixmap::fromImage(image).scaled(
-      image_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-}
-
 void MainWindow::sendManualCmd()
 {
   if (!manual_enable_->isChecked()) {
@@ -553,4 +559,294 @@ void MainWindow::log(const QString & text)
 {
   log_view_->appendPlainText(
     QDateTime::currentDateTime().toString("hh:mm:ss  ") + text);
+}
+
+QWidget * MainWindow::buildCameraView(CameraView & view, const QString & title)
+{
+  auto * box = new QGroupBox(title);
+  auto * layout = new QVBoxLayout(box);
+  layout->setContentsMargins(4, 4, 4, 4);
+  view.image = new QLabel("수신 대기 중\n" + view.topic);
+  view.image->setAlignment(Qt::AlignCenter);
+  view.image->setMinimumSize(240, 180);
+  view.image->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+  view.image->setStyleSheet("background:#202020; color:#aaaaaa;");
+  view.info = new QLabel("-");
+  layout->addWidget(view.image, 1);
+  layout->addWidget(view.info);
+  view.fps_timer.start();
+  return box;
+}
+
+QWidget * MainWindow::buildCameraParamPanel()
+{
+  auto * box = new QGroupBox(QString("카메라 파라미터 (/%1)").arg(QString::fromStdString(camera_node_)));
+  auto * layout = new QVBoxLayout(box);
+  layout->setContentsMargins(4, 4, 4, 4);
+
+  auto * top = new QHBoxLayout;
+  cam_param_status_ = new QLabel("카메라 노드 찾는 중...");
+  auto * reload = new QPushButton("다시 불러오기");
+  reload->setFocusPolicy(Qt::NoFocus);
+  connect(reload, &QPushButton::clicked, this, [this] {
+    cam_loaded_ = false;
+    pollCameraNode();
+  });
+  top->addWidget(cam_param_status_, 1);
+  top->addWidget(reload);
+  layout->addLayout(top);
+
+  cam_param_body_ = new QWidget;
+  cam_param_form_ = new QFormLayout(cam_param_body_);
+  cam_param_form_->setContentsMargins(0, 0, 0, 0);
+  auto * scroll = new QScrollArea;
+  scroll->setWidget(cam_param_body_);
+  scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  layout->addWidget(scroll, 1);
+  return box;
+}
+
+void MainWindow::subscribeCamera(CameraView & view)
+{
+  const std::string topic = view.topic.toStdString();
+  const auto qos = rclcpp::SensorDataQoS();
+  CameraView * v = &view;   // cams_ 는 std::array 라 주소가 바뀌지 않음
+
+  if (view.topic.endsWith("/compressed")) {
+    view.sub = node_->create_subscription<sensor_msgs::msg::CompressedImage>(
+      topic, qos, [this, v](sensor_msgs::msg::CompressedImage::ConstSharedPtr msg) {
+        QImage img;
+        if (img.loadFromData(msg->data.data(), static_cast<int>(msg->data.size()))) {
+          onFrame(*v, img);
+        } else {
+          RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+            "Failed to decode compressed image on %s (format=%s)",
+            v->topic.toStdString().c_str(), msg->format.c_str());
+        }
+      });
+  } else {
+    view.sub = node_->create_subscription<sensor_msgs::msg::Image>(
+      topic, qos, [this, v](sensor_msgs::msg::Image::ConstSharedPtr msg) {
+        const auto * data = msg->data.data();
+        const int w = static_cast<int>(msg->width), h = static_cast<int>(msg->height);
+        const int step = static_cast<int>(msg->step);
+        QImage img;
+        if (msg->encoding == "rgb8") {
+          img = QImage(data, w, h, step, QImage::Format_RGB888).copy();
+        } else if (msg->encoding == "bgr8") {
+          img = QImage(data, w, h, step, QImage::Format_RGB888).rgbSwapped();
+        } else if (msg->encoding == "mono8") {
+          img = QImage(data, w, h, step, QImage::Format_Grayscale8).copy();
+        } else if (msg->encoding == "rgba8") {
+          img = QImage(data, w, h, step, QImage::Format_RGBA8888).copy();
+        } else if (msg->encoding == "bgra8") {
+          img = QImage(data, w, h, step, QImage::Format_ARGB32).copy();
+        } else {
+          RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+            "Unsupported image encoding on %s: %s",
+            v->topic.toStdString().c_str(), msg->encoding.c_str());
+          return;
+        }
+        onFrame(*v, img);
+      });
+  }
+  log(QString("카메라 구독: %1").arg(view.topic));
+}
+
+void MainWindow::onFrame(CameraView & view, const QImage & image)
+{
+  touch(view.key);
+  ++view.frames;
+  if (view.fps_timer.elapsed() >= 1000) {
+    view.fps = view.frames * 1000.0 / view.fps_timer.restart();
+    view.frames = 0;
+  }
+  view.info->setText(QString("%1 x %2   %3 fps   %4").arg(image.width()).arg(image.height())
+    .arg(view.fps, 0, 'f', 1).arg(view.topic));
+  view.image->setPixmap(QPixmap::fromImage(image).scaled(
+      view.image->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+}
+
+void MainWindow::pollCameraNode()
+{
+  const bool ready = cam_client_->service_is_ready();
+  if (!ready) {
+    if (cam_loaded_) {
+      log("카메라 노드 연결 끊김");
+    }
+    cam_loaded_ = false;
+    cam_param_body_->setEnabled(false);
+    cam_param_status_->setText(QString("<span style='color:#d32f2f'>/%1 노드 없음</span>")
+      .arg(QString::fromStdString(camera_node_)));
+    return;
+  }
+  if (!cam_loaded_ && !cam_loading_) {
+    loadCameraParams();
+  }
+}
+
+void MainWindow::loadCameraParams()
+{
+  cam_loading_ = true;
+  cam_param_status_->setText("불러오는 중...");
+
+  // 없는 이름이 섞이면 describe 전체가 실패하므로, 먼저 목록을 받아 있는 것만 추린다
+  cam_client_->list_parameters(
+    {}, rcl_interfaces::srv::ListParameters::Request::DEPTH_RECURSIVE,
+    [this](std::shared_future<rcl_interfaces::msg::ListParametersResult> f) {
+      std::set<std::string> exists;
+      for (const auto & n : f.get().names) {
+        exists.insert(n);
+      }
+      auto names = std::make_shared<std::vector<std::string>>();
+      for (const auto & [name, label] : kCameraParams) {
+        if (exists.count(name)) {
+          names->push_back(name);
+        }
+      }
+      cam_client_->describe_parameters(
+        *names,
+        [this, names](std::shared_future<std::vector<rcl_interfaces::msg::ParameterDescriptor>> fd) {
+          auto descs = fd.get();
+          cam_client_->get_parameters(
+            *names, [this, descs](std::shared_future<std::vector<rclcpp::Parameter>> fv) {
+              buildCameraParamRows(descs, fv.get());
+              cam_loading_ = false;
+            });
+        });
+    });
+}
+
+void MainWindow::buildCameraParamRows(
+  const std::vector<rcl_interfaces::msg::ParameterDescriptor> & descs,
+  const std::vector<rclcpp::Parameter> & values)
+{
+  while (cam_param_form_->rowCount() > 0) {
+    cam_param_form_->removeRow(0);
+  }
+  cam_params_.clear();
+  pending_params_.clear();
+
+  std::map<std::string, QString> labels(kCameraParams.begin(), kCameraParams.end());
+
+  for (size_t i = 0; i < descs.size() && i < values.size(); ++i) {
+    const auto & d = descs[i];
+    const auto & p = values[i];
+    const std::string name = p.get_name();
+    CamParamWidget w;
+    QWidget * field = nullptr;
+
+    if (p.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
+      w.check = new QCheckBox;
+      w.check->setChecked(p.as_bool());
+      connect(w.check, &QCheckBox::toggled, this, [this, name](bool on) {
+        queueCameraParam(rclcpp::Parameter(name, on));
+      });
+      field = w.check;
+    } else if (p.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
+      const int value = static_cast<int>(p.as_int());
+      const auto menu = parseMenu(d.additional_constraints);
+      if (!menu.empty()) {
+        // 메뉴형 (예: auto_exposure 1=수동, 3=자동)
+        w.combo = new QComboBox;
+        for (const auto & [v, text] : menu) {
+          w.combo->addItem(QString("%1 - %2").arg(v).arg(text), v);
+        }
+        w.combo->setCurrentIndex(std::max(0, w.combo->findData(value)));
+        connect(w.combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          [this, name, combo = w.combo](int) {
+            queueCameraParam(rclcpp::Parameter(name, combo->currentData().toInt()));
+          });
+        field = w.combo;
+      } else {
+        int lo = -100000, hi = 100000, step = 1;
+        const bool ranged = !d.integer_range.empty();
+        if (ranged) {
+          lo = static_cast<int>(d.integer_range[0].from_value);
+          hi = static_cast<int>(d.integer_range[0].to_value);
+          step = std::max(1, static_cast<int>(d.integer_range[0].step));
+        } else if (name.find("jpeg_quality") != std::string::npos) {
+          lo = 1;
+          hi = 100;
+        }
+        w.spin = new QSpinBox;
+        w.spin->setRange(lo, hi);
+        w.spin->setSingleStep(step);
+        w.spin->setValue(value);
+        w.spin->setKeyboardTracking(false);
+        auto * row = new QWidget;
+        auto * h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        if (ranged || name.find("jpeg_quality") != std::string::npos) {
+          w.slider = new QSlider(Qt::Horizontal);
+          w.slider->setRange(lo, hi);
+          w.slider->setSingleStep(step);
+          w.slider->setValue(value);
+          w.slider->setFocusPolicy(Qt::NoFocus);
+          connect(w.slider, &QSlider::valueChanged, w.spin, &QSpinBox::setValue);
+          h->addWidget(w.slider, 1);
+        }
+        h->addWidget(w.spin);
+        connect(w.spin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+          [this, name, slider = w.slider](int v) {
+            if (slider) {
+              QSignalBlocker block(slider);
+              slider->setValue(v);
+            }
+            queueCameraParam(rclcpp::Parameter(name, v));
+          });
+        field = row;
+      }
+    } else {
+      continue;
+    }
+
+    field->setEnabled(!d.read_only);
+    const QString label = labels.count(name) ? labels[name] : QString::fromStdString(name);
+    auto * label_widget = new QLabel(label);
+    label_widget->setToolTip(QString::fromStdString(name + "\n" + d.description));
+    cam_param_form_->addRow(label_widget, field);
+    cam_params_[name] = w;
+  }
+
+  cam_loaded_ = true;
+  cam_param_body_->setEnabled(true);
+  cam_param_status_->setText(QString("<span style='color:#2e7d32'>연결됨</span>  %1개")
+    .arg(cam_params_.size()));
+  log(QString("카메라 파라미터 %1개 불러옴").arg(cam_params_.size()));
+}
+
+void MainWindow::queueCameraParam(const rclcpp::Parameter & param)
+{
+  // 슬라이더를 끄는 동안 요청이 쏟아지지 않도록 모아서 보낸다
+  pending_params_.insert_or_assign(param.get_name(), param);
+  param_send_timer_->start(150);
+}
+
+void MainWindow::flushCameraParams()
+{
+  if (pending_params_.empty() || !cam_client_->service_is_ready()) {
+    return;
+  }
+  std::vector<rclcpp::Parameter> params;
+  for (const auto & [name, p] : pending_params_) {
+    params.push_back(p);
+  }
+  pending_params_.clear();
+
+  cam_client_->set_parameters(
+    params, [this, params](std::shared_future<std::vector<rcl_interfaces::msg::SetParametersResult>> f) {
+      const auto results = f.get();
+      for (size_t i = 0; i < results.size() && i < params.size(); ++i) {
+        const QString name = QString::fromStdString(params[i].get_name());
+        const QString value = QString::fromStdString(params[i].value_to_string());
+        if (results[i].successful) {
+          log(QString("카메라 %1 = %2").arg(name, value));
+        } else {
+          log(QString("카메라 %1 = %2 실패: %3").arg(name, value)
+            .arg(QString::fromStdString(results[i].reason)));
+        }
+      }
+    });
 }

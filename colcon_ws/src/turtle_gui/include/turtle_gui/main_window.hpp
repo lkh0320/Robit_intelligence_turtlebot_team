@@ -1,13 +1,16 @@
 // 노트북용 모니터링/조종 GUI
-//   수신: 카메라, psd, dxl_state, cmd_vel, control_mode, 비전 인식 결과 6종
+//   수신: 카메라 3종(원본 / 선·벡터 검출 / 객체 인식), psd, dxl_state, cmd_vel, control_mode, 비전 인식 결과 6종
 //   송신: cmd_vel (수동 주행), control_mode (모드 강제 변경)
+//   카메라 노드(v4l2_camera) 파라미터를 원격으로 읽고 바꾼다 (밝기, 노출 등)
 // ROS 콜백은 QTimer에서 spin_some으로 GUI 스레드에서 처리한다 (스레드 동기화 불필요).
 #ifndef TURTLE_GUI__MAIN_WINDOW_HPP_
 #define TURTLE_GUI__MAIN_WINDOW_HPP_
 
+#include <array>
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 #include <QElapsedTimer>
 #include <QMainWindow>
@@ -23,16 +26,21 @@
 #include "interfaces/msg/stop_line.hpp"
 #include "interfaces/msg/traffic_light.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rcl_interfaces/msg/parameter_descriptor.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/image.hpp"
 
 class QCheckBox;
+class QComboBox;
 class QDoubleSpinBox;
+class QFormLayout;
 class QGridLayout;
 class QImage;
 class QLabel;
 class QPlainTextEdit;
 class QProgressBar;
+class QSlider;
+class QSpinBox;
 class QTimer;
 
 class MainWindow : public QMainWindow
@@ -55,14 +63,48 @@ private:
     int count = 0;
   };
 
+  // 카메라 화면 1개 (토픽이 /compressed 로 끝나면 CompressedImage, 아니면 Image 로 구독)
+  struct CameraView
+  {
+    QString key;
+    QLabel * image = nullptr;
+    QLabel * info = nullptr;
+    QString topic;
+    QElapsedTimer fps_timer;
+    int frames = 0;
+    double fps = 0.0;
+    rclcpp::SubscriptionBase::SharedPtr sub;
+  };
+
+  // 카메라 파라미터 1개에 해당하는 위젯 (타입에 따라 일부만 사용)
+  struct CamParamWidget
+  {
+    QSlider * slider = nullptr;
+    QSpinBox * spin = nullptr;
+    QCheckBox * check = nullptr;
+    QComboBox * combo = nullptr;
+  };
+
   QWidget * buildStatusPanel();
   QWidget * buildControlPanel();
+  QWidget * buildCameraView(CameraView & view, const QString & title);
+  QWidget * buildCameraParamPanel();
   void addTopicRow(QGridLayout * grid, int row, const QString & key, const QString & topic);
   void setupRos();
+  void subscribeCamera(CameraView & view);
+  void onFrame(CameraView & view, const QImage & image);
+
+  // 카메라 파라미터 (AsyncParametersClient 콜백은 spin_some 안에서 GUI 스레드로 호출됨)
+  void pollCameraNode();
+  void loadCameraParams();
+  void buildCameraParamRows(
+    const std::vector<rcl_interfaces::msg::ParameterDescriptor> & descs,
+    const std::vector<rclcpp::Parameter> & values);
+  void queueCameraParam(const rclcpp::Parameter & param);
+  void flushCameraParams();
 
   void touch(const QString & key);
   void refreshLamps();
-  void showImage(const QImage & image);
   void sendManualCmd();
   void sendControlMode(uint8_t mode);
   void log(const QString & text);
@@ -72,8 +114,7 @@ private:
   double psd_max_range_;
 
   // --- 위젯 ---
-  QLabel * image_label_;
-  QLabel * image_info_;
+  std::array<CameraView, 3> cams_;
   QProgressBar * psd_bar_[3];
   QLabel * psd_text_[3];
   QLabel * dxl_label_;
@@ -93,17 +134,25 @@ private:
   std::map<QString, TopicStat> stats_;
   std::set<int> pressed_keys_;
   bool was_moving_ = false;
-  QElapsedTimer fps_timer_;
-  int fps_frames_ = 0;
-  double fps_ = 0.0;
+
+  // --- 카메라 파라미터 ---
+  std::string camera_node_;
+  rclcpp::AsyncParametersClient::SharedPtr cam_client_;
+  QLabel * cam_param_status_;
+  QWidget * cam_param_body_;
+  QFormLayout * cam_param_form_;
+  std::map<std::string, CamParamWidget> cam_params_;
+  std::map<std::string, rclcpp::Parameter> pending_params_;
+  bool cam_loaded_ = false;
+  bool cam_loading_ = false;
+  QTimer * cam_poll_timer_;
+  QTimer * param_send_timer_;
 
   QTimer * spin_timer_;
   QTimer * cmd_timer_;
   QTimer * lamp_timer_;
 
   // --- ROS ---
-  rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr raw_sub_;
   rclcpp::Subscription<interfaces::msg::PsdArray>::SharedPtr psd_sub_;
   rclcpp::Subscription<interfaces::msg::DxlState>::SharedPtr dxl_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
