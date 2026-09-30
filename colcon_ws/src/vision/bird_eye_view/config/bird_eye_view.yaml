@@ -1,0 +1,15 @@
+bird_eye_view:
+  ros__parameters:
+    image_topic: image_raw
+    # 원본에서 펼 사다리꼴 네 점 (이미지 폭/높이 비율, 0~1 밖도 가능)
+    # 보정: 직선 차선 위에서 BEV 의 두 차선이 격자 세로선과 평행해질 때까지 조절
+    src_top_y: 0.5
+    src_top_left_x: 0.25
+    src_top_right_x: 0.75
+    src_bottom_y: 1.0
+    src_bottom_left_x: 0.0
+    src_bottom_right_x: 1.0
+    bev_width: 400           # 출력 크기 [px]
+    bev_height: 400
+    draw_grid: true          # GUI용 압축 영상에만 격자 표시
+    jpeg_quality: 70

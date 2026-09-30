@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ControlMode.msg"
   "msg/PsdArray.msg"
   "msg/DxlState.msg"
+  "msg/WallObstacle.msg"
   DEPENDENCIES std_msgs
 )
 
