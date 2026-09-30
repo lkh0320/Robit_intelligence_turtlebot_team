@@ -7,12 +7,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
-#include <QComboBox>
 #include <QDateTime>
-#include <QDir>
-#include <QFile>
-#include <QFileDialog>
-#include <QFileInfo>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGridLayout>
@@ -26,54 +21,14 @@
 #include <QProgressBar>
 #include <QScreen>
 #include <QPushButton>
-#include <QRegularExpression>
-#include <QScrollArea>
-#include <QSignalBlocker>
-#include <QSlider>
-#include <QSpinBox>
 #include <QSplitter>
-#include <QTextStream>
 #include <QTimer>
 #include <QVBoxLayout>
 
-#include "rclcpp/parameter_map.hpp"
 
 namespace
 {
 constexpr int kStaleMs = 1000;   // 이 시간 이상 수신이 없으면 빨간 램프
-
-// GUI에서 조절할 카메라 파라미터 (표시 순서). 카메라 노드에 없는 이름은 건너뛴다.
-const std::vector<std::pair<std::string, QString>> kCameraParams = {
-  {"brightness", "밝기"},
-  {"contrast", "대비"},
-  {"saturation", "채도"},
-  {"hue", "색조"},
-  {"gamma", "감마"},
-  {"gain", "게인"},
-  {"sharpness", "선명도"},
-  {"backlight_compensation", "역광 보정"},
-  {"auto_exposure", "노출 모드"},
-  {"exposure_time_absolute", "노출 시간"},
-  {"exposure_dynamic_framerate", "노출에 따라 fps 변경"},
-  {"white_balance_automatic", "자동 화이트밸런스"},
-  {"white_balance_temperature", "색온도"},
-  {"power_line_frequency", "전원 주파수"},
-  {"image_raw.compressed.jpeg_quality", "JPEG 품질 (전송량)"},
-};
-
-// "1 - Manual Mode, 3 - Aperture Priority Mode" 같은 메뉴형 설명을 (값, 이름) 목록으로
-std::vector<std::pair<int, QString>> parseMenu(const std::string & constraints)
-{
-  std::vector<std::pair<int, QString>> items;
-  static const QRegularExpression re("^\\s*(-?\\d+)\\s+-\\s+(.+?)\\s*$");
-  for (const auto & part : QString::fromStdString(constraints).split(',')) {
-    const auto m = re.match(part);
-    if (m.hasMatch()) {
-      items.emplace_back(m.captured(1).toInt(), m.captured(2));
-    }
-  }
-  return items;
-}
 
 QString onOff(bool v)
 {
@@ -131,9 +86,6 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   wheel_separation_ = node_->declare_parameter("wheel_separation", 0.160);
   psd_max_range_ = node_->declare_parameter("psd_max_range", 0.80);
 
-  camera_node_ = node_->declare_parameter("camera_node", std::string("v4l2_camera"));
-  cam_params_file_ = QString::fromStdString(node_->declare_parameter(
-    "camera_params_file", QDir::homePath().toStdString() + "/.ros/turtle_gui_camera.yaml"));
   cams_[0].key = "cam_raw";
   cams_[0].topic = QString::fromStdString(
     node_->declare_parameter("image_topic", std::string("image_raw/compressed")));
@@ -152,21 +104,20 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   const QSize avail = QGuiApplication::primaryScreen()->availableGeometry().size();
   resize(QSize(1600, 900).boundedTo(avail));
 
-  // 왼쪽: 카메라 4개 + 카메라 파라미터 (3x2) + 로그 / 오른쪽: 상태 + 조종
-  //   원본      | Bird's Eye View | 선·벡터 검출
-  //   객체 인식 | 카메라 파라미터 (2칸)
+  // 왼쪽: 카메라 4개 (2x2) + 로그 / 오른쪽: 상태 + 조종
+  //   원본         | Bird's Eye View
+  //   선·벡터 검출 | 객체 인식
+  // (카메라 밝기/노출은 GUI 가 아니라 Jetson 에서 v4l2-ctl 로 설정: vision_bringup/camera/README.md)
   auto * left = new QWidget;
   auto * left_layout = new QVBoxLayout(left);
   auto * cam_grid = new QGridLayout;
   cam_grid->addWidget(buildCameraView(cams_[0], "원본"), 0, 0);
   cam_grid->addWidget(buildCameraView(cams_[1], "Bird's Eye View"), 0, 1);
-  cam_grid->addWidget(buildCameraView(cams_[2], "선 · 벡터 검출"), 0, 2);
-  cam_grid->addWidget(buildCameraView(cams_[3], "객체 인식"), 1, 0);
-  cam_grid->addWidget(buildCameraParamPanel(), 1, 1, 1, 2);
-  cam_grid->setRowStretch(0, 1);
-  cam_grid->setRowStretch(1, 1);
-  for (int c = 0; c < 3; ++c) {
-    cam_grid->setColumnStretch(c, 1);
+  cam_grid->addWidget(buildCameraView(cams_[2], "선 · 벡터 검출"), 1, 0);
+  cam_grid->addWidget(buildCameraView(cams_[3], "객체 인식"), 1, 1);
+  for (int i = 0; i < 2; ++i) {
+    cam_grid->setRowStretch(i, 1);
+    cam_grid->setColumnStretch(i, 1);
   }
   log_view_ = new QPlainTextEdit;
   log_view_->setReadOnly(true);
@@ -206,14 +157,6 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   lamp_timer_ = new QTimer(this);
   connect(lamp_timer_, &QTimer::timeout, this, &MainWindow::refreshLamps);
   lamp_timer_->start(1000);
-
-  // 카메라 노드가 뜨면 파라미터를 자동으로 불러오고, 사라지면 패널을 비활성화
-  param_send_timer_ = new QTimer(this);
-  param_send_timer_->setSingleShot(true);
-  connect(param_send_timer_, &QTimer::timeout, this, &MainWindow::flushCameraParams);
-  cam_poll_timer_ = new QTimer(this);
-  connect(cam_poll_timer_, &QTimer::timeout, this, &MainWindow::pollCameraNode);
-  cam_poll_timer_->start(1000);
 
   // 창이 비활성화되면 눌린 키를 모두 뗀 것으로 처리 (키가 눌린 채로 남는 것 방지)
   connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState s) {
@@ -400,7 +343,6 @@ void MainWindow::setupRos()
   for (auto & view : cams_) {
     subscribeCamera(view);
   }
-  cam_client_ = std::make_shared<rclcpp::AsyncParametersClient>(node_, camera_node_);
 
   // --- stm ---
   psd_sub_ = node_->create_subscription<interfaces::msg::PsdArray>(
@@ -595,65 +537,6 @@ QWidget * MainWindow::buildCameraView(CameraView & view, const QString & title)
   return box;
 }
 
-QWidget * MainWindow::buildCameraParamPanel()
-{
-  auto * box = new QGroupBox(QString("카메라 파라미터 (/%1)").arg(QString::fromStdString(camera_node_)));
-  auto * layout = new QVBoxLayout(box);
-  layout->setContentsMargins(4, 4, 4, 4);
-
-  auto * top = new QHBoxLayout;
-  cam_param_status_ = new QLabel("카메라 노드 찾는 중...");
-  auto * reload = new QPushButton("다시 불러오기");
-  reload->setFocusPolicy(Qt::NoFocus);
-  connect(reload, &QPushButton::clicked, this, [this] {
-    cam_loaded_ = false;
-    cam_apply_saved_ = false;   // 카메라의 현재 값을 그대로 보여준다
-    pollCameraNode();
-  });
-  top->addWidget(cam_param_status_, 1);
-  top->addWidget(reload);
-  layout->addLayout(top);
-
-  // 저장 / 파일 적용
-  auto * file_row = new QHBoxLayout;
-  auto * save = new QPushButton("저장");
-  save->setFocusPolicy(Qt::NoFocus);
-  connect(save, &QPushButton::clicked, this, [this] {
-    const QString path = QFileDialog::getSaveFileName(
-      this, "카메라 파라미터 저장", cam_params_file_, "YAML (*.yaml *.yml)");
-    if (!path.isEmpty() && saveCameraParams(path)) {
-      cam_params_file_ = path;
-    }
-  });
-  auto * apply = new QPushButton("파일 적용");
-  apply->setFocusPolicy(Qt::NoFocus);
-  connect(apply, &QPushButton::clicked, this, [this] {
-    const QString path = QFileDialog::getOpenFileName(
-      this, "카메라 파라미터 적용", cam_params_file_, "YAML (*.yaml *.yml)");
-    if (!path.isEmpty() && applyCameraParamsFile(path)) {
-      cam_params_file_ = path;
-    }
-  });
-  cam_auto_apply_ = new QCheckBox("연결 시 저장값 자동 적용");
-  cam_auto_apply_->setChecked(true);
-  cam_auto_apply_->setFocusPolicy(Qt::NoFocus);
-  cam_auto_apply_->setToolTip("카메라 노드가 새로 뜨면 마지막으로 저장/적용한 파일을 적용");
-  file_row->addWidget(save);
-  file_row->addWidget(apply);
-  file_row->addWidget(cam_auto_apply_, 1);
-  layout->addLayout(file_row);
-
-  cam_param_body_ = new QWidget;
-  cam_param_form_ = new QFormLayout(cam_param_body_);
-  cam_param_form_->setContentsMargins(0, 0, 0, 0);
-  auto * scroll = new QScrollArea;
-  scroll->setWidget(cam_param_body_);
-  scroll->setWidgetResizable(true);
-  scroll->setFrameShape(QFrame::NoFrame);
-  layout->addWidget(scroll, 1);
-  return box;
-}
-
 void MainWindow::subscribeCamera(CameraView & view)
 {
   const std::string topic = view.topic.toStdString();
@@ -713,290 +596,4 @@ void MainWindow::onFrame(CameraView & view, const QImage & image)
     .arg(view.fps, 0, 'f', 1).arg(view.topic));
   view.image->setPixmap(QPixmap::fromImage(image).scaled(
       view.image->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-}
-
-void MainWindow::pollCameraNode()
-{
-  const bool ready = cam_client_->service_is_ready();
-  if (!ready) {
-    if (cam_loaded_) {
-      log("카메라 노드 연결 끊김");
-    }
-    cam_loaded_ = false;
-    cam_apply_saved_ = true;   // 다시 뜨면 카메라가 기본값으로 돌아와 있으므로 저장값 적용
-    cam_param_body_->setEnabled(false);
-    cam_param_status_->setText(QString("<span style='color:#d32f2f'>/%1 노드 없음</span>")
-      .arg(QString::fromStdString(camera_node_)));
-    return;
-  }
-  if (!cam_loaded_ && !cam_loading_) {
-    loadCameraParams();
-  }
-}
-
-void MainWindow::loadCameraParams()
-{
-  cam_loading_ = true;
-  cam_param_status_->setText("불러오는 중...");
-
-  // 없는 이름이 섞이면 describe 전체가 실패하므로, 먼저 목록을 받아 있는 것만 추린다
-  cam_client_->list_parameters(
-    {}, rcl_interfaces::srv::ListParameters::Request::DEPTH_RECURSIVE,
-    [this](std::shared_future<rcl_interfaces::msg::ListParametersResult> f) {
-      std::set<std::string> exists;
-      for (const auto & n : f.get().names) {
-        exists.insert(n);
-      }
-      auto names = std::make_shared<std::vector<std::string>>();
-      for (const auto & [name, label] : kCameraParams) {
-        if (exists.count(name)) {
-          names->push_back(name);
-        }
-      }
-      cam_client_->describe_parameters(
-        *names,
-        [this, names](std::shared_future<std::vector<rcl_interfaces::msg::ParameterDescriptor>> fd) {
-          auto descs = fd.get();
-          cam_client_->get_parameters(
-            *names, [this, descs](std::shared_future<std::vector<rclcpp::Parameter>> fv) {
-              buildCameraParamRows(descs, fv.get());
-              cam_loading_ = false;
-            });
-        });
-    });
-}
-
-void MainWindow::buildCameraParamRows(
-  const std::vector<rcl_interfaces::msg::ParameterDescriptor> & descs,
-  const std::vector<rclcpp::Parameter> & values)
-{
-  while (cam_param_form_->rowCount() > 0) {
-    cam_param_form_->removeRow(0);
-  }
-  cam_params_.clear();
-  pending_params_.clear();
-
-  std::map<std::string, QString> labels(kCameraParams.begin(), kCameraParams.end());
-
-  for (size_t i = 0; i < descs.size() && i < values.size(); ++i) {
-    const auto & d = descs[i];
-    const auto & p = values[i];
-    const std::string name = p.get_name();
-    CamParamWidget w;
-    QWidget * field = nullptr;
-
-    if (p.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
-      w.check = new QCheckBox;
-      w.check->setChecked(p.as_bool());
-      connect(w.check, &QCheckBox::toggled, this, [this, name](bool on) {
-        queueCameraParam(rclcpp::Parameter(name, on));
-      });
-      field = w.check;
-    } else if (p.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
-      const int value = static_cast<int>(p.as_int());
-      const auto menu = parseMenu(d.additional_constraints);
-      if (!menu.empty()) {
-        // 메뉴형 (예: auto_exposure 1=수동, 3=자동)
-        w.combo = new QComboBox;
-        for (const auto & [v, text] : menu) {
-          w.combo->addItem(QString("%1 - %2").arg(v).arg(text), v);
-        }
-        w.combo->setCurrentIndex(std::max(0, w.combo->findData(value)));
-        connect(w.combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-          [this, name, combo = w.combo](int) {
-            queueCameraParam(rclcpp::Parameter(name, combo->currentData().toInt()));
-          });
-        field = w.combo;
-      } else {
-        int lo = -100000, hi = 100000, step = 1;
-        const bool ranged = !d.integer_range.empty();
-        if (ranged) {
-          lo = static_cast<int>(d.integer_range[0].from_value);
-          hi = static_cast<int>(d.integer_range[0].to_value);
-          step = std::max(1, static_cast<int>(d.integer_range[0].step));
-        } else if (name.find("jpeg_quality") != std::string::npos) {
-          lo = 1;
-          hi = 100;
-        }
-        w.spin = new QSpinBox;
-        w.spin->setRange(lo, hi);
-        w.spin->setSingleStep(step);
-        w.spin->setValue(value);
-        w.spin->setKeyboardTracking(false);
-        auto * row = new QWidget;
-        auto * h = new QHBoxLayout(row);
-        h->setContentsMargins(0, 0, 0, 0);
-        if (ranged || name.find("jpeg_quality") != std::string::npos) {
-          w.slider = new QSlider(Qt::Horizontal);
-          w.slider->setRange(lo, hi);
-          w.slider->setSingleStep(step);
-          w.slider->setValue(value);
-          w.slider->setFocusPolicy(Qt::NoFocus);
-          connect(w.slider, &QSlider::valueChanged, w.spin, &QSpinBox::setValue);
-          h->addWidget(w.slider, 1);
-        }
-        h->addWidget(w.spin);
-        connect(w.spin, QOverload<int>::of(&QSpinBox::valueChanged), this,
-          [this, name, slider = w.slider](int v) {
-            if (slider) {
-              QSignalBlocker block(slider);
-              slider->setValue(v);
-            }
-            queueCameraParam(rclcpp::Parameter(name, v));
-          });
-        field = row;
-      }
-    } else {
-      continue;
-    }
-
-    field->setEnabled(!d.read_only);
-    const QString label = labels.count(name) ? labels[name] : QString::fromStdString(name);
-    auto * label_widget = new QLabel(label);
-    label_widget->setToolTip(QString::fromStdString(name + "\n" + d.description));
-    cam_param_form_->addRow(label_widget, field);
-    cam_params_[name] = w;
-  }
-
-  cam_loaded_ = true;
-  cam_param_body_->setEnabled(true);
-  cam_param_status_->setText(QString("<span style='color:#2e7d32'>연결됨</span>  %1개")
-    .arg(cam_params_.size()));
-  log(QString("카메라 파라미터 %1개 불러옴").arg(cam_params_.size()));
-
-  if (cam_apply_saved_ && cam_auto_apply_->isChecked() && QFileInfo::exists(cam_params_file_)) {
-    applyCameraParamsFile(cam_params_file_);
-  }
-  cam_apply_saved_ = false;
-}
-
-void MainWindow::queueCameraParam(const rclcpp::Parameter & param)
-{
-  // 슬라이더를 끄는 동안 요청이 쏟아지지 않도록 모아서 보낸다
-  pending_params_.insert_or_assign(param.get_name(), param);
-  param_send_timer_->start(150);
-}
-
-void MainWindow::flushCameraParams()
-{
-  if (pending_params_.empty() || !cam_client_->service_is_ready()) {
-    return;
-  }
-  std::vector<rclcpp::Parameter> params;
-  for (const auto & [name, p] : pending_params_) {
-    params.push_back(p);
-  }
-  pending_params_.clear();
-
-  cam_client_->set_parameters(
-    params, [this, params](std::shared_future<std::vector<rcl_interfaces::msg::SetParametersResult>> f) {
-      const auto results = f.get();
-      for (size_t i = 0; i < results.size() && i < params.size(); ++i) {
-        const QString name = QString::fromStdString(params[i].get_name());
-        const QString value = QString::fromStdString(params[i].value_to_string());
-        if (results[i].successful) {
-          log(QString("카메라 %1 = %2").arg(name, value));
-        } else {
-          log(QString("카메라 %1 = %2 실패: %3").arg(name, value)
-            .arg(QString::fromStdString(results[i].reason)));
-        }
-      }
-    });
-}
-
-rclcpp::Parameter MainWindow::cameraParamValue(
-  const std::string & name, const CamParamWidget & w) const
-{
-  if (w.check) {
-    return rclcpp::Parameter(name, w.check->isChecked());
-  }
-  if (w.combo) {
-    return rclcpp::Parameter(name, w.combo->currentData().toInt());
-  }
-  return rclcpp::Parameter(name, w.spin->value());
-}
-
-void MainWindow::setCameraParamWidget(const CamParamWidget & w, const rclcpp::Parameter & param)
-{
-  // 위젯만 갱신 (값 변경 시그널로 다시 전송되지 않도록 막는다)
-  if (w.check && param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
-    QSignalBlocker b(w.check);
-    w.check->setChecked(param.as_bool());
-  } else if (param.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
-    const int v = static_cast<int>(param.as_int());
-    if (w.combo) {
-      QSignalBlocker b(w.combo);
-      w.combo->setCurrentIndex(std::max(0, w.combo->findData(v)));
-    }
-    if (w.spin) {
-      QSignalBlocker b(w.spin);
-      w.spin->setValue(v);
-    }
-    if (w.slider) {
-      QSignalBlocker b(w.slider);
-      w.slider->setValue(v);
-    }
-  }
-}
-
-bool MainWindow::saveCameraParams(const QString & path)
-{
-  if (cam_params_.empty()) {
-    log("저장 실패: 카메라 파라미터를 아직 불러오지 않음");
-    return false;
-  }
-  QDir().mkpath(QFileInfo(path).absolutePath());
-  QFile file(path);
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
-    log(QString("저장 실패: %1 (%2)").arg(path, file.errorString()));
-    return false;
-  }
-  // 카메라 노드를 켤 때 --params-file 로도 그대로 쓸 수 있는 형식
-  QTextStream out(&file);
-  out << "# turtle_gui 카메라 파라미터 (" << QDateTime::currentDateTime().toString(Qt::ISODate)
-      << ")\n";
-  out << "# ros2 run v4l2_camera v4l2_camera_node --ros-args --params-file <이 파일>\n";
-  out << "/" << QString::fromStdString(camera_node_) << ":\n";
-  out << "  ros__parameters:\n";
-  for (const auto & [name, label] : kCameraParams) {
-    const auto it = cam_params_.find(name);
-    if (it != cam_params_.end()) {
-      out << "    " << QString::fromStdString(name) << ": "
-          << QString::fromStdString(cameraParamValue(name, it->second).value_to_string()) << "\n";
-    }
-  }
-  file.close();
-  log(QString("카메라 파라미터 저장: %1").arg(path));
-  return true;
-}
-
-bool MainWindow::applyCameraParamsFile(const QString & path)
-{
-  if (cam_params_.empty()) {
-    log("적용 실패: 카메라 노드에 연결되지 않음");
-    return false;
-  }
-  rclcpp::ParameterMap map;
-  const std::string fqn = "/" + camera_node_;
-  try {
-    map = rclcpp::parameter_map_from_yaml_file(path.toStdString(), fqn.c_str());
-  } catch (const std::exception & e) {
-    log(QString("적용 실패: %1 (%2)").arg(path, e.what()));
-    return false;
-  }
-  int count = 0;
-  for (const auto & [node, params] : map) {
-    for (const auto & p : params) {
-      const auto it = cam_params_.find(p.get_name());
-      if (it == cam_params_.end()) {
-        continue;
-      }
-      setCameraParamWidget(it->second, p);
-      queueCameraParam(p);
-      ++count;
-    }
-  }
-  flushCameraParams();
-  log(QString("카메라 파라미터 %1개 적용: %2").arg(count).arg(path));
-  return count > 0;
 }
