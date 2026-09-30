@@ -1,5 +1,5 @@
 // 노트북용 모니터링/조종 GUI
-//   수신: 카메라 3종(원본 / 선·벡터 검출 / 객체 인식), psd, dxl_state, cmd_vel, control_mode, 비전 인식 결과 6종
+//   수신: 카메라 4종(원본 / Bird's Eye View / 선·벡터 검출 / 객체 인식), psd, dxl_state, cmd_vel, control_mode, 비전 인식 결과 6종
 //   송신: cmd_vel (수동 주행), control_mode (모드 강제 변경)
 //   카메라 노드(v4l2_camera) 파라미터를 원격으로 읽고 바꾼다 (밝기, 노출 등)
 //   조절한 값은 ROS 파라미터 YAML로 저장/적용 (카메라 노드 --params-file 로도 사용 가능)
@@ -119,7 +119,7 @@ private:
   double psd_max_range_;
 
   // --- 위젯 ---
-  std::array<CameraView, 3> cams_;
+  std::array<CameraView, 4> cams_;
   QProgressBar * psd_bar_[3];
   QLabel * psd_text_[3];
   QLabel * dxl_label_;

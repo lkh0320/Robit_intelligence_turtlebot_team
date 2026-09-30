@@ -137,11 +137,14 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   cams_[0].key = "cam_raw";
   cams_[0].topic = QString::fromStdString(
     node_->declare_parameter("image_topic", std::string("image_raw/compressed")));
-  cams_[1].key = "cam_lane";
+  cams_[1].key = "cam_bev";
   cams_[1].topic = QString::fromStdString(
-    node_->declare_parameter("lane_image_topic", std::string("vision/lane_debug/compressed")));
-  cams_[2].key = "cam_object";
+    node_->declare_parameter("bev_image_topic", std::string("image_bev/compressed")));
+  cams_[2].key = "cam_lane";
   cams_[2].topic = QString::fromStdString(
+    node_->declare_parameter("lane_image_topic", std::string("vision/lane_debug/compressed")));
+  cams_[3].key = "cam_object";
+  cams_[3].topic = QString::fromStdString(
     node_->declare_parameter("object_image_topic", std::string("vision/object_debug/compressed")));
 
   setWindowTitle("TurtleBot Test GUI");
@@ -149,18 +152,22 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   const QSize avail = QGuiApplication::primaryScreen()->availableGeometry().size();
   resize(QSize(1600, 900).boundedTo(avail));
 
-  // 왼쪽: 카메라 3개 + 카메라 파라미터 (2x2) + 로그 / 오른쪽: 상태 + 조종
+  // 왼쪽: 카메라 4개 + 카메라 파라미터 (3x2) + 로그 / 오른쪽: 상태 + 조종
+  //   원본      | Bird's Eye View | 선·벡터 검출
+  //   객체 인식 | 카메라 파라미터 (2칸)
   auto * left = new QWidget;
   auto * left_layout = new QVBoxLayout(left);
   auto * cam_grid = new QGridLayout;
   cam_grid->addWidget(buildCameraView(cams_[0], "원본"), 0, 0);
-  cam_grid->addWidget(buildCameraView(cams_[1], "선 · 벡터 검출"), 0, 1);
-  cam_grid->addWidget(buildCameraView(cams_[2], "객체 인식"), 1, 0);
-  cam_grid->addWidget(buildCameraParamPanel(), 1, 1);
+  cam_grid->addWidget(buildCameraView(cams_[1], "Bird's Eye View"), 0, 1);
+  cam_grid->addWidget(buildCameraView(cams_[2], "선 · 벡터 검출"), 0, 2);
+  cam_grid->addWidget(buildCameraView(cams_[3], "객체 인식"), 1, 0);
+  cam_grid->addWidget(buildCameraParamPanel(), 1, 1, 1, 2);
   cam_grid->setRowStretch(0, 1);
   cam_grid->setRowStretch(1, 1);
-  cam_grid->setColumnStretch(0, 1);
-  cam_grid->setColumnStretch(1, 1);
+  for (int c = 0; c < 3; ++c) {
+    cam_grid->setColumnStretch(c, 1);
+  }
   log_view_ = new QPlainTextEdit;
   log_view_->setReadOnly(true);
   log_view_->setMaximumBlockCount(500);
@@ -230,6 +237,7 @@ QWidget * MainWindow::buildStatusPanel()
   auto * grid = new QGridLayout(topic_box);
   int row = 0;
   addTopicRow(grid, row++, "cam_raw", "카메라 원본");
+  addTopicRow(grid, row++, "cam_bev", "BEV 화면");
   addTopicRow(grid, row++, "cam_lane", "선 검출 화면");
   addTopicRow(grid, row++, "cam_object", "객체 인식 화면");
   addTopicRow(grid, row++, "psd", "psd");
