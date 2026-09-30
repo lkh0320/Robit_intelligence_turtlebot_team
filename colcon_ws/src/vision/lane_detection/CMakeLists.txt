@@ -8,12 +8,13 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)   # third_party/vision_opencv 에서 OpenCV 4.8 로 빌드한 것
 find_package(interfaces REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
 add_executable(lane_detection_node src/lane_detection_node.cpp)
 target_link_libraries(lane_detection_node ${OpenCV_LIBS})
-ament_target_dependencies(lane_detection_node rclcpp sensor_msgs interfaces)
+ament_target_dependencies(lane_detection_node rclcpp sensor_msgs cv_bridge interfaces)
 
 install(TARGETS lane_detection_node
   DESTINATION lib/${PROJECT_NAME})

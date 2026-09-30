@@ -8,6 +8,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)   # third_party/vision_opencv 에서 OpenCV 4.8 로 빌드한 것
 find_package(interfaces REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
@@ -15,7 +16,7 @@ find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 foreach(node barrier_detection_node wall_detection_node)
   add_executable(${node} src/${node}.cpp)
   target_link_libraries(${node} ${OpenCV_LIBS})
-  ament_target_dependencies(${node} rclcpp sensor_msgs interfaces)
+  ament_target_dependencies(${node} rclcpp sensor_msgs cv_bridge interfaces)
 endforeach()
 
 install(TARGETS barrier_detection_node wall_detection_node
