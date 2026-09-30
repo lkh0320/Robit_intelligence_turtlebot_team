@@ -1,0 +1,9 @@
+stm_bridge:
+  ros__parameters:
+    port: /dev/ttyUSB0
+    baud: 115200
+    wheel_separation: 0.160   # [m] TurtleBot3 Burger 기준, 실측 후 수정
+    max_wheel_speed: 0.26     # [m/s] 바퀴 선속도 상한
+    cmd_timeout: 0.5          # [s] cmd_vel이 끊기면 정지
+    tx_rate: 20.0             # [Hz] WHEEL_CMD 송신 주기
+    psd_frame_id: base_link
