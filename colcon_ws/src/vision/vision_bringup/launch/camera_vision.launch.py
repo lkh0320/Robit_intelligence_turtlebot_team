@@ -4,6 +4,7 @@
 #   video_device:=/dev/video1                        카메라 장치 변경
 #   camera_params:=~/.ros/turtle_gui_camera.yaml     GUI에서 저장한 카메라 설정 적용
 #   lane:=false sign:=false obstacle:=false          원하는 노드만 끄기
+#   lane_mode:=bev / both                            선 검출 입력 (원근 / BEV / 둘 다 비교)
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -15,9 +16,10 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-def include(package, condition=None):
+def include(package, condition=None, launch_arguments=None):
     path = os.path.join(get_package_share_directory(package), 'launch', f'{package}.launch.py')
-    return IncludeLaunchDescription(PythonLaunchDescriptionSource(path), condition=condition)
+    return IncludeLaunchDescription(PythonLaunchDescriptionSource(path), condition=condition,
+                                    launch_arguments=(launch_arguments or {}).items())
 
 
 def camera(context):
@@ -44,12 +46,15 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_params', default_value='~/.ros/turtle_gui_camera.yaml',
                               description='카메라 파라미터 YAML (없으면 무시)'),
         DeclareLaunchArgument('lane', default_value='true'),
+        DeclareLaunchArgument('lane_mode', default_value='perspective',
+                              description='선 검출 입력: perspective / bev / both'),
         DeclareLaunchArgument('sign', default_value='true'),
         DeclareLaunchArgument('obstacle', default_value='true'),
 
         OpaqueFunction(function=camera),
         include('bird_eye_view'),
-        include('lane_detection', IfCondition(LaunchConfiguration('lane'))),
+        include('lane_detection', IfCondition(LaunchConfiguration('lane')),
+                {'mode': LaunchConfiguration('lane_mode')}),
         include('sign_detection', IfCondition(LaunchConfiguration('sign'))),
         include('obstacle_detection', IfCondition(LaunchConfiguration('obstacle'))),
     ])

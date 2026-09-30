@@ -1,4 +1,6 @@
-lane_detection:
+# 원근 영상 노드(lane_detection)와 BEV 노드(lane_detection_bev)가 같이 쓴다.
+# BEV 노드는 launch 에서 bev: true, image_topic: image_bev 로 덮어쓴다.
+/**:
   ros__parameters:
     image_topic: image_raw
     # (2) 색 범위 (OpenCV HSV: H 0~180)
@@ -12,7 +14,7 @@ lane_detection:
     blur_kernel: 5            # Gaussian 커널 크기 (홀수)
     canny_low: 50
     canny_high: 150
-    # (5) ROI 사다리꼴 (이미지 크기 비율). 아랫변은 화면 맨 아래 전체 폭
+    # (5) ROI 사다리꼴 (이미지 크기 비율). 아랫변은 화면 맨 아래 전체 폭 (bev 에서는 무시, 전체 화면)
     roi_top_y: 0.55
     roi_top_left_x: 0.2
     roi_top_right_x: 0.8
@@ -23,6 +25,9 @@ lane_detection:
     # (7) |기울기(dy/dx)| 가 이보다 작은 (수평에 가까운) 선은 버림
     min_slope: 0.3
     outlier_dist: 25.0        # 1차 회귀 직선에서 이 거리[px] 넘는 선분은 제외 후 재회귀
+    bev_min_angle: 45.0       # (bev) 수평에서 이 각도[deg] 이상인 선만 차선 후보
+    bev_peak_margin: 25       # (bev) 흰/노란 픽셀 열 히스토그램 최고점에서 이 거리[px] 안의 선분만 차선
+    bev_center_x: 0.521       # (bev) BEV 화면에서 로봇(카메라 중심)의 가로 위치 (bird_eye_view 보정값에서 계산)
     hold_frames: 5            # 한쪽 차선을 놓쳐도 직전 값을 유지할 프레임 수
     # (8) 소실점이 화면 중앙에서 이 비율 이상 벗어나면 Left / Right
     turn_threshold: 0.05
