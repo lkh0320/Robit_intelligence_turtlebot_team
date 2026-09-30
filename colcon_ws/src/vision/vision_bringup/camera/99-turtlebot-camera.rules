@@ -1,0 +1,4 @@
+# USB Live camera (0c45:636b)
+#   /dev/turtlebot_camera 로 고정 이름을 만들고, 꽂을 때 / 부팅할 때 저장된 설정 적용
+#   (영상 장치는 video0/video1 두 개가 생기는데 index 0 이 실제 영상)
+ACTION=="add", SUBSYSTEM=="video4linux", ATTRS{idVendor}=="0c45", ATTRS{idProduct}=="636b", ATTR{index}=="0", SYMLINK+="turtlebot_camera", RUN+="/usr/local/bin/turtlebot-camera-apply /dev/%k"

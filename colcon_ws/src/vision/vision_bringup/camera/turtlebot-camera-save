@@ -1,0 +1,11 @@
+#!/bin/sh
+# 지금 카메라에 설정된 값을 /etc/turtlebot-camera.conf 에 저장 (다음부터 꽂을 때마다 적용)
+#   v4l2-ctl 로 값을 맞춘 뒤 실행: turtlebot-camera-save [/dev/videoN]
+DEV="${1:-/dev/turtlebot_camera}"
+CONTROLS="auto_exposure,exposure_time_absolute,exposure_dynamic_framerate,white_balance_automatic,white_balance_temperature,brightness,contrast,saturation,hue,gamma,gain,sharpness,backlight_compensation,power_line_frequency"
+VALUES=$(v4l2-ctl -d "$DEV" --get-ctrl "$CONTROLS") || exit 1
+{
+  echo "# turtlebot 카메라 설정 ($(date '+%F %T') 저장, $DEV)"
+  echo "# 형식: 항목=값  (v4l2-ctl -d $DEV --list-ctrls 로 범위 확인)"
+  echo "$VALUES" | sed 's/: /=/; s/ (.*//'
+} | sudo tee /etc/turtlebot-camera.conf
