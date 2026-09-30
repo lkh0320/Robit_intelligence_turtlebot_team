@@ -1,8 +1,0 @@
-vision_node:
-  ros__parameters:
-    mode: "line"                  # line / color / none
-    publish_debug_image: true
-    blur_ksize: 5
-    hsv_low: [0, 0, 0]
-    hsv_high: [180, 255, 80]
-    min_area: 300

@@ -1,5 +1,0 @@
-# 모든 노드 공용 로봇 치수 (실측 후 수정)
-/**:
-  ros__parameters:
-    wheel_radius_m: 0.033   # TODO 실측
-    wheel_base_m: 0.160     # 좌우 바퀴 중심 간 거리, TODO 실측

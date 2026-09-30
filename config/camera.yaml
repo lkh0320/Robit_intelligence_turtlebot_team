@@ -1,7 +1,0 @@
-camera_node:
-  ros__parameters:
-    device: "/dev/video0"   # 시작 시에만 적용
-    width: 640
-    height: 480
-    fps: 30
-    jpeg_quality: 70        # GUI로 보내는 압축 영상 품질

@@ -1,8 +1,0 @@
-stm32_bridge_node:
-  ros__parameters:
-    port: "/dev/stm32"            # 시작 시에만 적용 (udev 규칙: jetson/README.md)
-    baudrate: 115200              # 시작 시에만 적용
-    # 아래 값은 바뀌면 SET_PARAM 패킷으로 STM32에 전달
-    wheel_kp: 1.0
-    wheel_ki: 0.0
-    wheel_kd: 0.0
