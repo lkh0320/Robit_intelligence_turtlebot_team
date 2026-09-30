@@ -17,7 +17,7 @@ ament_target_dependencies(sign_detection_node rclcpp sensor_msgs interfaces)
 
 install(TARGETS sign_detection_node
   DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY config launch
+install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()

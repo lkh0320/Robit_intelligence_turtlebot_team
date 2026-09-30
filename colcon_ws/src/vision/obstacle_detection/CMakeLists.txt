@@ -20,7 +20,7 @@ endforeach()
 
 install(TARGETS barrier_detection_node wall_detection_node
   DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY config launch
+install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()
