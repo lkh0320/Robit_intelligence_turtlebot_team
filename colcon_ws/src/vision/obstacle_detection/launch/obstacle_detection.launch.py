@@ -11,8 +11,15 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='obstacle_detection',
-            executable='obstacle_detection_node',
-            name='obstacle_detection',
+            executable='barrier_detection_node',
+            name='barrier_detection',
+            parameters=[config],
+            output='screen',
+        ),
+        Node(
+            package='obstacle_detection',
+            executable='wall_detection_node',
+            name='wall_detection',
             parameters=[config],
             output='screen',
         ),

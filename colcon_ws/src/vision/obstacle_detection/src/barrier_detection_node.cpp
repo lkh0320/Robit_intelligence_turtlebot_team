@@ -1,6 +1,6 @@
-// 장애물 인식 (차단바)
+// 장애물 인식: 차단바
 //   구독: image_raw (sensor_msgs/Image)
-//   발행: barrier (Barrier), vision/obstacle_debug/compressed (검출 결과를 그린 화면, 구독자가 있을 때만)
+//   발행: barrier (Barrier), vision/barrier_debug/compressed (검출 결과를 그린 화면, 구독자가 있을 때만)
 // 처리: HSV 빨간색 마스크 -> 길쭉한 빨간 조각(차단바 줄무늬)이 min_segments 개 이상이면 검출
 //       조각 중심들을 이은 직선이 수평에 가까우면 CLOSED(내려옴), 아니면 OPEN(올라감)
 #include <algorithm>
@@ -46,11 +46,11 @@ bool toBgr(const sensor_msgs::msg::Image & msg, cv::Mat & out)
 }
 }  // namespace
 
-class ObstacleDetectionNode : public rclcpp::Node
+class BarrierDetectionNode : public rclcpp::Node
 {
 public:
-  ObstacleDetectionNode()
-  : Node("obstacle_detection")
+  BarrierDetectionNode()
+  : Node("barrier_detection")
   {
     const auto image_topic = declare_parameter("image_topic", std::string("image_raw"));
     // 빨간색은 H 가 0 근처와 180 근처로 나뉜다 (OpenCV HSV: H 0~180)
@@ -69,9 +69,9 @@ public:
       image_topic, qos, [this](sensor_msgs::msg::Image::ConstSharedPtr msg) {onImage(msg);});
     barrier_pub_ = create_publisher<interfaces::msg::Barrier>("barrier", qos);
     debug_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
-      "vision/obstacle_debug/compressed", qos);
+      "vision/barrier_debug/compressed", qos);
 
-    RCLCPP_INFO(get_logger(), "obstacle_detection 시작 (구독: %s)", image_topic.c_str());
+    RCLCPP_INFO(get_logger(), "barrier_detection 시작 (구독: %s)", image_topic.c_str());
   }
 
 private:
@@ -185,7 +185,7 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ObstacleDetectionNode>());
+  rclcpp::spin(std::make_shared<BarrierDetectionNode>());
   rclcpp::shutdown();
   return 0;
 }

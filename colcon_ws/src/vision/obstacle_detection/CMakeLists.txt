@@ -11,11 +11,14 @@ find_package(sensor_msgs REQUIRED)
 find_package(interfaces REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
-add_executable(obstacle_detection_node src/obstacle_detection_node.cpp)
-target_link_libraries(obstacle_detection_node ${OpenCV_LIBS})
-ament_target_dependencies(obstacle_detection_node rclcpp sensor_msgs interfaces)
+# 차단바, 벽(지그재그 구간) 은 따로 켜고 끌 수 있게 노드를 나눈다
+foreach(node barrier_detection_node wall_detection_node)
+  add_executable(${node} src/${node}.cpp)
+  target_link_libraries(${node} ${OpenCV_LIBS})
+  ament_target_dependencies(${node} rclcpp sensor_msgs interfaces)
+endforeach()
 
-install(TARGETS obstacle_detection_node
+install(TARGETS barrier_detection_node wall_detection_node
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})

@@ -3,7 +3,7 @@
 <package format="3">
   <name>obstacle_detection</name>
   <version>0.0.0</version>
-  <description>장애물 인식: 빨간 차단바 검출 -> barrier</description>
+  <description>장애물 인식: 빨간 차단바(barrier), 갈색 벽 지그재그 구간(wall_obstacle)</description>
   <maintainer email="nano2@todo.todo">nano2</maintainer>
   <license>TODO: License declaration</license>
 
