@@ -26,12 +26,12 @@ public:
   {
     const auto image_topic = declare_parameter("image_topic", std::string("image_raw"));
     // 원본에서 펼 사다리꼴 네 점 (이미지 폭/높이 비율, 0~1 밖도 가능)
-    declare_parameter("src_top_y", 0.58);
-    declare_parameter("src_top_left_x", 0.22);
-    declare_parameter("src_top_right_x", 0.753);
+    declare_parameter("src_top_y", 0.56);
+    declare_parameter("src_top_left_x", 0.217);
+    declare_parameter("src_top_right_x", 0.733);
     declare_parameter("src_bottom_y", 1.0);
-    declare_parameter("src_bottom_left_x", -0.148);
-    declare_parameter("src_bottom_right_x", 1.095);
+    declare_parameter("src_bottom_left_x", -0.134);
+    declare_parameter("src_bottom_right_x", 1.109);
     declare_parameter("bev_width", 400);        // 출력 크기 [px]
     declare_parameter("bev_height", 400);
     declare_parameter("draw_grid", true);       // GUI용 압축 영상에만 격자 표시

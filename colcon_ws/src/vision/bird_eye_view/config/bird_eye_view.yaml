@@ -3,14 +3,14 @@ bird_eye_view:
     image_topic: image_raw
     # 원본에서 펼 사다리꼴 네 점 (이미지 폭/높이 비율, 0~1 밖도 가능)
     # 보정: 직선 차선 위에서 BEV 의 두 차선이 격자 세로선과 평행해질 때까지 조절
-    # 2026-10-01 실측: 640x480 에서 노란/흰 차선을 직선으로 맞춰 계산 (차선이 BEV 폭의 1/6, 5/6 위치)
+    # 2026-10-01 카메라 높이/각도 변경 후 재실측: 640x480 에서 노란/흰 차선을 직선으로 맞춰 계산 (차선이 BEV 폭의 1/6, 5/6 위치)
     # 아랫변이 화면보다 넓어(0~1 밖) BEV 아래 양 모서리는 검게 나온다
-    src_top_y: 0.58
-    src_top_left_x: 0.22
-    src_top_right_x: 0.753
+    src_top_y: 0.56
+    src_top_left_x: 0.217
+    src_top_right_x: 0.733
     src_bottom_y: 1.0
-    src_bottom_left_x: -0.148
-    src_bottom_right_x: 1.095
+    src_bottom_left_x: -0.134
+    src_bottom_right_x: 1.109
     bev_width: 400           # 출력 크기 [px]
     bev_height: 400
     draw_grid: true          # GUI용 압축 영상에만 격자 표시
