@@ -2,9 +2,9 @@
 # 저장된 카메라 설정(/etc/turtlebot-camera.conf)을 카메라에 적용
 #   udev 가 카메라를 꽂을 때 / 부팅할 때 자동으로 실행한다. 수동 실행도 가능:
 #   turtlebot-camera-apply [/dev/videoN]
-DEV="${1:-/dev/turtlebot_camera}"
-CONF="${TURTLEBOT_CAMERA_CONF:-/etc/turtlebot-camera.conf}"
-[ -r "$CONF" ] || exit 0
+DEV="${1:-/dev/turtlebot_camera}"                         # 인자가 없으면 udev 가 만든 고정 이름
+CONF="${TURTLEBOT_CAMERA_CONF:-/etc/turtlebot-camera.conf}"   # 환경변수로 다른 파일 지정 가능
+[ -r "$CONF" ] || exit 0                                    # 설정 파일이 없으면 아무것도 안 함
 
 # 자동 모드 항목을 먼저 적용해야 수동 값(노출 시간, 색온도)이 거부되지 않는다.
 # 자동 모드에서 쓸 수 없는 항목은 거부되므로 한 항목씩 적용한다 (한 번에 넣으면 전체가 실패).
@@ -12,6 +12,7 @@ CONF="${TURTLEBOT_CAMERA_CONF:-/etc/turtlebot-camera.conf}"
   grep -E '^(auto_exposure|white_balance_automatic)=-?[0-9]+$' "$CONF"
   grep -E '^[a-z_]+=-?[0-9]+$' "$CONF" | grep -vE '^(auto_exposure|white_balance_automatic)='
 } | while read -r ctrl; do
+  # 실패한 항목은 시스템 로그에만 남기고 계속 진행 (journalctl -t turtlebot-camera 로 확인)
   v4l2-ctl -d "$DEV" -c "$ctrl" >/dev/null 2>&1 || logger -t turtlebot-camera "skip $ctrl"
 done
 logger -t turtlebot-camera "applied $CONF to $DEV"

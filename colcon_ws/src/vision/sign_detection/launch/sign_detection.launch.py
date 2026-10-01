@@ -1,3 +1,4 @@
+# 표지판 인식 노드 실행
 from launch import LaunchDescription
 from launch_ros.actions import Node
 

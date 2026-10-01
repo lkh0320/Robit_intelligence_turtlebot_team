@@ -1,3 +1,4 @@
+// MainWindow 구현: 화면 구성, ROS 구독/발행, 키보드 수동 주행
 #include "turtle_gui/main_window.hpp"
 
 #include <algorithm>
@@ -30,6 +31,7 @@ namespace
 {
 constexpr int kStaleMs = 1000;   // 이 시간 이상 수신이 없으면 빨간 램프
 
+// 아래 함수들은 메시지 값을 라벨에 보여줄 글자(HTML 색 포함)로 바꾼다
 QString onOff(bool v)
 {
   return v ? "<b style='color:#2e7d32'>검출</b>" : "<span style='color:gray'>없음</span>";
@@ -83,9 +85,11 @@ QString modeName(uint8_t m)
 MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
 : QMainWindow(parent), node_(std::move(node))
 {
+  // 파라미터 (ros2 run turtle_gui turtle_gui --ros-args -p image_topic:=... 로 바꿀 수 있다)
   wheel_separation_ = node_->declare_parameter("wheel_separation", 0.160);
   psd_max_range_ = node_->declare_parameter("psd_max_range", 0.80);
 
+  // 카메라 화면 4개가 볼 토픽
   cams_[0].key = "cam_raw";
   cams_[0].topic = QString::fromStdString(
     node_->declare_parameter("image_topic", std::string("image_raw/compressed")));
@@ -119,6 +123,7 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
     cam_grid->setRowStretch(i, 1);
     cam_grid->setColumnStretch(i, 1);
   }
+  // 아래쪽 로그창 (최대 500줄, 오래된 줄부터 지워짐)
   log_view_ = new QPlainTextEdit;
   log_view_->setReadOnly(true);
   log_view_->setMaximumBlockCount(500);
@@ -131,6 +136,7 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   right_layout->addWidget(buildStatusPanel(), 1);
   right_layout->addWidget(buildControlPanel());
 
+  // 좌우 경계를 마우스로 끌어 크기 조절 가능. 처음 비율은 5 : 2
   auto * splitter = new QSplitter;
   splitter->addWidget(left);
   splitter->addWidget(right);
@@ -140,6 +146,7 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
 
   setupRos();
 
+  // 5ms 마다 쌓인 ROS 메시지 콜백을 처리. Ctrl+C 등으로 ROS 가 종료되면 창도 닫는다
   spin_timer_ = new QTimer(this);
   connect(spin_timer_, &QTimer::timeout, this, [this] {
     if (rclcpp::ok()) {
@@ -164,7 +171,7 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
       pressed_keys_.clear();
     }
   });
-  qApp->installEventFilter(this);
+  qApp->installEventFilter(this);   // 모든 키 입력이 먼저 eventFilter() 를 거치게 한다
 
   log("turtle_gui 시작");
 }
@@ -179,6 +186,7 @@ QWidget * MainWindow::buildStatusPanel()
   auto * topic_box = new QGroupBox("토픽 수신 상태");
   auto * grid = new QGridLayout(topic_box);
   int row = 0;
+  // 왼쪽 열: 카메라/하드웨어, 오른쪽 열: 비전 인식 결과
   addTopicRow(grid, row++, "cam_raw", "카메라 원본");
   addTopicRow(grid, row++, "cam_bev", "BEV 화면");
   addTopicRow(grid, row++, "cam_lane", "선 검출 화면");
@@ -204,7 +212,7 @@ QWidget * MainWindow::buildStatusPanel()
   const char * names[3] = {"왼쪽", "앞", "오른쪽"};
   for (int i = 0; i < 3; ++i) {
     psd_bar_[i] = new QProgressBar;
-    psd_bar_[i]->setRange(0, static_cast<int>(psd_max_range_ * 1000));
+    psd_bar_[i]->setRange(0, static_cast<int>(psd_max_range_ * 1000));   // 정수만 받으므로 mm 단위
     psd_bar_[i]->setTextVisible(false);
     psd_text_[i] = new QLabel("-");
     psd_text_[i]->setMinimumWidth(60);
@@ -246,6 +254,7 @@ QWidget * MainWindow::buildStatusPanel()
   return panel;
 }
 
+// 토픽 이름 + 램프 한 줄을 추가하고, 램프를 key 로 stats_ 에 등록
 void MainWindow::addTopicRow(QGridLayout * grid, int row, const QString & key, const QString & topic)
 {
   auto * lamp = new QLabel("●  -");
@@ -261,13 +270,13 @@ QWidget * MainWindow::buildControlPanel()
   auto * box = new QGroupBox("조종 (송신)");
   auto * layout = new QVBoxLayout(box);
 
-  // 모드 강제 변경
+  // 모드 강제 변경 (버튼을 누르면 control_mode 를 한 번 발행)
   auto * mode_row = new QHBoxLayout;
   mode_row->addWidget(new QLabel("control_mode:"));
   using M = interfaces::msg::ControlMode;
   for (uint8_t m : {M::STOP, M::LANE, M::AVOID, M::PARKING, M::MANUAL}) {
     auto * btn = new QPushButton(modeName(m));
-    btn->setFocusPolicy(Qt::NoFocus);
+    btn->setFocusPolicy(Qt::NoFocus);   // 버튼이 포커스를 가져가 Space 로 눌리는 일이 없도록
     connect(btn, &QPushButton::clicked, this, [this, m] {sendControlMode(m);});
     mode_row->addWidget(btn);
   }
@@ -276,6 +285,7 @@ QWidget * MainWindow::buildControlPanel()
   // 수동 주행
   manual_enable_ = new QCheckBox("수동 주행 (cmd_vel 발행)  — W/A/S/D, Space=정지");
   manual_enable_->setFocusPolicy(Qt::NoFocus);
+  // 체크를 끄면 바로 정지 명령을 한 번 보낸다
   connect(manual_enable_, &QCheckBox::toggled, this, [this](bool on) {
     pressed_keys_.clear();
     log(on ? "수동 주행 ON: cmd_vel 발행 시작" : "수동 주행 OFF");
@@ -288,7 +298,7 @@ QWidget * MainWindow::buildControlPanel()
 
   auto * speed_row = new QHBoxLayout;
   lin_speed_ = new QDoubleSpinBox;
-  lin_speed_->setRange(0.0, 0.26);
+  lin_speed_->setRange(0.0, 0.26);   // stm_bridge max_wheel_speed 와 같은 상한
   lin_speed_->setSingleStep(0.01);
   lin_speed_->setValue(0.10);
   lin_speed_->setSuffix(" m/s");
@@ -304,6 +314,7 @@ QWidget * MainWindow::buildControlPanel()
   layout->addLayout(speed_row);
 
   // 화면 버튼 (누르고 있는 동안 이동)
+  // 버튼을 누르면 키보드로 그 키를 누른 것과 똑같이 pressed_keys_ 에 넣는다
   auto * pad = new QGridLayout;
   auto make_key = [this, pad](const QString & text, int key, int r, int c) {
       auto * btn = new QPushButton(text);
@@ -332,6 +343,7 @@ QWidget * MainWindow::buildControlPanel()
   return box;
 }
 
+// 모든 구독/발행 생성. 구독 콜백은 받은 값을 해당 라벨에 표시하고 touch() 로 수신 기록만 남긴다
 void MainWindow::setupRos()
 {
   const std::string cmd_topic = node_->declare_parameter("cmd_vel_topic", std::string("cmd_vel"));
@@ -348,7 +360,7 @@ void MainWindow::setupRos()
   psd_sub_ = node_->create_subscription<interfaces::msg::PsdArray>(
     "psd", qos, [this](interfaces::msg::PsdArray::ConstSharedPtr msg) {
       touch("psd");
-      const float v[3] = {msg->left, msg->front, msg->right};
+      const float v[3] = {msg->left, msg->front, msg->right};   // [m], 막대는 mm 단위
       for (int i = 0; i < 3; ++i) {
         psd_bar_[i]->setValue(std::clamp(static_cast<int>(v[i] * 1000), 0, psd_bar_[i]->maximum()));
         psd_text_[i]->setText(QString::number(v[i], 'f', 3));
@@ -360,6 +372,7 @@ void MainWindow::setupRos()
       touch("dxl");
       QString text = QString("L %1  R %2 m/s").arg(msg->left_velocity, 6, 'f', 3)
         .arg(msg->right_velocity, 6, 'f', 3);
+      // 다이나믹셀 하드웨어 에러가 있으면 빨간 글씨로 에러 코드(16진수) 표시
       if (msg->left_error || msg->right_error) {
         text += QString("   <b style='color:#d32f2f'>ERR L=0x%1 R=0x%2</b>")
           .arg(msg->left_error, 2, 16, QChar('0')).arg(msg->right_error, 2, 16, QChar('0'));
@@ -424,10 +437,12 @@ void MainWindow::setupRos()
     });
 
   // --- 송신 ---
+  // cmd_vel 은 stm_bridge 가 받아 바로 바퀴로 보낸다 (수동 주행 체크 시에만 발행)
   cmd_pub_ = node_->create_publisher<geometry_msgs::msg::Twist>(cmd_topic, 10);
   mode_pub_ = node_->create_publisher<interfaces::msg::ControlMode>("control_mode", 10);
 }
 
+// 토픽 key 를 방금 받았다고 기록 (처음 받으면 로그, 램프는 즉시 초록)
 void MainWindow::touch(const QString & key)
 {
   auto & s = stats_[key];
@@ -436,6 +451,7 @@ void MainWindow::touch(const QString & key)
   }
   s.last.start();
   ++s.count;
+  // 매 메시지마다 setStyleSheet 하면 느리므로 색이 바뀔 때만
   if (s.lamp && !s.lamp->styleSheet().contains("green")) {
     s.lamp->setStyleSheet("color:green;");
   }
@@ -446,7 +462,7 @@ void MainWindow::refreshLamps()
   // 1초마다 호출 -> count 가 곧 Hz
   for (auto & [key, s] : stats_) {
     if (!s.lamp || !s.last.isValid()) {
-      continue;
+      continue;   // 한 번도 안 받은 토픽은 회색 그대로
     }
     const bool stale = s.last.elapsed() > kStaleMs;
     s.lamp->setStyleSheet(stale ? "color:#d32f2f;" : "color:green;");
@@ -455,6 +471,8 @@ void MainWindow::refreshLamps()
   }
 }
 
+// 10Hz 로 호출: 눌린 키 조합으로 cmd_vel 을 만들어 발행
+//   W/S = 전진/후진, A/D = 좌회전/우회전(w 양수 = 왼쪽), 동시에 누르면 합쳐진다 (W+A = 왼쪽으로 돌며 전진)
 void MainWindow::sendManualCmd()
 {
   if (!manual_enable_->isChecked()) {
@@ -477,6 +495,7 @@ void MainWindow::sendManualCmd()
   was_moving_ = moving;
 }
 
+// 모드 버튼: control_mode 를 한 번 발행 (mission_state 에 "turtle_gui" 를 넣어 GUI 가 보낸 것임을 표시)
 void MainWindow::sendControlMode(uint8_t mode)
 {
   interfaces::msg::ControlMode msg;
@@ -487,12 +506,14 @@ void MainWindow::sendControlMode(uint8_t mode)
   log(QString("control_mode 발행: %1").arg(modeName(mode)));
 }
 
+// 앱 전체 키 입력 가로채기. W/A/S/D/Space 는 여기서 처리하고 true 를 반환해 다른 위젯에 안 넘긴다
 bool MainWindow::eventFilter(QObject * obj, QEvent * event)
 {
   if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
     auto * ke = static_cast<QKeyEvent *>(event);
     const int key = ke->key();
     if (key == Qt::Key_W || key == Qt::Key_A || key == Qt::Key_S || key == Qt::Key_D) {
+      // 키를 꾹 누르면 OS 가 Press/Release 를 반복해서 보내는데(auto repeat), 그건 무시한다
       if (!ke->isAutoRepeat()) {
         if (event->type() == QEvent::KeyPress) {
           pressed_keys_.insert(key);
@@ -502,6 +523,7 @@ bool MainWindow::eventFilter(QObject * obj, QEvent * event)
       }
       return true;
     }
+    // Space: 즉시 정지 (수동 주행 체크와 상관없이 정지 명령 발행)
     if (key == Qt::Key_Space) {
       if (event->type() == QEvent::KeyPress && !ke->isAutoRepeat()) {
         pressed_keys_.clear();
@@ -511,7 +533,7 @@ bool MainWindow::eventFilter(QObject * obj, QEvent * event)
       return true;
     }
   }
-  return QMainWindow::eventFilter(obj, event);
+  return QMainWindow::eventFilter(obj, event);   // 나머지 키는 원래대로 처리
 }
 
 void MainWindow::log(const QString & text)
@@ -520,6 +542,7 @@ void MainWindow::log(const QString & text)
     QDateTime::currentDateTime().toString("hh:mm:ss  ") + text);
 }
 
+// 카메라 화면 하나 (제목 상자 + 영상 + 정보 줄)
 QWidget * MainWindow::buildCameraView(CameraView & view, const QString & title)
 {
   auto * box = new QGroupBox(title);
@@ -528,6 +551,7 @@ QWidget * MainWindow::buildCameraView(CameraView & view, const QString & title)
   view.image = new QLabel("수신 대기 중\n" + view.topic);
   view.image->setAlignment(Qt::AlignCenter);
   view.image->setMinimumSize(240, 180);
+  // Ignored: 들어온 영상 크기에 맞춰 라벨이 커지지 않고, 레이아웃이 정한 크기를 따른다
   view.image->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
   view.image->setStyleSheet("background:#202020; color:#aaaaaa;");
   view.info = new QLabel("-");
@@ -537,6 +561,7 @@ QWidget * MainWindow::buildCameraView(CameraView & view, const QString & title)
   return box;
 }
 
+// 카메라 토픽 구독. 압축(JPEG) 이면 Qt 가 바로 디코딩하고, 아니면 raw 픽셀을 QImage 로 바꾼다
 void MainWindow::subscribeCamera(CameraView & view)
 {
   const std::string topic = view.topic.toStdString();
@@ -558,6 +583,8 @@ void MainWindow::subscribeCamera(CameraView & view)
   } else {
     view.sub = node_->create_subscription<sensor_msgs::msg::Image>(
       topic, qos, [this, v](sensor_msgs::msg::Image::ConstSharedPtr msg) {
+        // QImage(data, ...) 는 메시지 메모리를 빌려 쓰기만 하므로 .copy()/.rgbSwapped() 로 복사본을 만든다
+        // (콜백이 끝나면 msg 가 사라지기 때문)
         const auto * data = msg->data.data();
         const int w = static_cast<int>(msg->width), h = static_cast<int>(msg->height);
         const int step = static_cast<int>(msg->step);
@@ -565,7 +592,7 @@ void MainWindow::subscribeCamera(CameraView & view)
         if (msg->encoding == "rgb8") {
           img = QImage(data, w, h, step, QImage::Format_RGB888).copy();
         } else if (msg->encoding == "bgr8") {
-          img = QImage(data, w, h, step, QImage::Format_RGB888).rgbSwapped();
+          img = QImage(data, w, h, step, QImage::Format_RGB888).rgbSwapped();   // B, R 순서 바꾸기
         } else if (msg->encoding == "mono8") {
           img = QImage(data, w, h, step, QImage::Format_Grayscale8).copy();
         } else if (msg->encoding == "rgba8") {
@@ -584,6 +611,7 @@ void MainWindow::subscribeCamera(CameraView & view)
   log(QString("카메라 구독: %1").arg(view.topic));
 }
 
+// 프레임 하나를 화면에 표시하고 fps 갱신 (1초마다 받은 프레임 수로 계산)
 void MainWindow::onFrame(CameraView & view, const QImage & image)
 {
   touch(view.key);
@@ -594,6 +622,7 @@ void MainWindow::onFrame(CameraView & view, const QImage & image)
   }
   view.info->setText(QString("%1 x %2   %3 fps   %4").arg(image.width()).arg(image.height())
     .arg(view.fps, 0, 'f', 1).arg(view.topic));
+  // 라벨 크기에 맞춰 비율을 유지하며 축소/확대
   view.image->setPixmap(QPixmap::fromImage(image).scaled(
       view.image->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }

@@ -20,6 +20,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+# 다른 패키지의 launch/<패키지명>.launch.py 를 포함 (condition 이 false 면 실행 안 함)
 def include(package, condition=None, launch_arguments=None):
     path = os.path.join(get_package_share_directory(package), 'launch', f'{package}.launch.py')
     return IncludeLaunchDescription(PythonLaunchDescriptionSource(path), condition=condition,
@@ -37,22 +38,25 @@ def read_camera_conf(path):
         return params
     with open(path) as f:
         for line in f:
-            line = line.split('#', 1)[0].strip()
+            line = line.split('#', 1)[0].strip()   # 주석 제거
             if '=' not in line:
                 continue
             name, value = (x.strip() for x in line.split('=', 1))
             try:
                 number = int(value)
             except ValueError:
-                continue
+                continue   # 숫자가 아닌 줄은 무시
             params[name] = bool(number) if name in BOOL_CONTROLS else number
     return params
 
 
+# 카메라 노드 만들기. launch 인자 값(파일 경로 등)을 실제 문자열로 읽어야 해서
+# OpaqueFunction 으로 launch 실행 시점에 호출된다 (context 로 인자 값을 꺼냄)
 def camera(context):
     conf_path = LaunchConfiguration('camera_conf').perform(context)
     conf = read_camera_conf(conf_path)
     device = LaunchConfiguration('video_device').perform(context)
+    # 설정 파일의 v4l2 값들을 노드 파라미터로도 넘긴다 (파일에 없는 항목은 노드 기본값)
     params = [{
         'video_device': device,
         'image_size': [640, 480],
@@ -69,6 +73,7 @@ def camera(context):
         parameters=params,
         output='screen',
     )]
+    # 노드가 켜지고 3초 뒤 turtlebot-camera-apply 로 v4l2 설정을 한 번 더 적용
     if conf:
         apply = os.path.join(get_package_prefix('vision_bringup'), 'lib', 'vision_bringup',
                              'turtlebot-camera-apply')
@@ -89,6 +94,7 @@ def generate_launch_description():
         DeclareLaunchArgument('sign', default_value='true'),
         DeclareLaunchArgument('obstacle', default_value='true'),
 
+        # 카메라 -> BEV -> 각 비전 노드 순서로 데이터가 흐른다
         OpaqueFunction(function=camera),
         include('bird_eye_view'),
         include('lane_detection', IfCondition(LaunchConfiguration('lane'))),

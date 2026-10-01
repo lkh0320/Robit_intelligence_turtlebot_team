@@ -1,3 +1,4 @@
+# lane_detection 노드 실행 (파라미터: config/lane_detection.yaml)
 # bird_eye_view 노드(image_bev)가 같이 떠 있어야 한다 (vision_bringup/camera_vision.launch.py 는 둘 다 띄움)
 import os
 

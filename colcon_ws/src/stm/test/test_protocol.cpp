@@ -1,3 +1,5 @@
+// protocol.hpp 단위 테스트 (gtest)
+//   실행: colcon test --packages-select stm && colcon test-result --verbose
 #include <gtest/gtest.h>
 
 #include <vector>
@@ -8,6 +10,7 @@ namespace proto = stm::protocol;
 
 namespace
 {
+// 바이트열 전체를 파서에 넣고 완성된 프레임 개수를 돌려준다
 int feed_all(proto::Parser & p, const std::vector<uint8_t> & bytes)
 {
   int frames = 0;
@@ -18,6 +21,7 @@ int feed_all(proto::Parser & p, const std::vector<uint8_t> & bytes)
 }
 }  // namespace
 
+// 바퀴 명령 프레임이 문서대로 (little-endian, 체크섬 포함) 만들어지는지
 TEST(Protocol, EncodeWheelCmd)
 {
   // left = -100 (0xFF9C), right = 300 (0x012C)
@@ -28,6 +32,7 @@ TEST(Protocol, EncodeWheelCmd)
   EXPECT_EQ(f, expected);
 }
 
+// encode 한 프레임을 다시 파싱하면 같은 값이 나오는지
 TEST(Protocol, RoundTrip)
 {
   proto::Parser p;
@@ -37,6 +42,7 @@ TEST(Protocol, RoundTrip)
   EXPECT_EQ(proto::get_u16(&p.frame().payload[4]), 65535);
 }
 
+// 앞에 쓰레기 바이트가 있어도 그 뒤의 정상 프레임을 찾아내는지
 TEST(Protocol, ResyncAfterGarbage)
 {
   proto::Parser p;
@@ -47,6 +53,7 @@ TEST(Protocol, ResyncAfterGarbage)
   EXPECT_EQ(p.frame().payload, (std::vector<uint8_t>{1, 2, 3, 4, 5, 6}));
 }
 
+// AA 가 두 번 연속 와도 (AA AA 55) 두 번째 AA 부터 프레임으로 인식하는지
 TEST(Protocol, DoubleSyncByte)
 {
   proto::Parser p;
@@ -55,6 +62,7 @@ TEST(Protocol, DoubleSyncByte)
   EXPECT_EQ(feed_all(p, bytes), 1);
 }
 
+// 체크섬이 틀린 프레임은 버리고 에러로 세는지
 TEST(Protocol, BadChecksumRejected)
 {
   proto::Parser p;
@@ -64,6 +72,7 @@ TEST(Protocol, BadChecksumRejected)
   EXPECT_EQ(p.errors(), 1u);
 }
 
+// LEN 이 MAX_PAYLOAD 보다 크면 버리고, 그 뒤 정상 프레임은 받는지
 TEST(Protocol, OversizedLengthRejected)
 {
   proto::Parser p;

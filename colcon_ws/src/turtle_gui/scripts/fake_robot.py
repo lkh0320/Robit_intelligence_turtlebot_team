@@ -4,6 +4,9 @@
 발행: image_raw/compressed, vision/lane_debug/compressed, vision/object_debug/compressed,
       psd, dxl_state, 비전 인식 결과 6종
 구독: cmd_vel -> dxl_state 속도에 반영 (GUI 송신 확인용)
+
+실행: ros2 run turtle_gui fake_robot.py  (다른 터미널에서 turtle_gui 실행)
+모든 값은 sin/cos 로 천천히 바뀌는 가짜 값이고, 인식 결과는 3초마다 바뀐다.
 """
 import math
 
@@ -16,13 +19,14 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
 
+# OpenCV 가 없어도 센서 값은 발행할 수 있도록 선택적으로 import
 try:
     import cv2
     import numpy as np
 except ImportError:
     cv2 = None
 
-WHEEL_SEPARATION = 0.160
+WHEEL_SEPARATION = 0.160   # [m] stm_bridge.yaml 과 같은 값
 
 
 class FakeRobot(Node):
@@ -45,9 +49,9 @@ class FakeRobot(Node):
         self.parking_pub = self.create_publisher(ParkingSpot, 'parking_spot', qos)
         self.create_subscription(Twist, 'cmd_vel', self.on_cmd, 10)
 
-        self.cmd = Twist()
-        self.cmd_time = self.get_clock().now()
-        self.t = 0.0
+        self.cmd = Twist()                        # 마지막으로 받은 cmd_vel
+        self.cmd_time = self.get_clock().now()    # 그 시각 (timeout 판단용)
+        self.t = 0.0                              # 영상 애니메이션 시간 [s]
         self.create_timer(1.0 / 30.0, self.on_image)
         self.create_timer(1.0 / 20.0, self.on_sensors)
         if cv2 is None:
@@ -59,18 +63,20 @@ class FakeRobot(Node):
         self.cmd_time = self.get_clock().now()
         self.get_logger().info(f'cmd_vel 수신 v={msg.linear.x:.2f} w={msg.angular.z:.2f}')
 
+    # 메시지 header 에 현재 시각과 frame_id 를 채워서 그대로 돌려준다
     def stamp(self, msg, frame='base_link'):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = frame
         return msg
 
+    # 30Hz: 가짜 카메라 영상 3종 (원본 / 선 검출 / 객체 인식) 발행
     def on_image(self):
         if cv2 is None:
             return
         self.t += 1.0 / 30.0
-        img = np.full((240, 320, 3), 60, np.uint8)
+        img = np.full((240, 320, 3), 60, np.uint8)   # 320x240 회색 바탕
         # 흰 차선 두 줄 + 움직이는 원
-        shift = int(30 * math.sin(self.t))
+        shift = int(30 * math.sin(self.t))   # 차선이 좌우로 흔들리는 양 [px]
         left = ((100 + shift, 240), (140 + shift, 100))
         right = ((220 + shift, 240), (180 + shift, 100))
         cv2.line(img, *left, (255, 255, 255), 6)
@@ -98,6 +104,7 @@ class FakeRobot(Node):
                     0.4, (0, 255, 255), 1)
         self.publish_jpeg(self.object_img_pub, obj)
 
+    # OpenCV 영상 -> JPEG CompressedImage 발행
     def publish_jpeg(self, pub, img):
         ok, buf = cv2.imencode('.jpg', img)
         if ok:
@@ -106,10 +113,12 @@ class FakeRobot(Node):
             msg.data = buf.tobytes()
             pub.publish(msg)
 
+    # 20Hz: PSD, 바퀴 상태, 비전 인식 결과 발행
     def on_sensors(self):
         t = self.get_clock().now().nanoseconds * 1e-9
         phase = int(t / 3) % 3   # 3초마다 인식 결과 순환
 
+        # PSD 세 개가 0.1~0.7m 사이를 서로 다른 위상으로 오르내림
         psd = self.stamp(PsdArray())
         psd.left = 0.4 + 0.3 * math.sin(t)
         psd.front = 0.4 + 0.3 * math.sin(t + 2.0)
@@ -120,6 +129,7 @@ class FakeRobot(Node):
         v = w = 0.0
         if (self.get_clock().now() - self.cmd_time).nanoseconds < 5e8:
             v, w = self.cmd.linear.x, self.cmd.angular.z
+        # 받은 cmd_vel 을 그대로 바퀴 속도로 계산 (실제 로봇이라면 엔코더 값)
         dxl = self.stamp(DxlState())
         dxl.left_velocity = v - w * WHEEL_SEPARATION / 2.0
         dxl.right_velocity = v + w * WHEEL_SEPARATION / 2.0

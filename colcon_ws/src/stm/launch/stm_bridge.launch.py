@@ -1,3 +1,5 @@
+# STM32 시리얼 브릿지 실행 (파라미터: config/stm_bridge.yaml)
+#   ros2 launch stm stm_bridge.launch.py
 import os
 
 from ament_index_python.packages import get_package_share_directory
