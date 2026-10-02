@@ -69,6 +69,11 @@
 #define PSD_PERIOD_MS    10        /* PSD 측정 주기 */
 #define PSD_SEND_MS      50        /* 젯슨에 PSD 보내는 주기 */
 
+/* 바퀴 모터 수. 이만큼 다 찾아야 "준비 완료" (덜 찾으면 0.5초마다 다시 찾는다) */
+#define NUM_MOTORS 2
+/* 한 통신 속도에서 broadcast ping 을 몇 번 보낼지 (응답을 놓쳐도 다시 잡도록) */
+#define SCAN_TRIES 3
+
 /* 모터를 찾을 때 시도할 통신 속도 (앞에서부터 차례로) */
 static const uint32_t bauds[] = { 1000000, 57600, 115200, 2000000, 9600 };
 #define NUM_BAUDS (sizeof(bauds) / sizeof(bauds[0]))
@@ -114,13 +119,37 @@ static int      has_cmd;            /* ROS 명령을 한 번이라도 받았는�
 /*
  * 모터 찾기
  * bauds[] 의 속도를 하나씩 바꿔가며 broadcast ping 을 보낸다.
+ * 한 속도에서 SCAN_TRIES 번 보내서 찾은 ID 를 모두 모은다.
+ * (두 모터가 연달아 대답할 때 하나를 놓쳐도 다음 번에 잡을 수 있게)
  * 한 대라도 응답하면 그 속도로 정하고 1 을 돌려준다.
  */
 static int find_motors(void)
 {
   for (unsigned i = 0; i < NUM_BAUDS; i++) {
     dxl_set_baud(bauds[i]);
-    count = dxl_scan(ids, 2);
+    count = 0;
+
+    for (int t = 0; t < SCAN_TRIES && count < NUM_MOTORS; t++) {
+      uint8_t found[NUM_MOTORS];
+      int n = dxl_scan(found, NUM_MOTORS);
+      if (t == 0 && n == 0) {
+        break;                   /* 이 속도엔 아무도 없음 -> 바로 다음 속도로 */
+      }
+
+      /* 처음 보는 ID 만 추가 */
+      for (int k = 0; k < n; k++) {
+        int already = 0;
+        for (int m = 0; m < count; m++) {
+          if (ids[m] == found[k]) {
+            already = 1;
+          }
+        }
+        if (!already && count < NUM_MOTORS) {
+          ids[count] = found[k];
+          count++;
+        }
+      }
+    }
 
     if (count > 0) {
       /* 왼쪽 모터를 [0] 으로 (LEFT_IS_SMALLER_ID 참고) */
@@ -221,6 +250,15 @@ static int motors_setup(void)
     return 0;
   }
   g_dxl_count = count;
+  g_dxl_ids[0] = ids[0];
+  g_dxl_ids[1] = (count > 1) ? ids[1] : 0;
+
+  /* 바퀴 모터를 다 못 찾았으면 준비 안 됨 -> 0.5초 뒤 다시 찾는다.
+     (한 대만 찾은 채로 달리면 한쪽 바퀴만 돈다) */
+  if (count < NUM_MOTORS) {
+    g_dxl_err = DXL_ERR_TIMEOUT;
+    return 0;
+  }
 
   for (int i = 0; i < count; i++) {
     g_dxl_ids[i] = ids[i];

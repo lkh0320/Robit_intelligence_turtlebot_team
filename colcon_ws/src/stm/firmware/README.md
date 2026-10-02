@@ -67,7 +67,7 @@ STM32CubeIDE: `App` 폴더를 Source Location에 추가하고 (Project Propertie
 | `g_dxl_volt`, `g_dxl_volt_min`, `g_dxl_volt_max` | 모터가 측정한 전압과 허용 범위 (0.1V 단위, 120 = 12.0V). 전압과 에러는 달리는 중에도 1초마다 다시 읽는다 |
 | `g_dxl_torque` | 모터 토크 (1 = 켜짐, 젯슨 상태 보고에도 포함). 모터가 스스로 토크를 끄면 다시 설정(필요하면 재부팅)한다 |
 
-- 12V가 늦게 들어와도 500ms마다 재시도한다
+- 12V가 늦게 들어와도 500ms마다 재시도한다. 모터 2대를 다 찾아야 준비 완료 (한 대만 찾으면 계속 다시 찾음, 젯슨 상태의 `모터수` 로 확인)
 - 속도는 `app.c`의 `SPEED_1` / `SPEED_2` (1 = 0.229 rpm), 방향은 `LEFT_DIR` / `RIGHT_DIR`
 
 ## 스위치 (켜짐 = 핀 LOW, `sw.c` 의 `SW_ON_LEVEL`) 와 ROS 명령
