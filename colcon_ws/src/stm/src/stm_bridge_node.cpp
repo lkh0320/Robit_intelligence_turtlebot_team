@@ -34,7 +34,7 @@ public:
     port_ = declare_parameter("port", "/dev/ttyUSB0");
     baud_ = declare_parameter("baud", 115200);
     wheel_separation_ = declare_parameter("wheel_separation", 0.160);
-    max_wheel_speed_ = declare_parameter("max_wheel_speed", 0.26);
+    max_wheel_speed_ = declare_parameter("max_wheel_speed", 0.30);
     cmd_timeout_ = declare_parameter("cmd_timeout", 0.5);
     const double tx_rate = declare_parameter("tx_rate", 20.0);
     psd_frame_id_ = declare_parameter("psd_frame_id", "base_link");
