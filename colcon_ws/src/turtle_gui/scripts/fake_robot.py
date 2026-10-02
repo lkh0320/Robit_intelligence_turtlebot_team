@@ -133,6 +133,14 @@ class FakeRobot(Node):
         dxl = self.stamp(DxlState())
         dxl.left_velocity = v - w * WHEEL_SEPARATION / 2.0
         dxl.right_velocity = v + w * WHEEL_SEPARATION / 2.0
+        # 정상 상태의 STM32 상태 보고 흉내 (모터 2개, S1 켜짐, 12V)
+        dxl.ready = True
+        dxl.state = DxlState.STATE_ROS   # stm_bridge 가 20Hz 로 계속 명령을 보내므로 늘 ROS
+        dxl.switches = 0x01
+        dxl.voltage = 12.0
+        dxl.motor_count = 2
+        dxl.left_id, dxl.right_id = 1, 2
+        dxl.left_torque = dxl.right_torque = True
         self.dxl_pub.publish(dxl)
 
         lane = self.stamp(LaneInfo(), 'camera')

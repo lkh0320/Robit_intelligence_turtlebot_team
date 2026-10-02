@@ -81,3 +81,28 @@ TEST(Protocol, OversizedLengthRejected)
   // 이후 정상 프레임은 받아야 함
   EXPECT_EQ(feed_all(p, proto::encode(proto::ID_PSD, {1, 2, 3, 4, 5, 6})), 1);
 }
+
+// 펌웨어 STATUS 프레임 (실제로 받은 바이트)을 풀었을 때 각 칸이 맞는지
+TEST(Protocol, DecodeStatus)
+{
+  // 준비=1, 상태=ROS, 스위치=S1, 에러 0/0, 12.0V(120), 모터 1개, ID 1/0, 토크 왼쪽만
+  const std::vector<uint8_t> bytes{
+    0xAA, 0x55, 0x81, 0x0B, 0x01, 0x01, 0x01, 0x00, 0x00, 0x78, 0x00, 0x01, 0x01, 0x00, 0x01, 0x0A};
+  proto::Parser p;
+  ASSERT_EQ(feed_all(p, bytes), 1);
+  ASSERT_EQ(p.frame().id, proto::ID_STATUS);
+  proto::Status st;
+  ASSERT_TRUE(proto::decode_status(p.frame().payload, st));
+  EXPECT_TRUE(st.ready);
+  EXPECT_EQ(st.state, proto::STATE_ROS);
+  EXPECT_EQ(st.switches, 0x01);
+  EXPECT_EQ(st.voltage_dv, 120);
+  EXPECT_EQ(st.motor_count, 1);
+  EXPECT_EQ(st.id[0], 1);
+  EXPECT_EQ(st.id[1], 0);
+  EXPECT_TRUE(st.torque[0]);
+  EXPECT_FALSE(st.torque[1]);
+
+  // 길이가 다르면 거부
+  EXPECT_FALSE(proto::decode_status({0x01, 0x02}, st));
+}

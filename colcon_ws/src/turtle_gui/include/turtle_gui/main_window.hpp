@@ -103,6 +103,8 @@ private:
   QProgressBar * psd_bar_[3];        // 0 왼쪽, 1 앞, 2 오른쪽
   QLabel * psd_text_[3];
   QLabel * dxl_label_;
+  QLabel * stm_label_;     // STM32 상태 / 스위치 / 전압
+  QLabel * motor_label_;   // 찾은 모터 수 / ID / 토크
   QLabel * cmd_label_;
   QLabel * mode_label_;
   QLabel * lane_label_;

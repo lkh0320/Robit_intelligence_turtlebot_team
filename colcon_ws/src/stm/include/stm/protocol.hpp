@@ -8,9 +8,13 @@
 //   ID 0x01 WHEEL_CMD  LEN 4  int16 left_mm_s, int16 right_mm_s  (바퀴 선속도 [mm/s])
 //
 // STM32 -> Jetson
-//   ID 0x10 PSD        LEN 6  uint16 left_mm, uint16 front_mm, uint16 right_mm
+//   ID 0x10 PSD        LEN 6  uint16 left_mm, uint16 front_mm, uint16 right_mm   (0.05초마다)
+//   ID 0x81 STATUS     LEN 11 (0.1초마다, 펌웨어 App/proto.h)
+//     [0] 모터 준비(1)  [1] 상태(STATE_*)  [2] 스위치 비트(bit0 = S1 ... bit3 = S4)
+//     [3] 왼쪽 HW 에러  [4] 오른쪽 HW 에러  [5..6] uint16 전압 [0.1V]
+//     [7] 찾은 모터 수  [8] 왼쪽 ID  [9] 오른쪽 ID  [10] 토크 비트 (bit0 왼쪽, bit1 오른쪽)
 //
-// STM32 펌웨어는 WHEEL_CMD가 일정 시간(권장 300ms) 안 들어오면 스스로 모터를 정지해야 한다.
+// STM32 펌웨어는 WHEEL_CMD 가 300ms 안 들어오면 스스로 모터를 정지한다.
 //
 // 예) 왼쪽 -100mm/s, 오른쪽 300mm/s 명령
 //     AA 55 | 01 | 04 | 9C FF 2C 01 | CHK
@@ -33,8 +37,18 @@ constexpr uint8_t MAX_PAYLOAD = 32;
 // 메시지 종류(ID)와 각 종류의 payload 길이
 constexpr uint8_t ID_WHEEL_CMD = 0x01;
 constexpr uint8_t ID_PSD = 0x10;
+constexpr uint8_t ID_STATUS = 0x81;
 constexpr uint8_t LEN_WHEEL_CMD = 4;
 constexpr uint8_t LEN_PSD = 6;
+constexpr uint8_t LEN_STATUS = 11;
+
+// STATUS 의 상태 값 (interfaces/DxlState STATE_* 와 같다)
+constexpr uint8_t STATE_STOP_SW = 0;     // S1 꺼짐 -> 정지
+constexpr uint8_t STATE_ROS = 1;         // 젯슨 바퀴 명령대로 주행 중
+constexpr uint8_t STATE_ESTOP = 2;       // S2 켜짐 -> 비상 정지
+constexpr uint8_t STATE_NO_CMD = 3;      // 명령이 0.3초 넘게 없음 -> 정지
+constexpr uint8_t STATE_NOT_READY = 4;   // 모터 준비 안 됨
+constexpr uint8_t STATE_MANUAL = 5;      // 스위치 고정 속도 테스트
 
 // 수신한 프레임 하나 (sync, LEN, CHK 는 검사 후 버리고 ID 와 내용만 남긴다)
 struct Frame
@@ -86,6 +100,39 @@ inline std::vector<uint8_t> encode_wheel_cmd(int16_t left_mm_s, int16_t right_mm
   put_i16(payload, left_mm_s);
   put_i16(payload, right_mm_s);
   return encode(ID_WHEEL_CMD, payload);
+}
+
+// STATUS 프레임 내용
+struct Status
+{
+  bool ready = false;
+  uint8_t state = STATE_NOT_READY;
+  uint8_t switches = 0;
+  uint8_t error[2] = {0, 0};      // [0] 왼쪽, [1] 오른쪽
+  uint16_t voltage_dv = 0;        // [0.1V]
+  uint8_t motor_count = 0;
+  uint8_t id[2] = {0, 0};
+  bool torque[2] = {false, false};
+};
+
+// STATUS payload -> Status. 길이가 다르면 false
+inline bool decode_status(const std::vector<uint8_t> & p, Status & s)
+{
+  if (p.size() != LEN_STATUS) {
+    return false;
+  }
+  s.ready = p[0] != 0;
+  s.state = p[1];
+  s.switches = p[2];
+  s.error[0] = p[3];
+  s.error[1] = p[4];
+  s.voltage_dv = get_u16(&p[5]);
+  s.motor_count = p[7];
+  s.id[0] = p[8];
+  s.id[1] = p[9];
+  s.torque[0] = (p[10] & 0x01) != 0;
+  s.torque[1] = (p[10] & 0x02) != 0;
+  return true;
 }
 
 // 바이트 스트림에서 프레임을 복원하는 상태머신. 깨진 바이트는 버리고 다음 SYNC를 찾는다.

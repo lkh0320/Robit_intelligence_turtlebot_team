@@ -53,10 +53,22 @@ QString lightName(uint8_t s)
 
 QString sideName(uint8_t s)
 {
-  // Sign / ParkingSpot 은 NONE=0, LEFT=1, RIGHT=2 로 같다
+  // ParkingSpot / WallObstacle 은 NONE=0, LEFT=1, RIGHT=2
   switch (s) {
     case 1: return "LEFT";
     case 2: return "RIGHT";
+    default: return "NONE";
+  }
+}
+
+QString signName(uint8_t s)
+{
+  using M = interfaces::msg::Sign;
+  switch (s) {
+    case M::LEFT: return "LEFT";
+    case M::RIGHT: return "RIGHT";
+    case M::CONSTRUCTION: return "CONSTRUCTION";
+    case M::PARKING: return "PARKING";
     default: return "NONE";
   }
 }
@@ -68,6 +80,21 @@ QString barrierName(uint8_t s)
     case M::CLOSED: return "<b style='color:#d32f2f'>CLOSED</b>";
     case M::OPEN: return "<b style='color:#2e7d32'>OPEN</b>";
     default: return "UNKNOWN";
+  }
+}
+
+// STM32 상태 (DxlState::state)
+QString stmStateName(uint8_t st)
+{
+  using M = interfaces::msg::DxlState;
+  switch (st) {
+    case M::STATE_STOP_SW: return "<b style='color:#f9a825'>정지 (S1 꺼짐)</b>";
+    case M::STATE_ROS: return "<b style='color:#2e7d32'>ROS 명령 주행</b>";
+    case M::STATE_ESTOP: return "<b style='color:#d32f2f'>비상 정지 (S2)</b>";
+    case M::STATE_NO_CMD: return "<b style='color:#f9a825'>명령 없음 (정지)</b>";
+    case M::STATE_NOT_READY: return "<b style='color:#d32f2f'>모터 준비 안 됨</b>";
+    case M::STATE_MANUAL: return "<b style='color:#1565c0'>스위치 테스트</b>";
+    default: return QString("? (%1)").arg(st);
   }
 }
 
@@ -94,8 +121,8 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   // 수동 주행 속도: 시작값과 슬라이더 상한 (GUI 에서 바로 바꿀 수 있고, 여기서는 처음 값만 정한다)
   lin_speed_init_ = node_->declare_parameter("linear_speed", 0.10);
   ang_speed_init_ = node_->declare_parameter("angular_speed", 1.0);
-  lin_speed_max_ = node_->declare_parameter("max_linear_speed", 0.26);   // stm_bridge max_wheel_speed 와 같게
-  ang_speed_max_ = node_->declare_parameter("max_angular_speed", 3.0);
+  lin_speed_max_ = node_->declare_parameter("max_linear_speed", 1.0);   // 실제 상한은 stm_bridge max_wheel_speed / 펌웨어 MAX_WHEEL_MPS
+  ang_speed_max_ = node_->declare_parameter("max_angular_speed", 10.0);
 
   // 카메라 화면 4개가 볼 토픽
   cams_[0].key = "cam_raw";
@@ -234,9 +261,13 @@ QWidget * MainWindow::buildStatusPanel()
   auto * motor_box = new QGroupBox("모터");
   auto * motor_form = new QFormLayout(motor_box);
   dxl_label_ = new QLabel("-");
+  stm_label_ = new QLabel("-");
+  motor_label_ = new QLabel("-");
   cmd_label_ = new QLabel("-");
   mode_label_ = new QLabel("-");
-  motor_form->addRow("DXL 실제", dxl_label_);
+  motor_form->addRow("STM32", stm_label_);
+  motor_form->addRow("DXL 모터", motor_label_);
+  motor_form->addRow("DXL 속도", dxl_label_);
   motor_form->addRow("cmd_vel", cmd_label_);
   motor_form->addRow("제어 모드", mode_label_);
   layout->addWidget(motor_box);
@@ -402,6 +433,27 @@ void MainWindow::setupRos()
           .arg(msg->left_error, 2, 16, QChar('0')).arg(msg->right_error, 2, 16, QChar('0'));
       }
       dxl_label_->setText(text);
+
+      // STM32 상태 + 스위치(S1~S4 중 켜진 것)
+      QString sw;
+      for (int i = 0; i < 4; ++i) {
+        if (msg->switches & (1 << i)) {
+          sw += QString(" S%1").arg(i + 1);
+        }
+      }
+      stm_label_->setText(QString("%1   스위치:%2   %3 V").arg(stmStateName(msg->state))
+        .arg(sw.isEmpty() ? " 없음" : sw).arg(msg->voltage, 0, 'f', 1));
+
+      // 찾은 모터 수 / ID / 토크. 2개가 아니면 빨간 글씨
+      auto motor = [](uint8_t id, bool torque) {
+          return id == 0 ? QString("<span style='color:#d32f2f'>없음</span>") :
+                 QString("ID %1 %2").arg(id).arg(torque ? "토크 ON" :
+                 "<b style='color:#d32f2f'>토크 OFF</b>");
+        };
+      const QString count = msg->motor_count == 2 ? QString("%1개").arg(msg->motor_count) :
+        QString("<b style='color:#d32f2f'>%1개</b>").arg(msg->motor_count);
+      motor_label_->setText(QString("%1   L: %2   R: %3").arg(count)
+        .arg(motor(msg->left_id, msg->left_torque)).arg(motor(msg->right_id, msg->right_torque)));
     });
 
   // 실제로 로봇에 들어가는 cmd_vel (GUI가 보낸 것 포함) + stm과 같은 식으로 바퀴 목표속도 계산
@@ -444,7 +496,7 @@ void MainWindow::setupRos()
   sign_sub_ = node_->create_subscription<interfaces::msg::Sign>(
     "sign", qos, [this](interfaces::msg::Sign::ConstSharedPtr m) {
       touch("sign");
-      sign_label_->setText(QString("<b>%1</b>  area %2  (%3)").arg(sideName(m->type))
+      sign_label_->setText(QString("<b>%1</b>  area %2  (%3)").arg(signName(m->type))
         .arg(m->area_ratio, 0, 'f', 3).arg(m->confidence, 0, 'f', 2));
     });
   barrier_sub_ = node_->create_subscription<interfaces::msg::Barrier>(
