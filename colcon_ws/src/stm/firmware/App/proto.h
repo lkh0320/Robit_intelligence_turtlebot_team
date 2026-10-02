@@ -20,6 +20,11 @@
  *
  * ================= STM32 -> 젯슨 =================
  *
+ *   CMD 0x10  PSD 거리 (LEN = 6), 0.05초마다   * 팀 stm 패키지 (protocol.hpp PSD) 와 같음 -> /psd 토픽
+ *     DATA[0..1] : 왼쪽 거리 uint16 [mm]
+ *     DATA[2..3] : 앞   거리 uint16 [mm]
+ *     DATA[4..5] : 오른쪽 거리 uint16 [mm]
+ *
  *   CMD 0x81  상태 (LEN = 11), 0.1초마다
  *     DATA[0] : 모터 준비 (1 = 준비됨)
  *     DATA[1] : 상태 (PROTO_STATE_*)
@@ -41,6 +46,7 @@
 #define PROTO_HEAD2 0x55
 
 #define PROTO_CMD_WHEEL  0x01
+#define PROTO_CMD_PSD    0x10
 #define PROTO_CMD_STATUS 0x81
 
 #define PROTO_MAX_DATA 16
