@@ -3,7 +3,7 @@
 <package format="3">
   <name>sign_detection</name>
   <version>0.0.0</version>
-  <description>표지판용 객체 인식: 파란 원형 방향 표지판 검출 -> sign</description>
+  <description>YOLO 객체 인식: 표지판 -> sign (클래스 규칙: yolo/classes.txt)</description>
   <maintainer email="nano2@todo.todo">nano2</maintainer>
   <license>TODO: License declaration</license>
 
@@ -16,6 +16,8 @@
   <depend>libopencv-dev</depend>
 
   <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

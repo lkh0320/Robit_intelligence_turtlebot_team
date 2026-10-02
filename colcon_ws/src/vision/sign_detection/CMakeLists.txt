@@ -13,6 +13,7 @@ find_package(interfaces REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
 add_executable(sign_detection_node src/sign_detection_node.cpp)
+target_include_directories(sign_detection_node PRIVATE include)
 target_link_libraries(sign_detection_node ${OpenCV_LIBS})
 ament_target_dependencies(sign_detection_node rclcpp sensor_msgs cv_bridge interfaces)
 
@@ -20,5 +21,15 @@ install(TARGETS sign_detection_node
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_yolo_classes test/test_yolo_classes.cpp)
+  target_include_directories(test_yolo_classes PRIVATE include)
+  ament_target_dependencies(test_yolo_classes interfaces)
+  # 팀 공용 클래스 파일과 비교 (colcon_ws/src/vision/sign_detection -> 저장소 루트/yolo)
+  target_compile_definitions(test_yolo_classes PRIVATE
+    YOLO_CLASSES_TXT="${CMAKE_CURRENT_SOURCE_DIR}/../../../../yolo/classes.txt")
+endif()
 
 ament_package()

@@ -154,9 +154,10 @@ class FakeRobot(Node):
         self.stop_pub.publish(stop)
 
         sign = self.stamp(Sign(), 'camera')
-        sign.type = [Sign.NONE, Sign.LEFT, Sign.RIGHT][phase]
-        sign.area_ratio = 0.05 * phase
-        sign.confidence = 0.7 if phase else 0.0
+        sign_phase = int(t / 3) % 5   # 표지판 종류는 5가지라 따로 순환
+        sign.type = [Sign.NONE, Sign.LEFT, Sign.RIGHT, Sign.CONSTRUCTION, Sign.PARKING][sign_phase]
+        sign.area_ratio = 0.03 * sign_phase
+        sign.confidence = 0.7 if sign_phase else 0.0
         self.sign_pub.publish(sign)
 
         barrier = self.stamp(Barrier(), 'camera')

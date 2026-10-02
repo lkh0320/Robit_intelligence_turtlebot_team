@@ -1,0 +1,19 @@
+# YOLO 데이터셋 설정 (팀 공용). 클래스 번호와 순서는 classes.txt 와 반드시 같아야 한다.
+# 순서를 바꾸거나 중간에 끼워 넣지 말 것 -> 이미 만든 라벨 번호가 전부 어긋난다.
+# 새 클래스는 맨 뒤(9번부터)에만 추가하고 classes.txt, README.md 표도 같이 고친다.
+#
+# 학습: yolo detect train data=data.yaml model=yolov8n.pt imgsz=640
+path: dataset          # 이 파일 기준 상대 경로 (dataset/ 은 git 에 올리지 않음)
+train: images/train
+val: images/val
+
+names:
+  0: sign_construction   # 장애물(공사) 구간 진입 표지판
+  1: sign_left           # 갈림길 좌회전
+  2: sign_right          # 갈림길 우회전
+  3: sign_parking        # 주차 구간
+  4: light_red           # 신호등 빨강 (켜진 불 기준)
+  5: light_yellow        # 신호등 노랑
+  6: light_green         # 신호등 초록
+  7: bar_closed          # 차단봉 내려옴 -> 정지
+  8: bar_open            # 차단봉 올라감 -> 통과
