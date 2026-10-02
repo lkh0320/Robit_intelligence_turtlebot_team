@@ -1,0 +1,13 @@
+task_planner:
+  ros__parameters:
+    tick_rate: 20.0                        # [Hz] 상태머신 판단 주기
+    min_confidence: 0.5                    # 인식 결과 신뢰도 하한, 이보다 낮으면 무시
+    sign_area_ratio_threshold: 0.05        # bbox면적/이미지면적, 표지판이 이정도로 가까워야 갈림길 표시
+    psd_obstacle_threshold: 0.25           # [m] 이보다 가까우면 AVOID 진입
+    psd_clear_threshold: 0.35              # [m] 이보다 멀어야 회피 종료 후보 (히스테리시스)
+    psd_clear_count: 10                    # [tick] 회피 종료 판정 전 연속으로 클리어해야 하는 횟수
+    parking_offset_threshold: 0.05         # 주차 정렬 허용 오차 (정규화값)
+    parking_stop_velocity_threshold: 0.02  # [m/s] 이보다 느려야 "정지"로 판단
+    parking_stable_duration: 0.5           # [s] 정렬+정지가 이 시간 유지되면 주차 완료로 판정
+    barrier_cross_duration: 3.0            # [s] 차단바 통과 후 정지까지 임시 고정시간
+                                            # TODO(vision): 터널 입구 인식 메시지 생기면 교체
