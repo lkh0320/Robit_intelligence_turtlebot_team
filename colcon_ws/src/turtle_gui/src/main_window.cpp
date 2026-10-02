@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <utility>
 
@@ -21,6 +22,8 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QScreen>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QPushButton>
 #include <QSplitter>
 #include <QTimer>
@@ -88,6 +91,11 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   // 파라미터 (ros2 run turtle_gui turtle_gui --ros-args -p image_topic:=... 로 바꿀 수 있다)
   wheel_separation_ = node_->declare_parameter("wheel_separation", 0.160);
   psd_max_range_ = node_->declare_parameter("psd_max_range", 0.80);
+  // 수동 주행 속도: 시작값과 슬라이더 상한 (GUI 에서 바로 바꿀 수 있고, 여기서는 처음 값만 정한다)
+  lin_speed_init_ = node_->declare_parameter("linear_speed", 0.10);
+  ang_speed_init_ = node_->declare_parameter("angular_speed", 1.0);
+  lin_speed_max_ = node_->declare_parameter("max_linear_speed", 0.26);   // stm_bridge max_wheel_speed 와 같게
+  ang_speed_max_ = node_->declare_parameter("max_angular_speed", 3.0);
 
   // 카메라 화면 4개가 볼 토픽
   cams_[0].key = "cam_raw";
@@ -296,22 +304,38 @@ QWidget * MainWindow::buildControlPanel()
   });
   layout->addWidget(manual_enable_);
 
-  auto * speed_row = new QHBoxLayout;
-  lin_speed_ = new QDoubleSpinBox;
-  lin_speed_->setRange(0.0, 0.26);   // stm_bridge max_wheel_speed 와 같은 상한
-  lin_speed_->setSingleStep(0.01);
-  lin_speed_->setValue(0.10);
-  lin_speed_->setSuffix(" m/s");
-  ang_speed_ = new QDoubleSpinBox;
-  ang_speed_->setRange(0.0, 3.0);
-  ang_speed_->setSingleStep(0.1);
-  ang_speed_->setValue(1.0);
-  ang_speed_->setSuffix(" rad/s");
-  speed_row->addWidget(new QLabel("선속도"));
-  speed_row->addWidget(lin_speed_);
-  speed_row->addWidget(new QLabel("각속도"));
-  speed_row->addWidget(ang_speed_);
-  layout->addLayout(speed_row);
+  // 속도 조절: 슬라이더와 숫자칸이 서로 연동된다. 주행 중에 바꿔도 다음 송신(0.1초)부터 바로 반영
+  auto * speed_grid = new QGridLayout;
+  auto make_speed = [this, speed_grid](int row, const QString & name, const QString & unit,
+      double init, double max, double step) {
+      auto * spin = new QDoubleSpinBox;
+      spin->setRange(0.0, max);
+      spin->setDecimals(2);
+      spin->setSingleStep(step);
+      spin->setValue(std::min(init, max));
+      spin->setSuffix(" " + unit);
+      // 슬라이더는 정수만 다루므로 step 단위 칸 수로 바꿔서 쓴다 (0.01 m/s -> 1칸)
+      auto * slider = new QSlider(Qt::Horizontal);
+      slider->setRange(0, static_cast<int>(std::lround(max / step)));
+      slider->setValue(static_cast<int>(std::lround(spin->value() / step)));
+      connect(slider, &QSlider::valueChanged, spin, [spin, step](int v) {spin->setValue(v * step);});
+      connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), slider,
+        [slider, step](double v) {
+          const QSignalBlocker block(slider);   // 슬라이더 -> 숫자칸 -> 슬라이더 되먹임 방지
+          slider->setValue(static_cast<int>(std::lround(v / step)));
+        });
+      connect(spin, &QDoubleSpinBox::editingFinished, this, [this, name, spin] {
+        log(QString("%1 = %2").arg(name).arg(spin->value(), 0, 'f', 2));
+      });
+      speed_grid->addWidget(new QLabel(name), row, 0);
+      speed_grid->addWidget(slider, row, 1);
+      speed_grid->addWidget(spin, row, 2);
+      return spin;
+    };
+  lin_speed_ = make_speed(0, "선속도 (W/S)", "m/s", lin_speed_init_, lin_speed_max_, 0.01);
+  ang_speed_ = make_speed(1, "각속도 (A/D)", "rad/s", ang_speed_init_, ang_speed_max_, 0.1);
+  speed_grid->setColumnStretch(1, 1);
+  layout->addLayout(speed_grid);
 
   // 화면 버튼 (누르고 있는 동안 이동)
   // 버튼을 누르면 키보드로 그 키를 누른 것과 똑같이 pressed_keys_ 에 넣는다

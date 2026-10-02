@@ -93,6 +93,10 @@ private:
   rclcpp::Node::SharedPtr node_;
   double wheel_separation_;   // cmd_vel -> 바퀴 목표속도 표시용 (stm_bridge 와 같은 값이어야 함)
   double psd_max_range_;      // PSD 막대 최대값 [m]
+  double lin_speed_init_;     // 수동 주행 선속도 시작값 [m/s]
+  double ang_speed_init_;     // 수동 주행 각속도 시작값 [rad/s]
+  double lin_speed_max_;      // 선속도 슬라이더 상한 [m/s]
+  double ang_speed_max_;      // 각속도 슬라이더 상한 [rad/s]
 
   // --- 위젯 ---
   std::array<CameraView, 4> cams_;   // 0 원본, 1 BEV, 2 선 검출, 3 객체 인식
