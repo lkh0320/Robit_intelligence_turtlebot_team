@@ -35,6 +35,7 @@
 #include "sw.h"
 #include "host.h"
 #include "proto.h"
+#include "psd.h"
 
 /* ==================== 바꿔 쓰는 설정값 ==================== */
 
@@ -65,6 +66,8 @@
 #define UPDATE_PERIOD_MS 50        /* 속도 명령 보내는 주기 */
 #define RETRY_PERIOD_MS  500     /* 모터를 못 찾았을 때 다시 찾는 주기 */
 #define CHECK_PERIOD_MS  1000      /* 모터 전압 / 에러 / 토크를 다시 읽는 주기 */
+#define PSD_PERIOD_MS    10        /* PSD 측정 주기 */
+#define PSD_SEND_MS      50        /* 젯슨에 PSD 보내는 주기 */
 
 /* 모터를 찾을 때 시도할 통신 속도 (앞에서부터 차례로) */
 static const uint32_t bauds[] = { 1000000, 57600, 115200, 2000000, 9600 };
@@ -102,6 +105,8 @@ static int      count;              /* 찾은 모터 수 */
 static uint32_t last_tick;          /* 마지막으로 일한 시각 (ms) */
 static uint32_t last_status_tick;   /* 마지막으로 상태를 보고한 시각 */
 static uint32_t last_check_tick;    /* 마지막으로 모터 상태를 읽은 시각 */
+static uint32_t last_psd_tick;      /* 마지막으로 PSD 를 잰 시각 */
+static uint32_t last_psd_send_tick; /* 마지막으로 PSD 를 보낸 시각 */
 static uint32_t last_cmd_tick;      /* 마지막으로 ROS 명령을 받은 시각 */
 static int      has_cmd;            /* ROS 명령을 한 번이라도 받았는지 */
 
@@ -334,6 +339,21 @@ static void send_status(void)
 }
 
 
+/* 젯슨에 PSD 거리 패킷을 보낸다 (왼쪽, 앞, 오른쪽 mm) */
+static void send_psd(void)
+{
+  uint8_t data[6];
+  uint8_t buf[6 + 5];
+
+  for (int i = 0; i < PSD_COUNT; i++) {
+    data[i * 2]     = (uint8_t)(g_psd_mm[i] & 0xFF);
+    data[i * 2 + 1] = (uint8_t)(g_psd_mm[i] >> 8);
+  }
+  uint16_t n = proto_build(PROTO_CMD_PSD, data, 6, buf);
+  host_write(buf, n);
+}
+
+
 /* ==================== 바퀴 속도 -> MX-64 값 ==================== */
 
 /* 바퀴 각속도 (rad/s) -> MX-64 Goal Velocity 값 (소수) */
@@ -432,6 +452,7 @@ void app_init(void)
 {
   sw_init();
   host_init();                   /* 젯슨 통신 (USART6) */
+  psd_init();                    /* PSD 거리 센서 (ADC1 + DMA) */
   dxl_init(USART3);
   HAL_Delay(300);                /* 모터가 전원 켜고 부팅할 시간 */
 
@@ -445,6 +466,16 @@ void app_loop(void)
 
   /* ---- 젯슨에서 온 명령 처리 (모터 상태와 상관없이 항상) ---- */
   handle_host();
+
+  /* ---- PSD: 0.01초마다 재고, 0.05초마다 젯슨에 보냄 (모터 상태와 상관없이) ---- */
+  if (now - last_psd_tick >= PSD_PERIOD_MS) {
+    last_psd_tick = now;
+    psd_update();
+  }
+  if (now - last_psd_send_tick >= PSD_SEND_MS) {
+    last_psd_send_tick = now;
+    send_psd();
+  }
 
   /* ---- 0.1초마다 젯슨에 상태 보고 ---- */
   if (now - last_status_tick >= STATUS_PERIOD_MS) {
