@@ -125,7 +125,7 @@ public:
     declare_parameter("white_ab_dev", 15);         // 흰 선은 a, b 가 128 ± 이 값 안
     // 2~5. 차선 탐색
     declare_parameter("lane_width_px", 267.0);     // BEV 에서 두 차선 중심 사이 폭 (bird_eye_view 보정값)
-    declare_parameter("bev_center_x", 0.521);      // BEV 에서 로봇(카메라 중심)의 가로 위치 (폭 비율)
+    declare_parameter("bev_center_x", 0.5);        // BEV 에서 로봇(카메라 중심)의 가로 위치 (폭 비율)
     declare_parameter("base_min_pixels", 30);      // 시작점 열에 필요한 최소 픽셀 수
     declare_parameter("n_windows", 10);
     declare_parameter("window_margin", 30);        // 윈도우 반폭 / 직전 곡선 주변 탐색 폭 [px]
