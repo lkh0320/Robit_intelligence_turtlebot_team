@@ -139,9 +139,13 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
     node_->declare_parameter("object_image_topic", std::string("vision/object_debug/compressed")));
 
   setWindowTitle("TurtleBot Test GUI");
-  // 기본 1600x900, 화면이 더 작으면 화면에 맞춤
+  // 기본 1600x1000 (16:10), 화면이 더 작으면 비율을 유지한 채 화면에 맞춤
   const QSize avail = QGuiApplication::primaryScreen()->availableGeometry().size();
-  resize(QSize(1600, 900).boundedTo(avail));
+  QSize size(1600, 1000);
+  if (size.width() > avail.width() || size.height() > avail.height()) {
+    size.scale(avail, Qt::KeepAspectRatio);
+  }
+  resize(size);
 
   // 왼쪽: 카메라 4개 (2x2) + 로그 / 오른쪽: 상태 + 조종
   //   원본         | Bird's Eye View
