@@ -118,7 +118,7 @@ struct Status
 // STATUS payload -> Status. 길이가 다르면 false
 inline bool decode_status(const std::vector<uint8_t> & p, Status & s)
 {
-  if (p.size() != LEN_STATUS) {
+  if (p.size() < LEN_STATUS) {   // 펌웨어가 뒤에 값을 더 붙여도(속도 등) 앞 11바이트만 읽는다
     return false;
   }
   s.ready = p[0] != 0;
