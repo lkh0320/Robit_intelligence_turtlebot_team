@@ -3,7 +3,7 @@
 <package format="3">
   <name>sign_detection</name>
   <version>0.0.0</version>
-  <description>YOLO 객체 인식: 표지판 -> sign (클래스 규칙: yolo/classes.txt)</description>
+  <description>YOLO 객체 인식 (ONNX + OpenCV DNN): 표지판 -> sign (클래스 규칙: yolo/classes.txt)</description>
   <maintainer email="nano2@todo.todo">nano2</maintainer>
   <license>TODO: License declaration</license>
 

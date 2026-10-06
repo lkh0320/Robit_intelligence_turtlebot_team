@@ -1,0 +1,10 @@
+sign_detection:
+  ros__parameters:
+    image_topic: image_raw
+    # 노트북에서 export 한 ONNX (git 에 올리지 않음). ~ 는 노드가 홈 디렉터리로 바꾼다
+    #   yolo export model=best.pt format=onnx imgsz=640 opset=12 simplify=True
+    model_path: ~/models/signs_v1.onnx
+    input_size: 640           # export 때 imgsz 와 같아야 한다
+    conf_threshold: 0.5       # 이보다 낮은 박스는 버림
+    nms_threshold: 0.45       # 같은 클래스 박스가 이 IoU 넘게 겹치면 하나만 남김
+    debug_jpeg_quality: 70

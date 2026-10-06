@@ -60,3 +60,22 @@ python3 yolo/check_labels.py ~/내데이터셋   # 다른 폴더 검사
 - 범위 밖 클래스 번호와 픽셀 좌표로 저장된 라벨을 찾는다.
 - 이미지와 라벨 짝이 맞는지 본다.
 - 클래스별 박스 수를 보여준다.
+
+## 로봇(젯슨)에 올리기
+
+젯슨에는 ultralytics/PyTorch/TensorRT 가 없고, JetPack 의 OpenCV 4.8 DNN(CPU)으로 ONNX 를 돌린다.
+ONNX 는 기기와 상관없으므로 **노트북에서 변환**해서 복사한다 (TensorRT `.engine` 과 다름).
+
+```bash
+# 노트북
+yolo export model=runs/detect/signs_v1/weights/best.pt format=onnx imgsz=640 opset=12 simplify=True
+scp runs/detect/signs_v1/weights/best.onnx <젯슨계정>@<젯슨IP>:~/models/signs_v1.onnx   # 젯슨에서 먼저 mkdir -p ~/models
+
+# 젯슨
+ros2 launch vision_bringup camera_vision.launch.py
+ros2 topic echo /sign
+```
+
+- 모델 경로, 입력 크기, 신뢰도 기준은 `colcon_ws/src/vision/sign_detection/config/sign_detection.yaml` 에서 바꾼다.
+- 추론 시간은 GUI 객체 인식 화면 왼쪽 위에 나온다. 너무 느리면 `imgsz=416`(또는 320)으로 export 하고 `input_size` 를 같이 바꾼다.
+- export 할 때 `nms=True` 를 쓰거나 YOLO26 같은 NMS 없는 모델로 바꾸면 출력 모양이 달라져 노드가 거부한다 (로그에 모양이 찍힌다).
