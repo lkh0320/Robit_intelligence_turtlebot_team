@@ -1,0 +1,89 @@
+map_planner:
+  ros__parameters:
+    image_topic: image_raw    # 원본 카메라 영상 (BEV 는 이 노드가 같은 변환으로 직접 만든다)
+    # 1. 색 마스크 (OpenCV LAB: L 0~255, a/b 는 128 이 무채색) - path_planner.yaml 과 같게
+    yellow_l_min: 80
+    yellow_b_min: 150
+    yellow_a_max: 135         # 노란 선 a≈126, 박스 a≈145
+    white_l_min: 190
+    white_ab_dev: 15
+    # 박스 (어두운 적갈색): 2026-10-08 실측 L 20~47, a 143~147, b 136~140, b-a ≈ -7
+    box_l_min: 10
+    box_l_max: 110
+    box_a_min: 137
+    box_a_max: 165            # 빨간 정지선(L119 a170 b147)은 a 가 더 높아 빠진다
+    box_b_min: 128
+    box_b_max: 152
+    box_min_b_minus_a: -15    # 박스 b-a ≈ -7, 빨간 정지선 b-a ≈ -23
+    box_min_area: 300         # [BEV px] (원본 마스크는 raw_scale^2 배로 줄여 씀)
+    line_gap_close_px: 31     # BEV 선 마스크 세로 불리기 (점선 빈틈 메우기)
+    # 2. BEV 변환: bird_eye_view.yaml 과 반드시 같게 (바뀌면 둘 다 고칠 것)
+    src_top_y: 0.467
+    src_top_left_x: 0.225
+    src_top_right_x: 0.775
+    src_bottom_y: 1.0
+    src_bottom_left_x: -0.162
+    src_bottom_right_x: 1.162
+    bev_width: 400
+    bev_height: 400
+    # 원본 영상 보충 범위: BEV 사다리꼴(좌우 약 ±20cm) 밖의 옆 / 먼 곳을 원본에서 바로 지도에 펼친다
+    raw_max_range_px: 1000.0  # 바퀴 축에서 이 거리까지 [px ≈ mm]
+    raw_max_lateral_px: 450.0 # 좌우 이 범위까지
+    raw_scale: 0.5            # 원본 마스크는 절반 해상도로 (속도)
+    # 3. 지도 (단위 BEV px ≈ 1mm)
+    bev_center_x: 0.5         # 로봇 가로 위치 (BEV 폭 비율)
+    # 바퀴 축이 BEV 맨 아래보다 뒤에 있는 거리. 2026-10-08 실측(렌즈 높이 19.5cm, 축->렌즈 10cm)으로 계산: 축 앞 33.2cm
+    robot_y_offset_px: 335.0
+    cell_px: 4.0              # 지도 한 칸 (4mm)
+    map_size_px: 2000.0       # 지도 한 변 (2m)
+    map_recenter_px: 300.0    # 로봇이 지도 가운데에서 이만큼 벗어나면 지도를 정수 칸만큼 옮김
+    memory_px: 700.0          # BEV 로 본 칸은 70cm 달릴 동안 기억 (안 보이는 구간 33cm 보다 커야 함)
+    raw_memory_px: 100.0      # 원본으로만 본 칸 (옆 / 먼 곳) 은 10cm 만 (이동량 오차로 이중선 생기는 것 방지)
+    view_half_width_px: 600.0 # GUI 화면 범위
+    view_front_px: 750.0
+    view_back_px: 200.0
+    # 4. 후보 경로: 바퀴 축에서 출발하는 곡선 k(t) = k0 + dk t (0 근처를 촘촘하게)
+    n_paths: 21
+    max_curvature: 0.00667    # [1/px] (반지름 15cm)
+    n_curv_rates: 9
+    max_curvature_rate: 0.0000444   # [1/px^2]
+    path_length_px: 500.0
+    sample_step_px: 5.0
+    min_known_ratio: 0.15     # 본 적 있는 칸이 이보다 적은 경로는 탈락
+    # 5. 점수
+    robot_half_width_px: 103.0   # 로봇 반폭 (2026-10-08 실측 폭 20.5cm)
+    clearance_cap_px: 133.0   # 선이 한쪽만 보일 때 그 선에서 이 거리(반 차선 폭)를 따라감
+    max_lane_width_px: 600.0  # 양쪽 선을 찾는 범위 (양쪽 다 보이면 그 가운데)
+    line_weight: 10.0         # 선에 닿는 경로 벌점
+    clearance_weight: 1.0     # 차선 가운데일수록 가점
+    align_weight: 1.0         # 선과 나란하지 않은 경로 벌점
+    box_margin_px: 80.0       # 박스까지 반폭 + 이 거리 안이면 벌점 (일찍 비켜 가게)
+    box_weight: 3.0
+    smooth_weight: 0.5        # 직전 경로와 다를수록 벌점
+    straight_weight: 0.1      # 급커브 벌점
+    fork_weight: 1.0          # 갈림길 표지판 방향 가점
+    psd_weight: 2.0           # 가까운 PSD 쪽으로 도는 경로 벌점
+    # 6. 출력
+    lane_width_px: 267.0      # offset 정규화 (반 차선 폭 = 1)
+    lookahead_px: 200.0       # 바퀴 축에서 목표점까지 [px] (시뮬레이션에서 250 보다 커브 안쪽으로 덜 붙음)
+    follower_lookahead_px: 252.0   # lane_follower pp_lookahead (0.25m) 와 같게: angle 을 이 기준으로 환산
+    smooth_alpha: 0.6         # 고른 곡률의 새 값 비중 (1 = 필터 없음)
+    hold_frames: 5            # 경로를 못 골라도 직전 값을 유지할 프레임 수
+    min_wall_pixels: 200      # 선 + 박스 픽셀이 이보다 적으면 detected = false
+    # 바퀴 속도 -> 이동량
+    bev_px_per_m: 1008.0      # BEV 축척 (차선 폭 267px / 0.265m)
+    wheel_separation: 0.160   # stm_bridge.yaml 과 같게 [m]
+    dxl_timeout_sec: 0.5
+    # 표지판 / PSD (path_planner 와 같음)
+    sign_min_confidence: 0.5
+    sign_min_area_ratio: 0.01
+    construction_line_weight: 1.0
+    construction_exit_sec: 3.0
+    construction_timeout_sec: 30.0
+    fork_hold_sec: 3.0
+    psd_side_threshold: 0.30
+    psd_timeout_sec: 0.5
+    # GUI 화면
+    debug_scale: 2
+    debug_candidates: true
+    debug_jpeg_quality: 70

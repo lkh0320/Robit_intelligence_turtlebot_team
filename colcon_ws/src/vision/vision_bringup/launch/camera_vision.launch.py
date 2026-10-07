@@ -8,6 +8,8 @@
 # v4l2_camera 노드는 켜질 때 장치 설정을 자기 기본값으로 되돌리므로, 같은 파일을 노드 파라미터로도 넘기고
 # (GUI 에 보이는 값), 노드가 적용 순서를 지키지 않아 거부되는 항목(색온도 등)을 위해 3초 뒤 다시 적용한다.
 #   lane:=false sign:=false obstacle:=false          원하는 노드만 끄기
+#   lane_method:=path                                선 검출 대신 path_planner 사용 (기본 sliding)
+#   lane_method:=map                                 2D 지역 지도 기반 map_planner 사용
 import os
 
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
@@ -16,7 +18,7 @@ from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunch
                             OpaqueFunction, TimerAction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -91,13 +93,25 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_params', default_value='',
                               description='카메라 파라미터 YAML (기본: 없음, 장치에 저장된 설정 그대로)'),
         DeclareLaunchArgument('lane', default_value='true'),
+        DeclareLaunchArgument('lane_method', default_value='sliding',
+                              description='sliding: lane_detection (차선 추적) / '
+                                          'path: path_planner (주행 가능 영역 + 경로 선택) / '
+                                          'map: map_planner (2D 지역 지도 + 경로 선택)'),
         DeclareLaunchArgument('sign', default_value='true'),
         DeclareLaunchArgument('obstacle', default_value='true'),
 
         # 카메라 -> BEV -> 각 비전 노드 순서로 데이터가 흐른다
         OpaqueFunction(function=camera),
         include('bird_eye_view'),
-        include('lane_detection', IfCondition(LaunchConfiguration('lane'))),
+        include('lane_detection', IfCondition(PythonExpression([
+            "'", LaunchConfiguration('lane'), "' == 'true' and '",
+            LaunchConfiguration('lane_method'), "' == 'sliding'"]))),
+        include('path_planner', IfCondition(PythonExpression([
+            "'", LaunchConfiguration('lane'), "' == 'true' and '",
+            LaunchConfiguration('lane_method'), "' == 'path'"]))),
+        include('map_planner', IfCondition(PythonExpression([
+            "'", LaunchConfiguration('lane'), "' == 'true' and '",
+            LaunchConfiguration('lane_method'), "' == 'map'"]))),
         include('sign_detection', IfCondition(LaunchConfiguration('sign'))),
         include('obstacle_detection', IfCondition(LaunchConfiguration('obstacle'))),
     ])
