@@ -1,0 +1,64 @@
+path_planner:
+  ros__parameters:
+    image_topic: image_bev    # bird_eye_view 노드 출력
+    # 1. 막힌 곳 지도 (OpenCV LAB: L 0~255, a/b 는 128 이 무채색)
+    #    선 색은 lane_detection.yaml 과 같게 (2026-10-01 실측: 노란 선 b≈188, 흰 선 L≈230~250, 바닥 L≈85)
+    yellow_l_min: 80
+    yellow_b_min: 150
+    yellow_a_max: 135         # 노란 선 a≈126, 갈색 박스 a≈145. 이보다 붉으면 박스로 본다
+    white_l_min: 190
+    white_ab_dev: 15
+    # 박스 (어두운 적갈색): 2026-10-08 실측 L 20~47, a 143~147, b 136~140, b-a ≈ -7 (바닥 L45 a127 b128)
+    box_l_min: 10
+    box_l_max: 110
+    box_a_min: 137
+    box_a_max: 165            # 빨간 정지선(2026-10-08 실측 L119 a170 b147)은 a 가 더 높아 빠진다
+    box_b_min: 128
+    box_b_max: 152
+    box_min_b_minus_a: -15    # 박스 b-a ≈ -7, 빨간 정지선 b-a ≈ -23
+    box_min_area: 300         # 이보다 작은 갈색 덩어리는 잡음 [px]
+    line_gap_close_px: 31     # 선 마스크를 세로로 불리는 높이 (점선 빈틈 메우기) [px]
+    # 2. 후보 경로
+    bev_center_x: 0.5         # 로봇 가로 위치 (폭 비율, lane_detection 과 같게)
+    # 바퀴 축이 BEV 맨 아래보다 뒤에 있는 거리 [px]. 2026-10-08 실측(렌즈 높이 19.5cm, 축->렌즈 10cm,
+    # 차선 폭 26.5cm)과 영상 소실점으로 계산: 카메라 18° 아래, 화면 맨 아래 = 렌즈 앞 23.2cm = 축 앞 33.2cm
+    robot_y_offset_px: 335.0
+    n_paths: 21
+    max_curvature: 0.00667    # 가장 급한 후보 곡률 [1/px] (반지름 150px)
+    # 후보는 곡률이 거리에 따라 변하는 곡선 k0 + dk t: 시작 곡률 n_paths 개 x 변화율 n_curv_rates 개
+    n_curv_rates: 1           # 1 = 원호 후보만 (주행 시험한 방식)
+    n_hidden: 0               # 0 = 지난 경로 기억 + 바퀴 이동량 (실험: > 0 이면 바퀴 축에서 3차 곡선으로 다시 계획)
+    max_curvature_rate: 0.0000444   # [1/px^2] (150px 동안 max_curvature 만큼 변함)
+    path_length_px: 300.0
+    sample_step_px: 5.0
+    # 3. 점수
+    robot_half_width_px: 103.0  # 로봇 반폭 [BEV px] (2026-10-08 실측 폭 20.5cm -> 10.25cm x 10.08)
+    line_soft_px: 0.0         # > 0 이면 반폭 + 이 거리 안부터 가까울수록 선 벌점 (시뮬레이션에서 20 은 커브에서 더 나빴음)
+    clearance_cap_px: 133.0   # 벽까지 이 거리 이상이면 만점 (차선 폭 / 2)
+    line_weight: 10.0         # 선에 가까운 경로 벌점
+    clearance_weight: 1.0     # 공간 가운데일수록 가점
+    smooth_weight: 0.5        # 직전 경로와 다를수록 벌점
+    straight_weight: 0.1      # 급커브 벌점
+    fork_weight: 1.0          # 갈림길 표지판 방향 가점
+    psd_weight: 2.0           # 가까운 PSD 쪽으로 도는 경로 벌점
+    # 4. 출력 (offset/angle 은 경로 위 lookahead_px 앞 목표점 기준 -> lane_detection 과 크기가 다르니 PID 게인 재조정)
+    lane_width_px: 267.0      # offset 정규화 (반 차선 폭 = 1)
+    lookahead_px: 250.0       # 바퀴 축에서 목표점까지 [px] (≈ 25cm)
+    smooth_alpha: 0.6         # 고른 곡률의 새 값 비중 (1 = 필터 없음)
+    hold_frames: 5            # 경로를 못 골라도 직전 값을 유지할 프레임 수
+    min_wall_pixels: 200      # 선 + 박스 픽셀이 이보다 적으면 detected = false
+    # 바퀴 속도 -> BEV 이동량 (안 보이는 구간 경로 기억)
+    bev_px_per_m: 1008.0      # BEV 축척 (차선 폭 267px / 0.265m, 가로·세로 거의 같음)
+    wheel_separation: 0.160   # stm_bridge.yaml 과 같게 [m]
+    # 표지판 / PSD
+    sign_min_confidence: 0.5
+    sign_min_area_ratio: 0.01
+    construction_line_weight: 1.0   # 공사 구간에서는 선 넘기 허용
+    construction_exit_sec: 3.0      # 박스를 본 뒤 이 시간 동안 안 보이면 공사 구간 종료
+    construction_timeout_sec: 30.0
+    fork_hold_sec: 3.0              # 갈림길 표지판을 본 뒤 방향 가점 유지 시간
+    psd_side_threshold: 0.30        # [m]
+    psd_timeout_sec: 0.5
+    # GUI 화면: final (경로) / mask (막힌 곳 지도)
+    debug_view: final
+    debug_jpeg_quality: 70

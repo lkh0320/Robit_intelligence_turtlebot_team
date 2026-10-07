@@ -1,0 +1,23 @@
+lane_follower:
+  ros__parameters:
+    # 속도 [m/s] (stm_bridge max_wheel_speed 0.30 안에서)
+    linear_speed: 0.10          # 직선
+    min_linear_speed: 0.04      # 급커브 / 저신뢰
+    # 조향: w = -(v * 2 sin(angle) / pp_lookahead + kp * offset + kd * d(offset)/dt + ka * angle) [rad/s]
+    # path_planner (기본): pure pursuit. 목표점이 바퀴 축에서 pp_lookahead 앞 (path_planner lookahead_px 와 같게)
+    #   커브에서 안쪽을 파고들면 pp_lookahead 를 줄이고(path_planner lookahead_px 도 같이), 흔들리면 늘린다
+    # lane_detection (lane_method:=sliding): pp_lookahead: 0.0, kp: 0.8, kd: 0.05, ka: 1.0 로 바꿔 쓴다
+    pp_lookahead: 0.25          # [m]
+    kp: 0.0
+    kd: 0.0
+    ka: 0.0
+    max_angular: 1.5
+    slow_down_angle: 0.5        # |angle| 이 이 값 [rad] 이면 min_linear_speed 까지 감속
+    low_confidence: 0.5         # confidence 가 이보다 낮으면 min_linear_speed
+    d_filter_alpha: 0.3
+    # 안전
+    lane_timeout: 0.3           # [s] lane_info 가 이보다 오래 안 오면 정지
+    front_stop_distance: 0.10   # [m] 정면 PSD 가 이보다 가까우면 정지 (0 이하 = 끔)
+    psd_timeout: 0.5
+    autostart: false            # true: control_mode 없이 바로 주행 (autonomous.launch.py 가 정함)
+    control_rate: 20.0          # [Hz]

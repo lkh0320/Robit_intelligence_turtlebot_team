@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>lane_follower</name>
+  <version>0.0.0</version>
+  <description>라인 추적 주행: lane_info -> pure pursuit / PD 조향 -> cmd_vel (control_mode LANE/AVOID 일 때), 전체 자율주행 launch</description>
+  <maintainer email="nano2@todo.todo">nano2</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>interfaces</depend>
+
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>vision_bringup</exec_depend>
+  <exec_depend>stm</exec_depend>
+  <exec_depend>task_planner</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
