@@ -180,7 +180,7 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   auto * right_scroll = new QScrollArea;
   right_scroll->setWidget(right);
   right_scroll->setWidgetResizable(true);
-  right_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  right_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
 
   // 좌우 경계를 마우스로 끌어 크기 조절 가능. 처음 비율은 5 : 2
   auto * splitter = new QSplitter;
