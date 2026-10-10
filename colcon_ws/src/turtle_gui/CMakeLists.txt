@@ -27,5 +27,7 @@ install(TARGETS turtle_gui
   DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/fake_robot.py
   DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME})
 
 ament_package()

@@ -22,6 +22,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QScreen>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QPushButton>
@@ -175,10 +176,16 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   right_layout->addWidget(buildStatusPanel(), 1);
   right_layout->addWidget(buildControlPanel());
 
+  // 화면이 좁아 오른쪽 패널이 다 안 들어가도(X11 forwarding 등) 스크롤로 전부 접근 가능하게
+  auto * right_scroll = new QScrollArea;
+  right_scroll->setWidget(right);
+  right_scroll->setWidgetResizable(true);
+  right_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
   // 좌우 경계를 마우스로 끌어 크기 조절 가능. 처음 비율은 5 : 2
   auto * splitter = new QSplitter;
   splitter->addWidget(left);
-  splitter->addWidget(right);
+  splitter->addWidget(right_scroll);
   splitter->setStretchFactor(0, 5);
   splitter->setStretchFactor(1, 2);
   setCentralWidget(splitter);
