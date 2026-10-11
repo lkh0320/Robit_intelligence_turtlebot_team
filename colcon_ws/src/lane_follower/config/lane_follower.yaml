@@ -9,8 +9,8 @@ lane_follower:
     # lane_detection (lane_method:=sliding): pp_lookahead: 0.0, kp: 0.8, kd: 0.05, ka: 1.0 로 바꿔 쓴다
     pp_lookahead: 0.0           # [m] (lane_method:=path 로 돌아가면 0.25로)
     kp: 0.8
-    kd: 0.05
-    ka: 1.0
+    kd: 0.005
+    ka: 0.3
     max_angular: 1.5
     slow_down_angle: 0.5        # |angle| 이 이 값 [rad] 이면 min_linear_speed 까지 감속
     low_confidence: 0.5         # confidence 가 이보다 낮으면 min_linear_speed
