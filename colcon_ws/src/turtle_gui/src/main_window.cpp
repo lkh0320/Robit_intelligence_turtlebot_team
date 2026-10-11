@@ -379,6 +379,19 @@ QWidget * MainWindow::buildControlPanel()
   speed_grid->setColumnStretch(1, 1);
   layout->addLayout(speed_grid);
 
+  // 같은 슬라이더를 lane_follower 쪽에도 반영: 선속도 -> linear_speed, 각속도 -> max_angular
+  // (lane_follower 는 자체 제어식으로 w 를 계산하므로 각속도는 "그 값으로 돈다"가 아니라 상한 역할)
+  connect(lin_speed_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double v) {
+      if (lane_param_client_) {
+        lane_param_client_->set_parameters({rclcpp::Parameter("linear_speed", v)});
+      }
+    });
+  connect(ang_speed_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double v) {
+      if (lane_param_client_) {
+        lane_param_client_->set_parameters({rclcpp::Parameter("max_angular", v)});
+      }
+    });
+
   // 화면 버튼 (누르고 있는 동안 이동)
   // 버튼을 누르면 키보드로 그 키를 누른 것과 똑같이 pressed_keys_ 에 넣는다
   auto * pad = new QGridLayout;
@@ -527,6 +540,10 @@ void MainWindow::setupRos()
   // cmd_vel 은 stm_bridge 가 받아 바로 바퀴로 보낸다 (수동 주행 체크 시에만 발행)
   cmd_pub_ = node_->create_publisher<geometry_msgs::msg::Twist>(cmd_topic, 10);
   mode_pub_ = node_->create_publisher<interfaces::msg::ControlMode>("control_mode", 10);
+
+  // 선속도/각속도 슬라이더 -> lane_follower 의 linear_speed/max_angular 파라미터
+  // (lane_follower 가 안 떠 있어도 요청이 조용히 무시될 뿐 에러는 안 남)
+  lane_param_client_ = std::make_shared<rclcpp::AsyncParametersClient>(node_, "lane_follower");
 }
 
 // 토픽 key 를 방금 받았다고 기록 (처음 받으면 로그, 램프는 즉시 초록)

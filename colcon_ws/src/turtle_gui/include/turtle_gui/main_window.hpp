@@ -26,6 +26,7 @@
 #include "interfaces/msg/sign.hpp"
 #include "interfaces/msg/stop_line.hpp"
 #include "interfaces/msg/traffic_light.hpp"
+#include "rclcpp/parameter_client.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/image.hpp"
@@ -140,6 +141,9 @@ private:
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<interfaces::msg::ControlMode>::SharedPtr mode_pub_;
+
+  // 선속도/각속도 슬라이더를 lane_follower 노드의 linear_speed/max_angular 파라미터에도 반영
+  rclcpp::AsyncParametersClient::SharedPtr lane_param_client_;
 };
 
 #endif  // TURTLE_GUI__MAIN_WINDOW_HPP_
