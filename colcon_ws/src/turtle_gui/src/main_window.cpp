@@ -117,7 +117,7 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
 : QMainWindow(parent), node_(std::move(node))
 {
   // 파라미터 (ros2 run turtle_gui turtle_gui --ros-args -p image_topic:=... 로 바꿀 수 있다)
-  wheel_separation_ = node_->declare_parameter("wheel_separation", 0.160);
+  wheel_separation_ = node_->declare_parameter("wheel_separation", 0.190);
   psd_max_range_ = node_->declare_parameter("psd_max_range", 0.80);
   // 수동 주행 속도: 시작값과 슬라이더 상한 (GUI 에서 바로 바꿀 수 있고, 여기서는 처음 값만 정한다)
   lin_speed_init_ = node_->declare_parameter("linear_speed", 0.10);
