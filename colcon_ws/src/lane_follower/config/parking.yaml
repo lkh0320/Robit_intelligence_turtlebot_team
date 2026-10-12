@@ -1,0 +1,30 @@
+parking:
+  ros__parameters:
+    # 시작 방식: false = 이 노드가 주차 표지판을 직접 보고 시작 (task_planner 없이 시험)
+    #            true  = task_planner (또는 GUI PARKING 버튼) 가 PARKING 모드를 주면 시작
+    #            launch 파일이 autostart 에 맞춰 자동으로 정한다
+    use_task_planner: false
+
+    # 주차 표지판 인식 조건
+    min_confidence: 0.5             # YOLO 신뢰도가 이보다 낮으면 무시
+    sign_area_ratio_threshold: 0.03 # 표지판 크기 / 화면 크기. 이보다 커야(= 가까워야) 시작
+    sign_hits_needed: 3             # 연속으로 이만큼 봐야 시작 (잘못 본 것 걸러내기)
+
+    # 어느 쪽 칸에 넣을지: left / right (parking_spot 인식이 있으면 그 결과를 먼저 씀)
+    parking_side: right
+    use_parking_spot: true
+
+    # 속도
+    linear_speed: 0.08              # [m/s] 앞뒤로 움직이는 속도
+    angular_speed: 0.6              # [rad/s] 제자리 회전 속도
+
+    # 주차 동작 (트랙에 맞게 실제로 돌려 보면서 맞추기)
+    approach_distance: 0.20         # [m] 표지판을 본 뒤 칸 입구까지 더 가는 거리
+    turn_angle_deg: 90.0            # [도] 칸 쪽으로 도는 각도
+    enter_distance: 0.25            # [m] 칸 안으로 들어가는 거리
+    enter_reverse: false            # true = 후진으로 들어가기
+    park_wait_time: 2.0             # [s] 칸 안에서 서 있는 시간
+
+    # 안전
+    front_stop_distance: 0.10       # [m] 앞으로 갈 때 정면 PSD 가 이보다 가까우면 대기 (0 = 끔)
+    control_rate: 20.0              # [Hz]

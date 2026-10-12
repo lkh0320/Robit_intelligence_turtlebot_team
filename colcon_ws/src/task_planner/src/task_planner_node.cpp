@@ -2,7 +2,7 @@
 //   control_mode 토픽으로 지시한다. 실제 조향/속도 계산(PID, 회피 경로, 주차 기동)은
 //   autonomous driving 쪽 책임이며 이 노드는 관여하지 않는다.
 //
-// sub: traffic_light, sign, psd, parking_spot, dxl_state, barrier,
+// sub: traffic_light, sign, psd, parking_spot, dxl_state, barrier, parking_done,
 //      control_mode (GUI 강제 오버라이드 감지용)
 // pub: control_mode (interfaces/ControlMode)
 //
@@ -25,6 +25,7 @@
 #include "interfaces/msg/sign.hpp"
 #include "interfaces/msg/traffic_light.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 class TaskPlannerNode : public rclcpp::Node
 {
@@ -56,6 +57,9 @@ public:
     parking_stop_velocity_threshold_ = declare_parameter("parking_stop_velocity_threshold", 0.02);
     parking_stable_duration_ = declare_parameter("parking_stable_duration", 0.5);
     barrier_cross_duration_ = declare_parameter("barrier_cross_duration", 3.0);
+    parking_sign_area_ratio_threshold_ =
+      declare_parameter("parking_sign_area_ratio_threshold", 0.03);
+    parking_sign_hits_needed_ = declare_parameter("parking_sign_hits_needed", 3);
     const double tick_rate = declare_parameter("tick_rate", 20.0);
 
     const auto qos = rclcpp::SensorDataQoS();
@@ -64,7 +68,14 @@ public:
         light_ = *msg;
       });
     sign_sub_ = create_subscription<interfaces::msg::Sign>(
-      "sign", qos, [this](interfaces::msg::Sign::ConstSharedPtr msg) {sign_ = *msg;});
+      "sign", qos, [this](interfaces::msg::Sign::ConstSharedPtr msg) {
+        sign_ = *msg;
+        // 주차 표지판이 가까이 연속으로 보인 횟수 (한 번이라도 안 보이면 0 부터 다시)
+        const bool close_parking_sign = msg->type == interfaces::msg::Sign::PARKING &&
+        msg->confidence >= min_confidence_ &&
+        msg->area_ratio >= parking_sign_area_ratio_threshold_;
+        parking_sign_hits_ = close_parking_sign ? parking_sign_hits_ + 1 : 0;
+      });
     psd_sub_ = create_subscription<interfaces::msg::PsdArray>(
       "psd", qos, [this](interfaces::msg::PsdArray::ConstSharedPtr msg) {
         psd_ = *msg;
@@ -76,6 +87,13 @@ public:
       });
     dxl_sub_ = create_subscription<interfaces::msg::DxlState>(
       "dxl_state", qos, [this](interfaces::msg::DxlState::ConstSharedPtr msg) {dxl_ = *msg;});
+    // lane_follower 의 parking_node 가 주차 동작을 끝내면 true 를 보낸다
+    parking_done_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "parking_done", 10, [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        if (msg->data) {
+          parking_done_ = true;
+        }
+      });
     barrier_sub_ = create_subscription<interfaces::msg::Barrier>(
       "barrier", qos, [this](interfaces::msg::Barrier::ConstSharedPtr msg) {barrier_ = *msg;});
     // GUI가 디버그 버튼으로 강제 모드 변경을 보낼 때 mission_state 에 "turtle_gui" 를 채워 보낸다
@@ -132,15 +150,20 @@ private:
 
       case State::TO_PARKING:
         mission_state = "LANE_FOLLOW";
-        if (parking_.detected && parking_.confidence >= min_confidence_) {
+        // 주차 표지판을 가까이서 연속으로 보거나, 주차칸 인식 노드가 주차 구역을 알려주면 주차 시작
+        if (parking_sign_hits_ >= parking_sign_hits_needed_ ||
+          (parking_.detected && parking_.confidence >= min_confidence_))
+        {
           state_ = State::PARKING;
+          parking_done_ = false;
           parking_timer_running_ = false;
         }
         break;
 
       case State::PARKING:
         mission_state = "PARKING";
-        if (parked()) {
+        // parking_node 가 주차 동작(들어가기 -> 대기 -> 나오기)을 끝내면 다음 구간으로
+        if (parking_done_) {
           state_ = State::TO_BARRIER;
         }
         break;
@@ -249,11 +272,15 @@ private:
   double parking_stop_velocity_threshold_;
   double parking_stable_duration_;
   double barrier_cross_duration_;
+  double parking_sign_area_ratio_threshold_;
+  int64_t parking_sign_hits_needed_;
 
   State state_ = State::WAIT_LIGHT;
   bool manual_override_ = false;
   int64_t psd_clear_streak_ = 0;
   bool parking_timer_running_ = false;
+  int64_t parking_sign_hits_ = 0;
+  bool parking_done_ = false;
   rclcpp::Time parking_stable_since_;   // parking_timer_running_ 이 true 일 때만 유효
   rclcpp::Time finishing_since_;        // FINISHING 상태 진입 시점에만 설정됨
 
@@ -271,6 +298,7 @@ private:
   rclcpp::Subscription<interfaces::msg::ParkingSpot>::SharedPtr parking_sub_;
   rclcpp::Subscription<interfaces::msg::DxlState>::SharedPtr dxl_sub_;
   rclcpp::Subscription<interfaces::msg::Barrier>::SharedPtr barrier_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr parking_done_sub_;
   rclcpp::Subscription<ControlMode>::SharedPtr mode_sub_;
   rclcpp::Publisher<ControlMode>::SharedPtr mode_pub_;
   rclcpp::TimerBase::SharedPtr tick_timer_;
