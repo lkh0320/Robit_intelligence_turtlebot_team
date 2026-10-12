@@ -13,6 +13,7 @@
   <depend>sensor_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>interfaces</depend>
+  <depend>geometry_msgs</depend>
   <depend>libopencv-dev</depend>
 
   <exec_depend>launch_ros</exec_depend>

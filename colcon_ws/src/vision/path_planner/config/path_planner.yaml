@@ -20,9 +20,9 @@ path_planner:
     line_gap_close_px: 31     # 선 마스크를 세로로 불리는 높이 (점선 빈틈 메우기) [px]
     # 2. 후보 경로
     bev_center_x: 0.5         # 로봇 가로 위치 (폭 비율, lane_detection 과 같게)
-    # 바퀴 축이 BEV 맨 아래보다 뒤에 있는 거리 [px]. 2026-10-09 실측(렌즈 높이 24cm, 수평 기준 45° 아래,
-    # 축->렌즈 9cm)으로 계산: 화면 맨 아래 = 렌즈 앞 5.1cm = 축 앞 14.1cm (bird_eye_view.yaml 참고)
-    robot_y_offset_px: 141.0
+    # 바퀴 축이 BEV 맨 아래보다 뒤에 있는 거리 [px]. 2026-10-13 재보정(렌즈 높이 24.75cm, 수평 기준 37.2° 아래,
+    # 축->렌즈 9cm)으로 계산: 화면 맨 아래 = 렌즈 앞 8.9cm = 축 앞 17.9cm (bird_eye_view.yaml 참고)
+    robot_y_offset_px: 179.0
     n_paths: 21
     max_curvature: 0.00667    # 가장 급한 후보 곡률 [1/px] (반지름 150px)
     # 후보는 곡률이 거리에 따라 변하는 곡선 k0 + dk t: 시작 곡률 n_paths 개 x 변화율 n_curv_rates 개
@@ -44,7 +44,7 @@ path_planner:
     # 4. 출력 (offset/angle 은 경로 위 lookahead_px 앞 목표점 기준 -> lane_detection 과 크기가 다르니 PID 게인 재조정)
     lane_width_px: 295.0      # offset 정규화 (반 차선 폭 = 1). BEV 에서 두 차선 중심 간격 (bird_eye_view 보정값)
     # lane_follower.yaml path.pp_lookahead (0.20m) 와 같게. sliding 실주행 튜닝(코너 조기 진입 억제)에 맞춰 250 -> 200
-    #   (BEV 맨 아래가 축 앞 141px 이라 목표점은 보이는 구간 안 59px 지점)
+    #   (BEV 맨 아래가 축 앞 179px 이라 목표점은 보이는 구간 안 21px 지점, 2026-10-13 재보정 뒤)
     lookahead_px: 200.0       # 바퀴 축에서 목표점까지 [px] (≈ 20cm)
     smooth_alpha: 0.6         # 고른 곡률의 새 값 비중 (1 = 필터 없음)
     hold_frames: 5            # 경로를 못 골라도 직전 값을 유지할 프레임 수

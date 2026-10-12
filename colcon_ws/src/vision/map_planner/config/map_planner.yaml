@@ -18,12 +18,12 @@ map_planner:
     box_min_area: 300         # [BEV px] (원본 마스크는 raw_scale^2 배로 줄여 씀)
     line_gap_close_px: 31     # BEV 선 마스크 세로 불리기 (점선 빈틈 메우기)
     # 2. BEV 변환: bird_eye_view.yaml 과 반드시 같게 (바뀌면 둘 다 고칠 것)
-    src_top_y: 0.266
-    src_top_left_x: 0.264
-    src_top_right_x: 0.736
+    src_top_y: 0.360          # 2026-10-13 카메라 각도 수정 후 재보정
+    src_top_left_x: 0.286
+    src_top_right_x: 0.714
     src_bottom_y: 1.0
-    src_bottom_left_x: -0.061
-    src_bottom_right_x: 1.061
+    src_bottom_left_x: -0.023
+    src_bottom_right_x: 1.023
     bev_width: 400
     bev_height: 400
     # 원본 영상 보충 범위: BEV 사다리꼴(좌우 약 ±20cm) 밖의 옆 / 먼 곳을 원본에서 바로 지도에 펼친다
@@ -32,12 +32,12 @@ map_planner:
     raw_scale: 0.5            # 원본 마스크는 절반 해상도로 (속도)
     # 3. 지도 (단위 BEV px ≈ 1mm)
     bev_center_x: 0.5         # 로봇 가로 위치 (BEV 폭 비율)
-    # 바퀴 축이 BEV 맨 아래보다 뒤에 있는 거리. 2026-10-09 실측(렌즈 24cm, 45°, 축->렌즈 9cm)으로 계산: 축 앞 14.1cm
-    robot_y_offset_px: 141.0
+    # 바퀴 축이 BEV 맨 아래보다 뒤에 있는 거리. 2026-10-13 재보정(렌즈 24.75cm, 37.2°, 축->렌즈 9cm): 축 앞 17.9cm
+    robot_y_offset_px: 179.0
     cell_px: 4.0              # 지도 한 칸 (4mm)
     map_size_px: 2000.0       # 지도 한 변 (2m)
     map_recenter_px: 300.0    # 로봇이 지도 가운데에서 이만큼 벗어나면 지도를 정수 칸만큼 옮김
-    memory_px: 700.0          # BEV 로 본 칸은 70cm 달릴 동안 기억 (안 보이는 구간 14cm 보다 커야 함)
+    memory_px: 700.0          # BEV 로 본 칸은 70cm 달릴 동안 기억 (안 보이는 구간 18cm 보다 커야 함)
     raw_memory_px: 100.0      # 원본으로만 본 칸 (옆 / 먼 곳) 은 10cm 만 (이동량 오차로 이중선 생기는 것 방지)
     view_half_width_px: 600.0 # GUI 화면 범위
     view_front_px: 750.0

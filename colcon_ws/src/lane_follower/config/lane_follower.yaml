@@ -6,7 +6,7 @@ lane_follower:
     lane_method: path
     # 속도 [m/s] (stm_bridge max_wheel_speed 0.30 안에서). GUI 선속도 슬라이더가 linear_speed 를 바꾼다
     linear_speed: 0.10          # 직선
-    min_linear_speed: 0.04      # 급커브 / 저신뢰
+    min_linear_speed: 0.06      # 급커브 / 저신뢰 (2026-10-13 0.04 -> 0.06: test_024032 커브에서 0.04 로 너무 느림)
     max_angular: 1.5            # GUI 각속도 슬라이더가 바꾼다
     low_confidence: 0.5         # confidence 가 이보다 낮으면 min_linear_speed
     d_filter_alpha: 0.3
@@ -36,7 +36,9 @@ lane_follower:
       kp: 0.674
       kd: 0.0042
       ka: 0.253
-      slow_down_angle: 0.5
+      # 2026-10-13 0.5 -> 0.8: test_024032 주행 중 |angle| > 0.5 가 24% (커브 대부분 최저속도 0.04).
+      #   커브 offset 은 대개 0.3 이하라 여유 있음. 커브 바깥으로 밀리면 0.6 으로 되돌린다
+      slow_down_angle: 0.8
     # map (map_planner): pure pursuit. map_planner follower_lookahead_px (250) 와 같게
     map:
       pp_lookahead: 0.25
@@ -77,6 +79,87 @@ lane_follower:
       return_max_offset: 0.5    # sliding offset (반 차선 폭 = 1)
       return_max_dist: 0.6      # [m]
       rearm_dist: 1.5           # [m] 빠져나온 뒤 이 거리 동안 같은 구간 표지판 무시 (박스가 눈앞에 보이면 바로 다시 공사 구간)
+    # 교차로 (hybrid 가 아닐 때, include/lane_follower/intersection_turn.hpp)
+    #   LEFT/RIGHT 표지판을 본 뒤 차선을 놓치면 (교차로 정면의 가로 선) 정지 대신
+    #   가로 선이 수평이 되게 정렬(align_*) -> 표지판 방향으로 한쪽 바퀴 회전 -> turn_min_yaw 이상 돌고 차선을 잡으면 원래 주행
+    #   로그: "[교차로] ..." (ARMED / TURN)
+    intersection:
+      enabled: true
+      sign_min_confidence: 0.7
+      sign_min_area: 0.01
+      sign_confirm_count: 2       # 최근 sign_confirm_window 프레임 중 같은 방향이 이만큼 (표지판 인식 약 5Hz)
+      sign_confirm_window: 6
+      sign_instant_confidence: 0.9   # 이 이상이면 한 번만 봐도 확정 (1.1 = 끔)
+      arm_max_dist: 1.5           # [m] 표지판을 본 뒤 이만큼 가도 교차로가 없으면 잊음 (나중에 본 표지판이 이김)
+      # 차선을 놓쳐도 lane_detection 이 T자 가로 선(cross_line)을 최근에 봤을 때만 교차로로 보고 돈다
+      #   (test_052007: 진입 곡선에서 이미 58° 돈 뒤 차선을 한 프레임 놓친 걸 교차로로 보고 66° 더 돎. 그땐 가로 선 없음)
+      #   로그 "[교차로] 차선 놓쳤지만 가로 선 없음 -> 회전 안 함" 이 나오면 이 조건 때문에 안 돈 것
+      require_cross_line: true
+      cross_recent_time: 1.0      # [s] 이 안에 본 가로 선만 인정 (녹화: 차선 놓치기 0.3초 전 ~ 직후에 보임)
+      # 다가가며 정렬 (2026-10-13 사용자: "교차로 들어가면서 자연스럽게 정렬"): 표지판을 본 뒤 가로 선이 보이면
+      #   차선 추종 조향에 -approach_align_kp * 기울기를 더하고 속도를 줄인다. 로그 "[교차로] 가로 선 보며 다가가며 정렬"
+      #   녹화: T자 앞에서 6~14° 틀어져 있었고 가로 선은 차선 놓치기 0.5~1초 전부터 보임
+      approach_align: true
+      approach_align_kp: 2.0      # [rad/s per rad] (10° 틀어지면 0.35 rad/s 더함)
+      approach_align_max: 0.4     # [rad/s]
+      approach_align_fresh: 0.3   # [s] 이 안에 본 가로 선만 씀
+      approach_slow_linear: 0.06  # [m/s] 가로 선이 보이면 이 속도 이하 (정렬할 시간 벌기, 0 = 그대로)
+      # 돌기 전 정렬 (2026-10-13 사용자 요청): 그 자리에서 가로 선이 수평이 될 때까지 제자리 회전 -> 한쪽 바퀴 회전
+      #   로그 "[교차로] 가로 선 수평 (..°, ..s)". GUI 차선 화면에 "CROSS +n deg" 로 기울기 표시
+      align_enabled: false        # 2026-10-13 사용자 요청으로 잠깐 끔 (true = 가로 선 수평 맞춘 뒤 돎)
+      align_kp: 3.0               # w = -align_kp * 기울기 [rad/s] (2026-10-13 사용자 요청으로 빠르게 1.5 -> 3.0)
+      align_max_angular: 0.6      # [rad/s] (0.3 -> 0.6)
+      align_min_angular: 0.15     # [rad/s] 이보다 느리면 바퀴가 안 돌 수 있어서 (0.12 -> 0.15)
+      align_tol: 0.05             # [rad] (약 3°) 이 안이면 수평
+      align_ok_count: 2           # 수평 프레임 연속 수
+      align_max_time: 3.0         # [s] 넘으면 그냥 돎
+      align_lost_time: 0.5        # [s] 가로 선이 이만큼 안 보이면 그냥 돎
+      approach_time: 0.3          # [s] 정렬(ALIGN) 뒤 돌기 전에 직진 (0 = 바로 돎). 2026-10-13 사용자 요청 0.5 -> 0 -> 0.3
+      approach_linear: 0.10       # [m/s]
+      turn_pivot: true            # 도는 동안 안쪽 바퀴 0, 바깥 바퀴만 (바깥 바퀴 = turn_angular * wheel_separation)
+                                  #   2026-10-13 사용자 요청: 가로 선에 수평 맞춘 뒤 한쪽 바퀴로 회전 (false = 제자리, turn_linear)
+      turn_linear: 0.0            # [m/s] turn_pivot 이 false 일 때 도는 동안 전진 (0 = 제자리)
+      turn_angular: 0.4           # [rad/s] turn_min_yaw 까지 (2026-10-13 사용자 요청으로 살짝 느리게 0.5 -> 0.4)
+      turn_search_angular: 0.25   # [rad/s] turn_min_yaw 뒤 차선 찾는 동안 천천히 (0.3 -> 0.25)
+      turn_min_yaw: 0.35          # [rad] (약 20°) 이만큼은 돌아야 끝낼 수 있음 (놓친 차선 / 가로 선 무시)
+                                  #   test_041619: 1.3 (75°) 이면 왼쪽 44° / 오른쪽 38° 에서 보인 올바른 차선을 무시하고 더 돎
+      turn_max_yaw: 2.2           # [rad] (약 126°) 이만큼 돌아도 차선이 없으면 포기 (정지)
+      turn_switch_max_yaw: 0.6    # [rad] (약 34°) 이만큼 돌기 전에 반대 방향 표지판이 확정되면 그쪽으로 바꿔 돎
+      exit_ok_count: 2            # 차선을 연속 이만큼 프레임 제대로 잡으면 끝 (2026-10-13 3 -> 2: 확인 지연만큼 더 돌던 것 줄임)
+      exit_min_confidence: 0.5
+      exit_max_angle: 0.5         # [rad] 차선 방향이 이 안이면 그 차선에 들어선 것
+      exit_lead_angle: 0.75       # [rad] (43°) 도는 쪽으로 아직 이만큼 남았어도 올바른 차선이면 끝 -> 나머지는 차선 추종이 앞으로 가며 돎
+                                  #   2026-10-13 사용자: "회전 때 많이 돌아서 바깥 선 밟고 들어옴". test_054541: 두 선이 41° 남았을 때부터
+                                  #   보였는데 29° (exit_max_angle) 안까지 돌고 확인 / 지연으로 5~6° 더 돎. 0.5 = 예전처럼
+      exit_max_offset: 0.9        # |offset| 이 이보다 크면 (로봇이 차선 밖 / 선이 반대쪽) 안 끝냄
+      exit_turn_side_only: true   # 한 선만 보이면 도는 쪽 선(왼쪽 = 노란, 오른쪽 = 흰)일 때만 끝냄. 두 선이면 항상 OK
+                                  #   (test_030522: 왼쪽으로 돌며 흰 선만 보고 56° 에서 끝내 이탈)
+      rearm_dist: 0.5             # [m] 돈 뒤 이 거리 동안 표지판 무시
+      # 왼쪽으로 돈 뒤 고리 출구: 고리를 시계 방향으로 돌다 출구에서 섬 노란 선을 따라 계속 도는 문제
+      #   돈 뒤 오른쪽으로 out_trigger_yaw 꺾였거나, 차선을 놓치거나, 섬 끝 노란 선이 보이면 다시 왼쪽으로 돈다.
+      #   로그 "[교차로] LOOP LEFT ..m ..°" 의 각도 보고 튜닝: 출구를 지나쳐 돌면 줄이고, 출구 전에 돌면 늘린다
+      #   test_044608: 고리 위쪽을 따라 오른쪽으로 60~70° (0.45m) 꺾인 곳에서 노란 선이 왼쪽으로 휘어 사라지고
+      #   섬 끝 노란 선을 왼쪽 선으로 잡아 (offset +1) 섬 쪽으로 꺾임 -> 그 전에 왼쪽으로 돈다
+      out_enabled: true
+      out_trigger_yaw: 1.05       # [rad] (약 60°)
+      out_island_offset: 0.9      # 노란 선만 보이는데 offset 이 이 이상 (노란 선이 로봇 오른쪽 = 섬 끝) 이면 출구
+      out_island_min_yaw: 0.6     # [rad] 섬 끝 판단은 고리를 이만큼 돈 뒤부터 (test_044608 1번: 노란 선을 넘어 밖으로 나가도 offset +1)
+      out_min_dist: 0.3           # [m] 이만큼 간 뒤부터 출구 판단
+      out_max_dist: 3.0           # [m] 이만큼 가도 출구 없으면 잊음
+      out_approach_time: 0.0      # [s] 출구에서 돌기 전 직진
+      out_turn_min_yaw: 0.6       # [rad] (약 34°) exit_max_angle 보다 커야 지금 따라가던 차선을 다시 안 잡음
+      out_turn_max_yaw: 2.0       # [rad] (약 115°)
+      # 출구에서 제자리 회전 대신 차선을 계속 따라감 (out_follow). test_054541: 출구에서 이미 S자 노란 선의 왼쪽 굽이에
+      #   붙어 있어 제자리로 돌면 선을 넘어 바깥만 보였다 (out_turn_* 는 out_follow false 일 때만 씀)
+      #   섬 쪽으로 치우친 차선 (offset >= out_guard_max_offset, 섬 끝 노란 선) 이나 차선 없음 -> 왼쪽으로 완만한 호
+      #   로그 "[교차로] ... -> 완만하게 왼쪽". 출구에서 덜 꺾이면 out_arc_angular 를 늘린다
+      out_follow: true
+      out_guard_dist: 0.5         # [m] 이만큼 갈 동안 섬 쪽 차선 무시
+      out_guard_max_offset: 0.6   # 출구 반대쪽(섬 쪽)으로 offset 이 이 이상이면 안 따라감 (고리에서 따라갈 때 최대 0.55)
+      out_arc_linear: 0.08        # [m/s] 안 따라갈 때 호 (반지름 = 0.08 / 0.4 = 20cm)
+      out_arc_angular: 0.4        # [rad/s]
+      out_arc_max_dist: 0.2       # [m] 호는 출구 시작 뒤 이 안에서만, 그 뒤 섬 쪽 차선 / 차선 없음은 직진
+                                  #   (06:46~ 로그: 출구 차선에 들어간 뒤 0.27~0.29m 에서 차선 잠깐 놓쳐 왼쪽 호 -> 갑자기 왼쪽, 7번 중 2번)
     # 안전
     lane_timeout: 0.7           # [s] lane_info 가 이보다 오래 안 오면 정지 (map_planner ~7Hz, 녹화에서 최대 0.65s 끊김)
     front_stop_distance: 0.10   # [m] 정면 PSD 가 이보다 가까우면 정지 (0 이하 = 끔)

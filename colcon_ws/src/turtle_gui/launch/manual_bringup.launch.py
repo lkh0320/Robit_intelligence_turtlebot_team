@@ -6,7 +6,7 @@
 #   ros2 launch turtle_gui manual_bringup.launch.py
 # 옵션 예:
 #   sign:=false obstacle:=false        표지판/장애물 인식 노드 끄기
-#   lane_method:=sliding               차선 검출 방식 변경 (hybrid(기본)/sliding/path/map,
+#   lane_method:=hybrid                차선 검출 방식 변경 (sliding(기본)/hybrid/path/map,
 #                                       lane_follower 도 같은 이름의 게인 묶음으로 자동 전환)
 #   stm:=false                         STM 브릿지 없이 (하드웨어 연결 안 됐을 때)
 #   lane_follower:=false               lane_follower 는 안 띄움
@@ -29,9 +29,10 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('sign', default_value='true'),
         DeclareLaunchArgument('obstacle', default_value='true'),
-        DeclareLaunchArgument('lane_method', default_value='hybrid',
-                              description='hybrid: 평소 sliding + 갈림길/공사 구간 path / '
-                                          'sliding: lane_detection / path: path_planner / map: map_planner'),
+        DeclareLaunchArgument('lane_method', default_value='sliding',
+                              description='sliding: lane_detection / '
+                                          'hybrid: 평소 sliding + 갈림길/공사 구간 path / '
+                                          'path: path_planner / map: map_planner'),
         DeclareLaunchArgument('stm', default_value='true'),
         DeclareLaunchArgument('lane_follower', default_value='true'),
 

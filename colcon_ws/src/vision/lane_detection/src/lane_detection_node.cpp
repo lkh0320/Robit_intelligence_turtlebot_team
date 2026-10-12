@@ -1,8 +1,12 @@
 // 주행용 선 검출 (Bird's Eye View + 슬라이딩 윈도우 + 2차 곡선)
 //   구독: image_bev (sensor_msgs/Image, bird_eye_view 노드)
 //   발행: lane_info (interfaces/LaneInfo)
+//         cross_line (geometry_msgs/Vector3Stamped, 교차로 T자 가로 선: 로봇 앞을 가로지르는 긴 흰/노란 직선)
+//           x = 세로 위치 (BEV 높이 비율, 1 = 맨 아래 = 로봇 쪽), y = 기울기 [rad] (+ = 오른쪽 끝이 더 가까움
+//           = 로봇이 왼쪽으로 틀어져 있음 -> 오른쪽으로 돌면 수평), z = 길이 / BEV 폭 (0 = 못 찾음)
+//           (interfaces 에 기울기 칸이 없어서 표준 메시지를 씀. 메시지를 바꾸면 turtle_gui 까지 다시 빌드해야 함)
 //         vision/lane_debug/compressed (GUI 선·벡터 검출 화면, 구독자가 있을 때만)
-//   TODO: stop_line (interfaces/StopLine)
+//   TODO: stop_line (interfaces/StopLine, 빨간 정지선)
 //
 // 처리 순서
 //   1. LAB 색공간으로 노란 선(b 채널 높음) / 흰 선(밝고 b 중립) 마스크
@@ -16,6 +20,10 @@
 //      한쪽만 있으면 차선 폭의 절반만큼 옮겨 차선 중심을 추정한다
 //   6. 곡선 계수를 직전 값과 섞어(smooth_alpha) 흔들림을 줄이고, 놓치면 hold_frames 동안 유지
 //   7. 로봇 위치(BEV 아래, bev_center_x)에서 차선 중심까지 offset, 중심 곡선의 방향 angle
+//   +. 가로 선: 노란 | 흰 마스크에서 HoughLinesP 로 cross_min_length_px 넘는 직선 중 로봇 진행 방향과 거의
+//      직각(가로에서 cross_max_angle_deg 안)인 것. lane_follower 가 교차로 회전을 시작하는 조건으로 쓴다
+//      (test_052007: 진입 곡선에서 이미 돈 뒤 차선을 잠깐 놓친 것을 교차로로 보고 또 돌던 문제)
+//      녹화 재생: T자 앞에서 차선 놓친 7번 모두 놓치기 0.3초 전 ~ 직후에 검출, 진입 곡선 쪽은 검출 없음
 //
 // offset: (차선 중심 - 로봇) / (차선 폭 / 2)  0 = 가운데, +1 = 차선 중심이 로봇보다 반 차선 오른쪽
 // angle : 로봇 위치에서 차선 중심 곡선이 향하는 방향 [rad], + 는 오른쪽
@@ -32,6 +40,7 @@
 
 #include "cv_bridge/cv_bridge.hpp"
 #include "interfaces/msg/lane_info.hpp"
+#include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/image.hpp"
@@ -129,6 +138,9 @@ public:
     // 2~5. 차선 탐색
     declare_parameter("lane_width_px", 295.0);     // BEV 에서 두 차선 중심 사이 폭 (bird_eye_view 보정값)
     declare_parameter("bev_center_x", 0.5);        // BEV 에서 로봇(카메라 중심)의 가로 위치 (폭 비율)
+    // offset / angle 을 재는 높이: BEV 맨 아래에서 이만큼 더 아래(로봇 쪽)로 차선 곡선을 늘려서 잰다 [px]
+    // 재는 곳이 멀수록 그 점을 차선 가운데 두려고 일찍 꺾어 코너 안쪽을 파고든다 (반지름 R 커브에서 약 d^2 / 2R)
+    declare_parameter("eval_below_px", 0.0);
     declare_parameter("base_min_pixels", 30);      // 시작점 열에 필요한 최소 픽셀 수
     declare_parameter("n_windows", 10);
     declare_parameter("window_margin", 30);        // 윈도우 반폭 / 직전 곡선 주변 탐색 폭 [px]
@@ -139,6 +151,12 @@ public:
     // 6. 시간 필터
     declare_parameter("smooth_alpha", 0.5);        // 새 곡선 비중 (1 = 필터 없음)
     declare_parameter("hold_frames", 5);
+    // +. 교차로 가로 선
+    declare_parameter("cross_enabled", true);
+    declare_parameter("cross_min_length_px", 250);    // 이보다 긴 직선만 (곡선 차선 / 섬 끝 U 는 짧다)
+    declare_parameter("cross_max_angle_deg", 15.0);   // 가로에서 이 각도 안 (진입 곡선에서 비스듬히 보면 제외)
+    declare_parameter("cross_hough_threshold", 80);   // HoughLinesP 투표 수
+    declare_parameter("cross_max_gap_px", 20);        // 흰 / 노란 이음매 같은 빈틈 허용
     // 디버그: final (최종) / mask (색 마스크 + 윈도우)
     declare_parameter("debug_view", std::string("final"));
     declare_parameter("debug_jpeg_quality", 70);
@@ -147,6 +165,7 @@ public:
     image_sub_ = create_subscription<sensor_msgs::msg::Image>(
       image_topic, qos, [this](sensor_msgs::msg::Image::ConstSharedPtr msg) {onImage(msg);});
     lane_pub_ = create_publisher<interfaces::msg::LaneInfo>("lane_info", qos);
+    cross_pub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>("cross_line", qos);
     debug_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
       "vision/lane_debug/compressed", qos);
 
@@ -166,6 +185,55 @@ private:
   };
 
   int intParam(const std::string & name) {return static_cast<int>(get_parameter(name).as_int());}
+
+  // +. 교차로 가로 선: 가장 긴 "거의 가로" 직선. 없으면 길이 0
+  struct Cross
+  {
+    cv::Vec4i seg{0, 0, 0, 0};
+    double length = 0, angle_deg = 0;
+  };
+  Cross detectCross(const cv::Mat & lines)
+  {
+    Cross best;
+    if (!get_parameter("cross_enabled").as_bool()) {
+      return best;
+    }
+    std::vector<cv::Vec4i> segs;
+    cv::HoughLinesP(lines, segs, 2, CV_PI / 90, intParam("cross_hough_threshold"),
+      intParam("cross_min_length_px"), intParam("cross_max_gap_px"));
+    const double max_angle = dblParam("cross_max_angle_deg");
+    for (const auto & l : segs) {
+      double angle = std::atan2(l[3] - l[1], l[2] - l[0]) * 180.0 / CV_PI;   // 가로 = 0
+      angle = std::fmod(angle + 270.0, 180.0) - 90.0;                         // -90 ~ 90
+      const double length = std::hypot(l[2] - l[0], l[3] - l[1]);
+      if (std::abs(angle) <= max_angle && length > best.length) {
+        best = {l, length, angle};
+      }
+    }
+    if (best.length <= 0) {
+      return best;
+    }
+    // 각도 다듬기: HoughLinesP 는 2° 단위라 정렬(lane_follower ALIGN)에 거칠다.
+    // 찾은 직선에서 12px 안의 선 픽셀로 직선을 다시 맞춘다
+    const cv::Point2d a(best.seg[0], best.seg[1]), b(best.seg[2], best.seg[3]);
+    const cv::Point2d d = (b - a) / best.length;
+    std::vector<cv::Point> nz, near;
+    cv::findNonZero(lines, nz);
+    for (const auto & q : nz) {
+      const cv::Point2d v = cv::Point2d(q) - a;
+      const double along = v.dot(d), across = v.x * d.y - v.y * d.x;
+      if (std::abs(across) <= 12 && along >= 0 && along <= best.length) {
+        near.push_back(q);
+      }
+    }
+    if (near.size() >= 50) {
+      cv::Vec4f fit;
+      cv::fitLine(near, fit, cv::DIST_L2, 0, 0.01, 0.01);
+      double angle = std::atan2(fit[1], fit[0]) * 180.0 / CV_PI;
+      best.angle_deg = std::fmod(angle + 270.0, 180.0) - 90.0;
+    }
+    return best;
+  }
   double dblParam(const std::string & name) {return get_parameter(name).as_double();}
 
   // 3. 차선 픽셀 모으기: 직전 곡선이 있으면 그 주변, 없으면 base_x 에서 슬라이딩 윈도우
@@ -264,6 +332,17 @@ private:
     cv::morphologyEx(yellow, yellow, cv::MORPH_OPEN, kernel);
     cv::morphologyEx(white, white, cv::MORPH_OPEN, kernel);
 
+    // +. 교차로 가로 선 (T자는 흰 선과 노란 선이 이어져 있어 두 마스크를 합쳐서 본다)
+    cross_ = detectCross(yellow | white);
+    geometry_msgs::msg::Vector3Stamped cross;
+    cross.header = msg->header;
+    if (cross_.length > 0) {
+      cross.vector.x = (cross_.seg[1] + cross_.seg[3]) / 2.0 / h;   // 1 = 로봇 바로 앞
+      cross.vector.y = cross_.angle_deg * CV_PI / 180.0;
+      cross.vector.z = std::max(1e-3, cross_.length / w);
+    }
+    cross_pub_->publish(cross);
+
     // 2. 시작점 (직전 곡선이 없을 때만 쓰인다)
     const int base_min = intParam("base_min_pixels");
     // 노란 선은 화면 전체에서, 흰 선은 노란 선 오른쪽 0.5~1.5 차선 폭 범위에서 찾는다.
@@ -318,7 +397,8 @@ private:
       center = right_.fit->shifted(-lane_w / 2);
       lane.confidence = right_.miss == 0 ? 0.6f : 0.3f;
     }
-    const double y_bot = h - 1;   // 로봇은 BEV 맨 아래에 있다고 본다
+    // 로봇은 BEV 맨 아래(+ eval_below_px)에 있다고 본다
+    const double y_bot = h - 1 + dblParam("eval_below_px");
     lane.detected = center.has_value();
     // 왼쪽(노란) / 오른쪽(흰) 선을 이번 프레임에서 직접 찾았는지 (이전 값으로 버티는 중이면 false)
     lane.left_detected = left_.fit.has_value() && left_.miss == 0;
@@ -386,6 +466,13 @@ private:
     }
     const int rx = cvRound(robot_x);
     cv::line(out, {rx, h - 40}, {rx, h - 1}, cv::Scalar(255, 255, 0), 3);   // 로봇 위치
+    if (cross_.length > 0) {   // 교차로 가로 선: 주황 굵은 선
+      cv::line(out, {cross_.seg[0], cross_.seg[1]}, {cross_.seg[2], cross_.seg[3]},
+        cv::Scalar(0, 140, 255), 5);
+      char ctext[32];
+      std::snprintf(ctext, sizeof(ctext), "CROSS %+.0f deg", cross_.angle_deg);
+      cv::putText(out, ctext, {6, 44}, cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 140, 255), 2);
+    }
     // 왼쪽 위 글자: 차선 검출 여부(o/x)와 발행한 offset, angle
     char text[96];
     std::snprintf(text, sizeof(text), "L%s R%s off %+.2f ang %+.2f", left_.fit ? "o" : "x",
@@ -401,9 +488,11 @@ private:
   }
 
   Track left_, right_;   // 왼쪽 = 노란 선, 오른쪽 = 흰 선
+  Cross cross_;          // 이번 프레임 가로 선 (디버그 그리기용)
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Publisher<interfaces::msg::LaneInfo>::SharedPtr lane_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr cross_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr debug_pub_;
 };
 

@@ -1,8 +1,9 @@
 # 자율주행 전체 실행: 카메라 + 비전 + STM 브릿지 + 주행 제어 (+ 미션 상태머신)
 #   ros2 launch lane_follower autonomous.launch.py
 # 옵션 예:
-#   lane_method:=sliding     선 검출 방식 (기본 hybrid = 평소 lane_detection, 갈림길/공사 구간만 path_planner,
-#                            sliding = lane_detection, path = path_planner, map = map_planner 2D 지역 지도)
+#   lane_method:=hybrid      선 검출 방식 (기본 sliding = lane_detection,
+#                            hybrid = 평소 lane_detection, 갈림길/공사 구간만 path_planner,
+#                            path = path_planner, map = map_planner 2D 지역 지도)
 #   task_planner:=true       미션 상태머신 사용 (신호등 GREEN 을 기다렸다가 출발, 모드 전환)
 #                            false(기본)면 lane_follower 가 켜지자마자 LANE 주행 (라인 추적 시험용)
 #   stm:=false               STM 브릿지 없이 (cmd_vel 만 확인할 때)
@@ -26,10 +27,10 @@ def launch_file(package, name):
 def generate_launch_description():
     use_task_planner = LaunchConfiguration('task_planner')
     return LaunchDescription([
-        DeclareLaunchArgument('lane_method', default_value='hybrid',
-                              description='hybrid: 평소 sliding + 갈림길/공사 구간 path / '
-                                          'path: path_planner / sliding: lane_detection / '
-                                          'map: map_planner'),
+        DeclareLaunchArgument('lane_method', default_value='sliding',
+                              description='sliding: lane_detection / '
+                                          'hybrid: 평소 sliding + 갈림길/공사 구간 path / '
+                                          'path: path_planner / map: map_planner'),
         DeclareLaunchArgument('task_planner', default_value='false'),
         DeclareLaunchArgument('stm', default_value='true'),
 

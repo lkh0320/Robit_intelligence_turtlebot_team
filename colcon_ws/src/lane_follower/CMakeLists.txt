@@ -31,6 +31,8 @@ if(BUILD_TESTING)
   target_include_directories(test_controller PRIVATE include)
   ament_add_gtest(test_drive_selector test/test_drive_selector.cpp)
   target_include_directories(test_drive_selector PRIVATE include)
+  ament_add_gtest(test_intersection_turn test/test_intersection_turn.cpp)
+  target_include_directories(test_intersection_turn PRIVATE include)
 endif()
 
 ament_package()
