@@ -96,6 +96,15 @@ public:
     declare_parameter("straight_weight", d.straight_weight);
     declare_parameter("fork_weight", d.fork_weight);
     declare_parameter("psd_weight", d.psd_weight);
+    declare_parameter("lane_rules", d.lane_rules);
+    declare_parameter("lane_width_tolerance", d.lane_width_tolerance);
+    declare_parameter("side_weight", d.side_weight);
+    declare_parameter("strict_colors", d.strict_colors);
+    declare_parameter("recover_wrong_side", d.recover_wrong_side);
+    declare_parameter("recover_inlane_px", d.recover_inlane_px);
+    declare_parameter("cross_line_px", d.cross_line_px);
+    declare_parameter("cross_weight", d.cross_weight);
+    declare_parameter("gap_fill_px", d.gap_fill_px);
     declare_parameter("lane_width_px", d.lane_width_px);
     declare_parameter("lookahead_px", d.lookahead_px);
     declare_parameter("follower_lookahead_px", d.follower_lookahead_px);
@@ -103,8 +112,8 @@ public:
     declare_parameter("hold_frames", d.hold_frames);
     declare_parameter("min_wall_pixels", d.min_wall_pixels);
     // 바퀴 속도 -> 이동량
-    declare_parameter("bev_px_per_m", 1008.0);     // BEV 축척 (차선 폭 267px / 0.265m)
-    declare_parameter("wheel_separation", 0.160);  // stm_bridge 와 같게 [m]
+    declare_parameter("bev_px_per_m", 1000.0);     // BEV 축척 (1px = 1mm, bird_eye_view 보정)
+    declare_parameter("wheel_separation", 0.190);  // stm_bridge 와 같게 [m]
     declare_parameter("dxl_timeout_sec", 0.5);     // 이보다 오래 dxl_state 가 없으면 멈춰 있다고 본다
     // 표지판 / PSD
     declare_parameter("sign_min_confidence", 0.5);
@@ -112,7 +121,10 @@ public:
     declare_parameter("construction_line_weight", 1.0);
     declare_parameter("construction_exit_sec", 3.0);
     declare_parameter("construction_timeout_sec", 30.0);
-    declare_parameter("fork_hold_sec", 3.0);
+    declare_parameter("fork_confirm_count", 3);   // 같은 방향이 연달아 이만큼 보여야 확정
+    declare_parameter("fork_hold_px", 1000.0);    // 확정 후 이 거리 [px ≈ mm] 를 달릴 동안 유지
+    declare_parameter("fork_hold_sec", 20.0);     // 그래도 이 시간이 지나면 해제 (멈춰 있을 때)
+    declare_parameter("parking_relax_px", 3000.0);   // 주차 표지판 후 이 거리 동안 왼쪽 흰 선 허용
     declare_parameter("psd_side_threshold", 0.30);
     declare_parameter("psd_timeout_sec", 0.5);
     // 디버그 화면
@@ -208,6 +220,15 @@ private:
     p.straight_weight = dblParam("straight_weight");
     p.fork_weight = dblParam("fork_weight");
     p.psd_weight = dblParam("psd_weight");
+    p.lane_rules = get_parameter("lane_rules").as_bool();   // 공사 구간이면 onImage 에서 끈다
+    p.lane_width_tolerance = dblParam("lane_width_tolerance");
+    p.side_weight = dblParam("side_weight");
+    p.strict_colors = get_parameter("strict_colors").as_bool();
+    p.recover_wrong_side = get_parameter("recover_wrong_side").as_bool();
+    p.recover_inlane_px = dblParam("recover_inlane_px");   // 주차 구간이면 onImage 에서 끈다
+    p.cross_line_px = dblParam("cross_line_px");
+    p.cross_weight = dblParam("cross_weight");
+    p.gap_fill_px = dblParam("gap_fill_px");
     p.lane_width_px = dblParam("lane_width_px");
     p.lookahead_px = dblParam("lookahead_px");
     p.follower_lookahead_px = dblParam("follower_lookahead_px");
@@ -230,6 +251,7 @@ private:
         const double w = (last_dxl_.right_velocity - last_dxl_.left_velocity) /
           dblParam("wheel_separation");
         odom_.ds_px += v * dt * dblParam("bev_px_per_m");
+        odo_total_px_ += std::abs(v) * dt * dblParam("bev_px_per_m");
         odom_.dtheta += w * dt;
       }
     }
@@ -254,8 +276,25 @@ private:
       construction_start_ = t;
       box_seen_ = false;
     } else if (s.type == Sign::LEFT || s.type == Sign::RIGHT) {
-      fork_dir_ = s.type == Sign::LEFT ? -1 : 1;
-      fork_stamp_ = t;
+      // 한두 프레임 잘못 읽힌 반대 방향에 흔들리지 않게, 같은 방향이 연달아 보여야 확정한다
+      // (표지판이 안 보이는 프레임은 셈을 끊지 않는다. 반대 방향이 보이면 처음부터)
+      const int dir = s.type == Sign::LEFT ? -1 : 1;
+      fork_count_ = dir == fork_cand_ ? fork_count_ + 1 : 1;
+      fork_cand_ = dir;
+      if (fork_count_ >= intParam("fork_confirm_count")) {
+        if (fork_dir_ != dir) {
+          RCLCPP_INFO(get_logger(), "갈림길 표지판: %s", dir < 0 ? "왼쪽" : "오른쪽");
+        }
+        fork_dir_ = dir;
+        fork_stamp_ = t;
+        fork_odo_px_ = odo_total_px_;
+      }
+    } else if (s.type == Sign::PARKING) {
+      if (!parking_) {
+        RCLCPP_INFO(get_logger(), "주차 표지판: 왼쪽 흰 선 허용");
+      }
+      parking_ = true;
+      parking_odo_px_ = odo_total_px_;
     }
   }
 
@@ -276,10 +315,20 @@ private:
       }
     }
     map_planner::Bias b;
-    if (fork_dir_ != 0 && (t - fork_stamp_).seconds() <= dblParam("fork_hold_sec")) {
+    // 갈림길: 확정한 뒤 fork_hold_px 를 달릴 때까지 유지 (저속이면 시간 기준으로는 갈림길 전에 풀린다)
+    if (fork_dir_ != 0 && odo_total_px_ - fork_odo_px_ <= dblParam("fork_hold_px") &&
+      (t - fork_stamp_).seconds() <= dblParam("fork_hold_sec"))
+    {
       b.fork_dir = fork_dir_;
-    } else {
+    } else if (fork_dir_ != 0) {
+      RCLCPP_INFO(get_logger(), "갈림길 방향 해제");
       fork_dir_ = 0;
+      fork_cand_ = 0;
+      fork_count_ = 0;
+    }
+    if (parking_ && odo_total_px_ - parking_odo_px_ > dblParam("parking_relax_px")) {
+      parking_ = false;
+      RCLCPP_INFO(get_logger(), "주차 구간 종료: 색 규칙 다시 엄격하게");
     }
     if (psd_received_ && (t - psd_stamp_).seconds() <= dblParam("psd_timeout_sec")) {
       const double th = dblParam("psd_side_threshold");
@@ -305,7 +354,12 @@ private:
     const auto obs = map_planner::observe(raw, readMaskParams(), p);
     const auto bias = makeBias(obs.bev_maps.box_pixels > 0 || obs.raw_maps.box_pixels > 0);
     if (construction_) {
+      // 박스를 피해 선을 넘어야 하고 차선 폭도 달라서, 선 넘기 벌점을 낮추고 색 / 차선 폭 규칙도 끈다
       p.line_weight = dblParam("construction_line_weight");
+      p.lane_rules = false;
+    }
+    if (parking_) {
+      p.strict_colors = false;   // 주차 구간은 양쪽이 흰 선
     }
     const auto r = planner_.step(obs, p, bias, odom_);
     odom_ = {};
@@ -344,9 +398,12 @@ private:
     std::snprintf(text, sizeof(text), "%s off %+.2f ang %+.2f c %.1f", r.detected ? "o" : "x",
       r.offset, r.angle, r.confidence);
     cv::putText(out, text, {6, 20}, cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 255), 2);
-    std::snprintf(text, sizeof(text), "%s%s%s%s", construction_ ? "CONSTR " : "",
+    std::snprintf(text, sizeof(text), "%s%s%s%s%s%s%s", construction_ ? "CONSTR " : "",
+      r.recovering ? "RECOVER " : "",
+      parking_ ? "PARK " : "",
       bias.fork_dir < 0 ? "FORK_L " : bias.fork_dir > 0 ? "FORK_R " : "",
-      bias.psd_left_close ? "PSD_L " : "", bias.psd_right_close ? "PSD_R" : "");
+      bias.psd_left_close ? "PSD_L " : "", bias.psd_right_close ? "PSD_R " : "",
+      r.fills.empty() ? "" : "GAP_FILL");
     cv::putText(out, text, {6, 42}, cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 165, 255), 2);
 
     sensor_msgs::msg::CompressedImage jpeg;
@@ -365,8 +422,13 @@ private:
 
   bool construction_ = false, box_seen_ = false;
   rclcpp::Time construction_start_, box_stamp_;
-  int fork_dir_ = 0;
+  int fork_dir_ = 0;            // 확정한 갈림길 방향
+  int fork_cand_ = 0, fork_count_ = 0;   // 확정 전 후보 방향과 연달아 본 횟수
   rclcpp::Time fork_stamp_;
+  double fork_odo_px_ = 0;
+  bool parking_ = false;
+  double parking_odo_px_ = 0;
+  double odo_total_px_ = 0;     // 누적 주행 거리 [px] (표지판 유지 거리용)
   interfaces::msg::PsdArray psd_;
   rclcpp::Time psd_stamp_;
   bool psd_received_ = false;
