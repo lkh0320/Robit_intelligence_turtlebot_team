@@ -123,6 +123,9 @@ public:
     declare_parameter("yellow_l_min", 80);
     declare_parameter("white_l_min", 190);         // 흰 선 L ≈ 230~250, 바닥 ≈ 85
     declare_parameter("white_ab_dev", 15);         // 흰 선은 a, b 가 128 ± 이 값 안
+    // 노란 선 시작점을 화면 왼쪽 이 비율 안에서만 찾는다 (1.0 = 화면 전체).
+    // 양쪽이 다 노란선인 주차 구역에서 오른쪽 노란선을 왼쪽 선으로 잘못 잡지 않게 한다.
+    declare_parameter("yellow_search_max_ratio", 1.0);
     // 2~5. 차선 탐색
     declare_parameter("lane_width_px", 267.0);     // BEV 에서 두 차선 중심 사이 폭 (bird_eye_view 보정값)
     declare_parameter("bev_center_x", 0.5);        // BEV 에서 로봇(카메라 중심)의 가로 위치 (폭 비율)
@@ -265,7 +268,8 @@ private:
     const int base_min = intParam("base_min_pixels");
     // 노란 선은 화면 전체에서, 흰 선은 노란 선 오른쪽 0.5~1.5 차선 폭 범위에서 찾는다.
     // 노란 선이 안 보이면 흰 선은 로봇 위치보다 오른쪽에서만 찾는다
-    const int left_base = histogramPeak(yellow, 0, w, base_min);
+    const int yellow_x1 = static_cast<int>(dblParam("yellow_search_max_ratio") * w);
+    const int left_base = histogramPeak(yellow, 0, yellow_x1, base_min);
     const int right_base = left_base >= 0 ?
       histogramPeak(white, left_base + static_cast<int>(0.5 * lane_w),
       left_base + static_cast<int>(1.5 * lane_w), base_min) :
@@ -316,6 +320,9 @@ private:
     }
     const double y_bot = h - 1;   // 로봇은 BEV 맨 아래에 있다고 본다
     lane.detected = center.has_value();
+    // 왼쪽(노란) / 오른쪽(흰) 선을 이번 프레임에서 직접 찾았는지 (이전 값으로 버티는 중이면 false)
+    lane.left_detected = left_.fit.has_value() && left_.miss == 0;
+    lane.right_detected = right_.fit.has_value() && right_.miss == 0;
     if (center) {
       // 로봇 바로 앞(맨 아래 줄)에서 차선 중심이 로봇보다 얼마나 옆에 있는지, 반 차선 폭 = 1 로 정규화
       lane.offset = static_cast<float>(

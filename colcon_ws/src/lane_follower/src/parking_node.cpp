@@ -1,43 +1,50 @@
 // ============================================================================
-//  parking_node.cpp - 주차 표지판을 보면 주차를 하고, 끝나면 다시 라인 주행으로 돌려준다
+//  parking_node.cpp - 주차 구간 담당
 // ============================================================================
+//
+// [트랙 모양]
+//   평소 차선 : 왼쪽 노란선, 오른쪽 흰선
+//   주차 구역 : 왼쪽, 오른쪽 둘 다 노란선. 양옆에 주차칸이 있고, 한쪽 칸에는 장애물이 있다
+//   -> 장애물이 없는 반대쪽 칸에 주차했다가 나와서 계속 간다
 //
 // [전체 흐름]
 //
-//   주행 중 (lane_follower 가 차선 따라 운전)
-//      │
-//      │  sign_detection 이 주차 표지판을 충분히 가까이, 여러 번 연속으로 봄
-//      ▼
-//   주차 시작: control_mode 를 PARKING 으로 바꿈 -> lane_follower 는 스스로 멈춘다
-//      │
-//      │  아래 "단계" 를 차례로 실행 (각 단계 = 속도 v, 회전 w 를 정해진 시간 동안)
-//      │    1) approach : 앞으로 조금 더 가기 (주차칸 입구까지)
-//      │    2) turn_in  : 주차칸 쪽으로 90도 돌기
-//      │    3) enter    : 주차칸 안으로 들어가기 (앞으로 또는 뒤로)
-//      │    4) wait     : 주차칸 안에서 잠깐 서 있기
-//      │    5) exit     : 주차칸에서 나오기 (들어간 반대 방향)
-//      │    6) turn_out : 원래 방향으로 다시 90도 돌기
-//      ▼
-//   주차 끝: parking_done 을 알리고, control_mode 를 LANE 으로 돌려줌 -> 다시 차선 주행
+//   (1) WAITING      : 주차 표지판을 기다린다
+//          │  주차 표지판이 가까이 3번 연속 보임
+//          ▼
+//   (2) ZONE         : 주차 구역 안. 운전은 lane_follower 가 한다 (왼쪽 노란선 따라가기)
+//          │            lane_detection 은 오른쪽에서 흰선만 찾기 때문에, 오른쪽이 노란선인
+//          │            주차 구역에서는 자동으로 왼쪽 노란선을 기준으로 주행한다.
+//          │
+//          │  왼쪽 PSD <= 0.2m  -> 왼쪽 칸에 장애물 -> 오른쪽 칸에 주차
+//          │  오른쪽 PSD <= 0.2m -> 오른쪽 칸에 장애물 -> 왼쪽 칸에 주차
+//          ▼
+//   (3) MANEUVER     : 이 노드가 직접 바퀴를 움직인다 (lane_follower 는 멈춤)
+//          │   ① 빈 칸 쪽으로 90도 회전
+//          │   ② 2초 전진 (칸 안으로)
+//          │   ③ 2초 대기 (주차 완료)
+//          │   ④ 180도 회전 (칸 밖을 보게)
+//          │   ⑤ 앞 PSD 가 exit_front_distance 이하가 될 때까지 전진
+//          │      (건너편 장애물이 이만큼 가까워지면 = 원래 차선 위치로 돌아온 것)
+//          │   ⑥ 90도 회전해서 원래 진행 방향으로
+//          ▼
+//   (2) ZONE 으로 복귀 : 다시 lane_follower 가 왼쪽 노란선 따라 운전
+//          │  오른쪽 선이 다시 흰선으로 보임 (주차 구역 끝)
+//          ▼
+//   (4) FINISHED     : parking_done 을 보내고 끝. 평소 자율주행 계속
 //
-// [두 가지 실행 방식]  (파라미터 use_task_planner)
+// [회전 방향] 오른쪽 칸에 주차하면 ①④⑥ 을 전부 오른쪽으로 돈다.
+//   ① 오른쪽 90 -> ④ 오른쪽 180 -> ⑥ 오른쪽 90 = 한 바퀴(360도) -> 원래 방향.
+//   (⑥ 을 반대로 돌면 180도가 되어 왔던 길로 돌아간다)
 //
-//   false (기본, 시험용) : 이 노드가 직접 /sign 을 보고 주차를 시작한다.
-//                         control_mode 도 이 노드가 PARKING -> LANE 으로 바꾼다.
-//                         ros2 launch lane_follower autonomous.launch.py lane_method:=sliding
-//
-//   true (미션 전체)     : task_planner 가 /sign 을 보고 control_mode 를 PARKING 으로 바꾼다.
-//                         이 노드는 PARKING 이 되면 단계를 실행하고, 끝나면 parking_done 만 보낸다.
-//                         (GUI 의 PARKING 모드 버튼을 눌러도 같은 방식으로 시작된다)
+// [task_planner 와 함께 쓸 때] (use_task_planner: true)
+//   control_mode 는 task_planner 가 보낸다. 이 노드는 parking_active (지금 직접 운전 중인지)와
+//   parking_done (주차 구간 끝) 만 알려주고, task_planner 가 그걸 보고 모드를 정한다.
 //
 // [안전]
-//   - 앞으로 가는 단계에서 정면 PSD 가 front_stop_distance 보다 가까우면 멈추고 기다린다.
+//   - 전진 중 정면 PSD 가 front_stop_distance 보다 가까우면 멈추고 기다린다.
 //   - GUI 에서 STOP / MANUAL 을 누르면 바로 멈추고 주차를 포기한다.
-//   - 이 노드는 주차 중일 때만 cmd_vel 을 보낸다. 평소에는 아무것도 보내지 않는다.
-//
-// [주의] 거리와 각도는 "속도 x 시간" 으로 계산한다 (엔코더를 아직 안 씀).
-//   바퀴 반지름(STM app.c)과 바퀴 사이 거리(stm_bridge.yaml)가 맞아야 정확하다.
-//   실제로 돌려 보고 config/parking.yaml 의 거리 / 각도를 맞추면 된다.
+//   - 각 단계에는 최대 시간이 있어서 조건이 안 맞아도 영원히 움직이지 않는다.
 
 #include <chrono>
 #include <cmath>
@@ -47,57 +54,64 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "interfaces/msg/control_mode.hpp"
-#include "interfaces/msg/parking_spot.hpp"
+#include "interfaces/msg/lane_info.hpp"
 #include "interfaces/msg/psd_array.hpp"
 #include "interfaces/msg/sign.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 
-// 이 노드가 보내는 control_mode 의 mission_state 앞에 붙는 이름.
-// 내가 보낸 메시지가 다시 나한테 들어올 때 "내 거네" 하고 무시하는 데 쓴다.
+// 이 노드가 보내는 control_mode 의 mission_state 앞에 붙는 이름 (내가 보낸 걸 다시 받으면 무시하려고)
 static const char * const MY_TAG = "parking_node";
 
-// 주차 동작 한 단계: 이 속도(v)와 회전(w)으로 이 시간(duration) 동안 움직인다
+// 주차 동작 한 단계
 struct Step
 {
-  std::string name;     // 단계 이름 (로그와 GUI 표시용)
-  double v;             // 앞뒤 속도 [m/s]   + 앞, - 뒤
-  double w;             // 회전 속도 [rad/s] + 왼쪽(반시계), - 오른쪽(시계)
-  double duration;      // 이 단계를 하는 시간 [s]
+  std::string name;          // 단계 이름 (로그, GUI 표시용)
+  double v;                  // 앞뒤 속도 [m/s]   + 앞, - 뒤
+  double w;                  // 회전 속도 [rad/s] + 왼쪽, - 오른쪽
+  double duration;           // 이 시간 [s] 동안 한다 (until_front 가 있으면 "최대" 시간)
+  double until_front;        // 0 보다 크면: 앞 PSD 가 이 거리 [m] 이하가 되면 바로 다음 단계로
 };
 
 class ParkingNode : public rclcpp::Node
 {
   using ControlMode = interfaces::msg::ControlMode;
   using Sign = interfaces::msg::Sign;
-  using ParkingSpot = interfaces::msg::ParkingSpot;
+  using LaneInfo = interfaces::msg::LaneInfo;
 
-  // 이 노드의 상태
   enum class State
   {
-    WAITING,    // 주차 표지판(또는 PARKING 모드)을 기다리는 중
-    RUNNING,    // 주차 단계를 실행하는 중
-    FINISHED,   // 주차를 끝냈거나 포기함 (다시 시작하지 않음)
+    WAITING,     // 주차 표지판 기다리는 중
+    ZONE,        // 주차 구역 안, lane_follower 가 운전 (왼쪽 노란선 따라가기)
+    MANEUVER,    // 이 노드가 직접 주차 동작 중
+    FINISHED,    // 주차 구간 끝 (또는 포기)
   };
 
 public:
   ParkingNode()
   : Node("parking")
   {
-    // ---- 파라미터 (config/parking.yaml 에서 바꾼다) ----
+    // ---- 파라미터 (config/parking.yaml) ----
     use_task_planner_ = declare_parameter("use_task_planner", false);
+    // 표지판
     min_confidence_ = declare_parameter("min_confidence", 0.5);
     sign_area_ratio_threshold_ = declare_parameter("sign_area_ratio_threshold", 0.03);
     sign_hits_needed_ = declare_parameter("sign_hits_needed", 3);
-    parking_side_ = declare_parameter("parking_side", std::string("right"));
-    use_parking_spot_ = declare_parameter("use_parking_spot", true);
+    // 장애물 칸 찾기
+    side_psd_threshold_ = declare_parameter("side_psd_threshold", 0.20);
+    side_psd_hits_needed_ = declare_parameter("side_psd_hits_needed", 3);
+    // 주차 구역 들어감 / 나옴 (오른쪽 흰선)
+    lane_frames_needed_ = declare_parameter("lane_frames_needed", 5);
+    zone_timeout_ = declare_parameter("zone_timeout", 40.0);
+    // 주차 동작
     linear_speed_ = declare_parameter("linear_speed", 0.08);
     angular_speed_ = declare_parameter("angular_speed", 0.6);
-    approach_distance_ = declare_parameter("approach_distance", 0.20);
-    turn_angle_deg_ = declare_parameter("turn_angle_deg", 90.0);
-    enter_distance_ = declare_parameter("enter_distance", 0.25);
-    enter_reverse_ = declare_parameter("enter_reverse", false);
+    align_time_ = declare_parameter("align_time", 0.0);
+    enter_time_ = declare_parameter("enter_time", 2.0);
     park_wait_time_ = declare_parameter("park_wait_time", 2.0);
+    exit_front_distance_ = declare_parameter("exit_front_distance", 0.30);
+    exit_timeout_ = declare_parameter("exit_timeout", 4.0);
+    // 안전
     front_stop_distance_ = declare_parameter("front_stop_distance", 0.10);
     const double rate = declare_parameter("control_rate", 20.0);
     dt_ = 1.0 / rate;
@@ -109,17 +123,15 @@ public:
       {
         on_sign(*msg);
       });
-    spot_sub_ = create_subscription<ParkingSpot>(
-      "parking_spot", qos, [this](ParkingSpot::ConstSharedPtr msg)
+    lane_sub_ = create_subscription<LaneInfo>(
+      "lane_info", qos, [this](LaneInfo::ConstSharedPtr msg)
       {
-        spot_ = *msg;
-        spot_received_ = true;
+        on_lane(*msg);
       });
     psd_sub_ = create_subscription<interfaces::msg::PsdArray>(
       "psd", qos, [this](interfaces::msg::PsdArray::ConstSharedPtr msg)
       {
-        psd_ = *msg;
-        psd_received_ = true;
+        on_psd(*msg);
       });
     mode_sub_ = create_subscription<ControlMode>(
       "control_mode", 10, [this](ControlMode::ConstSharedPtr msg)
@@ -130,22 +142,23 @@ public:
     // ---- 보내는 토픽 ----
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
     mode_pub_ = create_publisher<ControlMode>("control_mode", 10);
+    active_pub_ = create_publisher<std_msgs::msg::Bool>("parking_active", 10);
     done_pub_ = create_publisher<std_msgs::msg::Bool>("parking_done", 10);
 
-    // ---- 0.05초마다 step() 실행 ----
+    // ---- 0.05초마다 step() ----
     timer_ = create_wall_timer(std::chrono::duration<double>(dt_), [this]
       {
         step();
       });
 
-    RCLCPP_INFO(get_logger(), "주차 노드 시작 (%s)",
-      use_task_planner_ ? "task_planner 의 PARKING 모드를 기다림" : "주차 표지판을 직접 기다림");
+    RCLCPP_INFO(get_logger(), "주차 노드 시작: 주차 표지판 기다림 (task_planner %s)",
+      use_task_planner_ ? "사용" : "없음");
   }
 
 private:
   // ==================== 받은 메시지 처리 ====================
 
-  // 표지판을 받았을 때: 주차 표지판이 가까이, 여러 번 연속으로 보이면 주차 시작
+  // (1) 표지판: 주차 표지판이 가까이 연속으로 보이면 주차 구역 시작
   void on_sign(const Sign & sign)
   {
     const bool close_parking_sign =
@@ -153,198 +166,247 @@ private:
       sign.confidence >= min_confidence_ &&
       sign.area_ratio >= sign_area_ratio_threshold_;
 
-    if (close_parking_sign)
-    {
-      sign_hits_++;           // 연속으로 본 횟수 1 증가
-    }
-    else
-    {
-      sign_hits_ = 0;         // 한 번이라도 안 보이면 처음부터 다시 센다 (잘못 본 것 걸러내기)
-    }
+    sign_hits_ = close_parking_sign ? sign_hits_ + 1 : 0;
 
-    // task_planner 를 쓸 때는 시작 판단을 task_planner 가 한다
-    if (use_task_planner_)
-    {
-      return;
-    }
     if (state_ == State::WAITING && sign_hits_ >= sign_hits_needed_)
     {
-      RCLCPP_INFO(get_logger(), "주차 표지판 인식 (크기 %.3f, 신뢰도 %.2f) -> 주차 시작",
-        sign.area_ratio, sign.confidence);
-      start();
+      RCLCPP_INFO(get_logger(), "주차 표지판 인식 -> 주차 구역 모드 (왼쪽 노란선 따라가기)");
+      state_ = State::ZONE;
+      zone_elapsed_ = 0.0;
+      inside_zone_ = false;
+      parked_ = false;
+      left_hits_ = 0;
+      right_hits_ = 0;
+      white_seen_frames_ = 0;
+      white_lost_frames_ = 0;
     }
   }
 
-  // control_mode 를 받았을 때
+  // 차선 정보: 오른쪽 흰선이 사라지면 "주차 구역 안", 다시 보이면 "주차 구역 끝"
+  void on_lane(const LaneInfo & lane)
+  {
+    if (state_ != State::ZONE)
+    {
+      return;
+    }
+
+    if (lane.right_detected)
+    {
+      white_seen_frames_++;
+      white_lost_frames_ = 0;
+    }
+    else
+    {
+      white_lost_frames_++;
+      white_seen_frames_ = 0;
+    }
+
+    // 오른쪽 흰선이 연속으로 안 보임 -> 오른쪽이 노란선인 주차 구역에 들어왔다
+    if (!inside_zone_ && white_lost_frames_ >= lane_frames_needed_)
+    {
+      inside_zone_ = true;
+      RCLCPP_INFO(get_logger(), "주차 구역 진입 (오른쪽 흰선 없음)");
+    }
+
+    // 구역 안에 있다가 오른쪽 흰선이 다시 연속으로 보임 -> 주차 구역 끝
+    if (inside_zone_ && white_seen_frames_ >= lane_frames_needed_)
+    {
+      finish(parked_ ? "주차 구역 끝 (오른쪽 흰선 다시 보임)" :
+        "주차 구역 끝, 하지만 주차할 칸을 못 찾음");
+    }
+  }
+
+  // PSD: 구역 안에서 한쪽이 가까우면 그쪽 칸에 장애물 -> 반대쪽 칸에 주차
+  void on_psd(const interfaces::msg::PsdArray & psd)
+  {
+    psd_ = psd;
+    psd_received_ = true;
+
+    if (state_ != State::ZONE || !inside_zone_ || parked_)
+    {
+      return;
+    }
+
+    left_hits_ = (psd.left > 0.0 && psd.left <= side_psd_threshold_) ? left_hits_ + 1 : 0;
+    right_hits_ = (psd.right > 0.0 && psd.right <= side_psd_threshold_) ? right_hits_ + 1 : 0;
+
+    if (left_hits_ >= side_psd_hits_needed_)
+    {
+      RCLCPP_INFO(get_logger(), "왼쪽 칸에 장애물 (%.2fm) -> 오른쪽 칸에 주차", psd.left);
+      start_maneuver(-1.0);      // -1 = 오른쪽으로 돈다
+    }
+    else if (right_hits_ >= side_psd_hits_needed_)
+    {
+      RCLCPP_INFO(get_logger(), "오른쪽 칸에 장애물 (%.2fm) -> 왼쪽 칸에 주차", psd.right);
+      start_maneuver(+1.0);      // +1 = 왼쪽으로 돈다
+    }
+  }
+
+  // control_mode: GUI 에서 STOP / MANUAL 을 누르면 포기
   void on_mode(const ControlMode & msg)
   {
-    // 내가 보낸 메시지면 무시
     if (msg.mission_state.rfind(MY_TAG, 0) == 0)
     {
-      return;
+      return;                    // 내가 보낸 것
     }
-
-    if (use_task_planner_)
-    {
-      // task_planner / GUI 가 PARKING 으로 바꾸면 시작, 다른 모드로 바꾸면 중단
-      if (msg.mode == ControlMode::PARKING && state_ == State::WAITING)
-      {
-        RCLCPP_INFO(get_logger(), "PARKING 모드 받음 -> 주차 시작");
-        start();
-      }
-      else if (msg.mode != ControlMode::PARKING && state_ == State::RUNNING)
-      {
-        abort("모드가 PARKING 이 아니게 바뀜");
-      }
-      return;
-    }
-
-    // 직접 시작하는 방식: GUI 에서 STOP 이나 MANUAL 을 누르면 중단
-    if (state_ == State::RUNNING &&
-      (msg.mode == ControlMode::STOP || msg.mode == ControlMode::MANUAL))
+    const bool stop_request = msg.mode == ControlMode::STOP || msg.mode == ControlMode::MANUAL;
+    const bool working = state_ == State::ZONE || state_ == State::MANEUVER;
+    if (stop_request && working && msg.mission_state == "turtle_gui")
     {
       abort("GUI 에서 STOP/MANUAL");
     }
   }
 
-  // ==================== 주차 시작 / 끝 / 중단 ====================
+  // ==================== 주차 동작 ====================
 
-  // 주차 단계 목록을 만들고 시작한다
-  void start()
+  // 주차 동작 단계 목록을 만들고 시작. turn = +1 왼쪽 칸, -1 오른쪽 칸
+  void start_maneuver(double turn)
   {
-    // 1) 어느 쪽 칸에 넣을지 정한다. +1 = 왼쪽, -1 = 오른쪽
-    double side = (parking_side_ == "left") ? +1.0 : -1.0;
-    if (use_parking_spot_ && spot_received_ && spot_.detected)
-    {
-      // 주차칸 인식 노드가 빈 칸 방향을 알려주면 그걸 쓴다
-      if (spot_.empty_side == ParkingSpot::LEFT)
-      {
-        side = +1.0;
-      }
-      else if (spot_.empty_side == ParkingSpot::RIGHT)
-      {
-        side = -1.0;
-      }
-    }
-
-    // 2) 숫자 준비
     const double v = linear_speed_;
-    const double w = angular_speed_;
-    const double turn_rad = turn_angle_deg_ * M_PI / 180.0;   // 도 -> 라디안
-    const double turn_time = turn_rad / w;                    // 이 각도만큼 도는 데 걸리는 시간
-    const double enter_dir = enter_reverse_ ? -1.0 : +1.0;    // 들어갈 때 앞(+1) / 뒤(-1)
+    const double w = turn * angular_speed_;              // 돌 방향 포함한 회전 속도
+    const double t90 = (M_PI / 2.0) / angular_speed_;    // 90도 도는 시간
+    const double t180 = M_PI / angular_speed_;           // 180도 도는 시간
 
-    // 앞으로 들어가면 칸 쪽으로 돌고, 뒤로 들어가면 칸 반대쪽으로 돈다 (엉덩이를 칸에 맞추려고)
-    const double turn_in_w = side * enter_dir * w;
-
-    // 3) 단계 목록. 시간 = 거리 / 속도
     steps_.clear();
-    steps_.push_back({"approach", v, 0.0, approach_distance_ / v});
-    steps_.push_back({"turn_in", 0.0, turn_in_w, turn_time});
-    steps_.push_back({"enter", enter_dir * v, 0.0, enter_distance_ / v});
-    steps_.push_back({"wait", 0.0, 0.0, park_wait_time_});
-    steps_.push_back({"exit", -enter_dir * v, 0.0, enter_distance_ / v});
-    steps_.push_back({"turn_out", 0.0, -turn_in_w, turn_time});
+    if (align_time_ > 0.0)
+    {
+      steps_.push_back({"align", v, 0.0, align_time_, 0.0});        // 칸 가운데로 조금 더 가기
+    }
+    steps_.push_back({"turn_in", 0.0, w, t90, 0.0});                 // ① 빈 칸 쪽으로 90도
+    steps_.push_back({"enter", v, 0.0, enter_time_, 0.0});           // ② 칸 안으로 전진
+    steps_.push_back({"wait", 0.0, 0.0, park_wait_time_, 0.0});      // ③ 대기
+    steps_.push_back({"turn_around", 0.0, w, t180, 0.0});            // ④ 180도
+    steps_.push_back({"exit", v, 0.0, exit_timeout_, exit_front_distance_});  // ⑤ 앞 PSD 까지 전진
+    steps_.push_back({"turn_back", 0.0, w, t90, 0.0});               // ⑥ 원래 방향으로 90도
 
     step_index_ = 0;
     step_elapsed_ = 0.0;
-    state_ = State::RUNNING;
-
-    RCLCPP_INFO(get_logger(), "주차 방향: %s, 들어가기: %s",
-      side > 0 ? "왼쪽" : "오른쪽", enter_reverse_ ? "후진" : "전진");
+    state_ = State::MANEUVER;
+    publish_active(true);
+    RCLCPP_INFO(get_logger(), "주차 단계: %s", steps_[0].name.c_str());
   }
 
-  // 모든 단계를 끝냈을 때
-  void finish()
+  // 주차 동작 끝 -> 다시 lane_follower 가 왼쪽 노란선 따라 운전
+  void end_maneuver()
   {
     stop_wheels();
+    parked_ = true;
+    state_ = State::ZONE;
+    publish_active(false);
+    if (!use_task_planner_)
+    {
+      publish_mode(ControlMode::LANE, "zone");
+    }
+    RCLCPP_INFO(get_logger(), "주차 완료 -> 왼쪽 노란선 따라 계속 주행");
+  }
+
+  // 주차 구간 끝
+  void finish(const char * reason)
+  {
+    if (state_ == State::MANEUVER)
+    {
+      stop_wheels();
+      publish_active(false);
+    }
     state_ = State::FINISHED;
 
     std_msgs::msg::Bool done;
     done.data = true;
-    done_pub_->publish(done);           // task_planner 에게 "주차 끝" 알림
-
+    done_pub_->publish(done);
     if (!use_task_planner_)
     {
-      publish_mode(ControlMode::LANE, "done");   // lane_follower 에게 "다시 운전해"
+      publish_mode(ControlMode::LANE, "done");
     }
-    RCLCPP_INFO(get_logger(), "주차 완료 -> 라인 주행으로 복귀");
+    RCLCPP_INFO(get_logger(), "%s -> 평소 자율주행으로", reason);
   }
 
-  // 중간에 그만둘 때
+  // 포기
   void abort(const char * reason)
   {
-    stop_wheels();
+    if (state_ == State::MANEUVER)
+    {
+      stop_wheels();
+      publish_active(false);
+    }
     state_ = State::FINISHED;
     RCLCPP_WARN(get_logger(), "주차 중단: %s", reason);
   }
 
-  // ==================== 0.05초마다 하는 일 ====================
+  // ==================== 0.05초마다 ====================
 
   void step()
   {
-    if (state_ != State::RUNNING)
+    // 주차 구역에서 너무 오래 있으면 (흰선을 못 찾는 등) 그냥 끝낸다
+    if (state_ == State::ZONE)
     {
-      return;                           // 주차 중이 아니면 아무것도 안 보낸다
+      zone_elapsed_ += dt_;
+      if (zone_elapsed_ >= zone_timeout_)
+      {
+        finish("주차 구역 시간 초과");
+      }
+      return;                    // ZONE 에서는 lane_follower 가 운전하므로 바퀴 명령을 안 보낸다
+    }
+    if (state_ != State::MANEUVER)
+    {
+      return;
     }
 
     const Step & s = steps_[step_index_];
 
-    // 직접 시작하는 방식이면 "지금 주차 중" 을 계속 알려서 lane_follower 가 멈춰 있게 한다
+    // lane_follower 가 멈춰 있도록 "주차 중" 을 계속 알린다 (task_planner 가 있으면 그쪽이 한다)
     if (!use_task_planner_)
     {
       publish_mode(ControlMode::PARKING, s.name);
     }
 
-    // 안전: 앞으로 가는데 앞이 막혀 있으면 멈추고 기다린다 (시간도 멈춤)
-    if (s.v > 0.0 && front_blocked())
+    // 안전: 전진 중 앞이 너무 가까우면 멈추고 기다린다
+    if (s.v > 0.0 && front_closer_than(front_stop_distance_))
     {
       stop_wheels();
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "앞이 막힘 -> 대기");
       return;
     }
 
-    // 이 단계의 시간이 다 됐으면 다음 단계로
+    // 다음 단계로 넘어갈지: 시간이 다 됐거나, 앞 PSD 조건을 만족했으면
     step_elapsed_ += dt_;
-    if (step_elapsed_ >= s.duration)
+    const bool time_up = step_elapsed_ >= s.duration;
+    const bool front_reached = s.until_front > 0.0 && front_closer_than(s.until_front);
+    if (time_up || front_reached)
     {
       step_index_++;
       step_elapsed_ = 0.0;
       if (step_index_ >= steps_.size())
       {
-        finish();
+        end_maneuver();
         return;
       }
       RCLCPP_INFO(get_logger(), "주차 단계: %s", steps_[step_index_].name.c_str());
       return;
     }
 
-    // 이 단계의 속도로 움직이기
     geometry_msgs::msg::Twist cmd;
     cmd.linear.x = s.v;
     cmd.angular.z = s.w;
     cmd_pub_->publish(cmd);
   }
 
-  // ==================== 작은 도우미 함수들 ====================
+  // ==================== 도우미 ====================
 
-  // 정면 PSD 가 너무 가까우면 true
-  bool front_blocked() const
+  // 정면 PSD 가 distance [m] 보다 가까우면 true
+  bool front_closer_than(double distance) const
   {
-    if (front_stop_distance_ <= 0.0 || !psd_received_)
+    if (distance <= 0.0 || !psd_received_)
     {
       return false;
     }
-    return psd_.front > 0.0 && psd_.front < front_stop_distance_;
+    return psd_.front > 0.0 && psd_.front <= distance;
   }
 
-  // 바퀴 정지 명령 보내기 (속도 0)
   void stop_wheels()
   {
     cmd_pub_->publish(geometry_msgs::msg::Twist());
   }
 
-  // control_mode 보내기. mission_state 는 "parking_node:단계이름" (GUI 에 보임)
   void publish_mode(uint8_t mode, const std::string & detail)
   {
     ControlMode msg;
@@ -354,6 +416,13 @@ private:
     mode_pub_->publish(msg);
   }
 
+  void publish_active(bool active)
+  {
+    std_msgs::msg::Bool msg;
+    msg.data = active;
+    active_pub_->publish(msg);
+  }
+
   // ==================== 변수 ====================
 
   // 파라미터
@@ -361,38 +430,45 @@ private:
   double min_confidence_;
   double sign_area_ratio_threshold_;
   int64_t sign_hits_needed_;
-  std::string parking_side_;
-  bool use_parking_spot_;
+  double side_psd_threshold_;
+  int64_t side_psd_hits_needed_;
+  int64_t lane_frames_needed_;
+  double zone_timeout_;
   double linear_speed_;
   double angular_speed_;
-  double approach_distance_;
-  double turn_angle_deg_;
-  double enter_distance_;
-  bool enter_reverse_;
+  double align_time_;
+  double enter_time_;
   double park_wait_time_;
+  double exit_front_distance_;
+  double exit_timeout_;
   double front_stop_distance_;
   double dt_;
 
   // 상태
   State state_ = State::WAITING;
   int64_t sign_hits_ = 0;
+  bool inside_zone_ = false;       // 오른쪽 흰선이 사라진 걸 확인했는지 (= 주차 구역 안)
+  bool parked_ = false;            // 이번 구역에서 주차를 했는지
+  double zone_elapsed_ = 0.0;
+  int64_t left_hits_ = 0;
+  int64_t right_hits_ = 0;
+  int64_t white_seen_frames_ = 0;
+  int64_t white_lost_frames_ = 0;
   std::vector<Step> steps_;
   size_t step_index_ = 0;
   double step_elapsed_ = 0.0;
 
-  // 마지막으로 받은 값
-  ParkingSpot spot_;
-  bool spot_received_ = false;
   interfaces::msg::PsdArray psd_;
   bool psd_received_ = false;
 
   // ROS 연결
   rclcpp::Subscription<Sign>::SharedPtr sign_sub_;
-  rclcpp::Subscription<ParkingSpot>::SharedPtr spot_sub_;
+  rclcpp::Subscription<LaneInfo>::SharedPtr lane_sub_;
   rclcpp::Subscription<interfaces::msg::PsdArray>::SharedPtr psd_sub_;
   rclcpp::Subscription<ControlMode>::SharedPtr mode_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<ControlMode>::SharedPtr mode_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr active_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr done_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

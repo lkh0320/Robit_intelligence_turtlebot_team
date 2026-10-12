@@ -2,7 +2,7 @@
 //   control_mode 토픽으로 지시한다. 실제 조향/속도 계산(PID, 회피 경로, 주차 기동)은
 //   autonomous driving 쪽 책임이며 이 노드는 관여하지 않는다.
 //
-// sub: traffic_light, sign, psd, parking_spot, dxl_state, barrier, parking_done,
+// sub: traffic_light, sign, psd, parking_spot, dxl_state, barrier, parking_active, parking_done,
 //      control_mode (GUI 강제 오버라이드 감지용)
 // pub: control_mode (interfaces/ControlMode)
 //
@@ -87,7 +87,12 @@ public:
       });
     dxl_sub_ = create_subscription<interfaces::msg::DxlState>(
       "dxl_state", qos, [this](interfaces::msg::DxlState::ConstSharedPtr msg) {dxl_ = *msg;});
-    // lane_follower 의 parking_node 가 주차 동작을 끝내면 true 를 보낸다
+    // parking_node 가 칸에 들어가고 나오는 동안(직접 운전 중) true. 그동안만 PARKING 모드
+    parking_active_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "parking_active", 10, [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        parking_active_ = msg->data;
+      });
+    // lane_follower 의 parking_node 가 주차 구간을 끝내면 true 를 보낸다
     parking_done_sub_ = create_subscription<std_msgs::msg::Bool>(
       "parking_done", 10, [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
         if (msg->data) {
@@ -156,6 +161,7 @@ private:
         {
           state_ = State::PARKING;
           parking_done_ = false;
+          parking_active_ = false;
           parking_timer_running_ = false;
         }
         break;
@@ -253,7 +259,8 @@ private:
       case State::TO_OBSTACLE: return ControlMode::LANE;
       case State::AVOIDING: return ControlMode::AVOID;
       case State::TO_PARKING: return ControlMode::LANE;
-      case State::PARKING: return ControlMode::PARKING;
+      // 주차 구역 안: 평소엔 LANE (왼쪽 노란선 따라가기), parking_node 가 칸에 들어가는 동안만 PARKING
+      case State::PARKING: return parking_active_ ? ControlMode::PARKING : ControlMode::LANE;
       case State::TO_BARRIER: return ControlMode::LANE;
       case State::BARRIER_WAIT: return ControlMode::STOP;
       case State::FINISHING: return ControlMode::LANE;
@@ -281,6 +288,7 @@ private:
   bool parking_timer_running_ = false;
   int64_t parking_sign_hits_ = 0;
   bool parking_done_ = false;
+  bool parking_active_ = false;
   rclcpp::Time parking_stable_since_;   // parking_timer_running_ 이 true 일 때만 유효
   rclcpp::Time finishing_since_;        // FINISHING 상태 진입 시점에만 설정됨
 
@@ -298,6 +306,7 @@ private:
   rclcpp::Subscription<interfaces::msg::ParkingSpot>::SharedPtr parking_sub_;
   rclcpp::Subscription<interfaces::msg::DxlState>::SharedPtr dxl_sub_;
   rclcpp::Subscription<interfaces::msg::Barrier>::SharedPtr barrier_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr parking_active_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr parking_done_sub_;
   rclcpp::Subscription<ControlMode>::SharedPtr mode_sub_;
   rclcpp::Publisher<ControlMode>::SharedPtr mode_pub_;

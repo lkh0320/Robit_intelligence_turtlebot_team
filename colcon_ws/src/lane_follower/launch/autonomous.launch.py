@@ -42,6 +42,9 @@ def generate_launch_description():
         # task_planner 가 없으면 control_mode 를 줄 노드가 없으므로 바로 주행
         IncludeLaunchDescription(
             launch_file('lane_follower', 'lane_follower.launch.py'),
-            launch_arguments={'autostart': PythonExpression(
-                ["'false' if '", use_task_planner, "' == 'true' else 'true'"])}.items()),
+            launch_arguments={
+                'autostart': PythonExpression(
+                    ["'false' if '", use_task_planner, "' == 'true' else 'true'"]),
+                'task_planner': use_task_planner,
+            }.items()),
     ])
