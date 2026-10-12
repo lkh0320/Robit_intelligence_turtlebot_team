@@ -15,6 +15,9 @@
   <depend>sensor_msgs</depend>
   <depend>interfaces</depend>
 
+  <depend>nav_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>libopencv-dev</depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>vision_bringup</exec_depend>
   <exec_depend>stm</exec_depend>
