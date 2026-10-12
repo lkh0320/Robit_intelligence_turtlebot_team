@@ -127,7 +127,7 @@ public:
     // 양쪽이 다 노란선인 주차 구역에서 오른쪽 노란선을 왼쪽 선으로 잘못 잡지 않게 한다.
     declare_parameter("yellow_search_max_ratio", 1.0);
     // 2~5. 차선 탐색
-    declare_parameter("lane_width_px", 267.0);     // BEV 에서 두 차선 중심 사이 폭 (bird_eye_view 보정값)
+    declare_parameter("lane_width_px", 295.0);     // BEV 에서 두 차선 중심 사이 폭 (bird_eye_view 보정값)
     declare_parameter("bev_center_x", 0.5);        // BEV 에서 로봇(카메라 중심)의 가로 위치 (폭 비율)
     declare_parameter("base_min_pixels", 30);      // 시작점 열에 필요한 최소 픽셀 수
     declare_parameter("n_windows", 10);

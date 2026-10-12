@@ -9,10 +9,15 @@
 //
 // STM32 -> Jetson
 //   ID 0x10 PSD        LEN 6  uint16 left_mm, uint16 front_mm, uint16 right_mm   (0.05초마다)
-//   ID 0x81 STATUS     LEN 11 (0.1초마다, 펌웨어 App/proto.h)
+//   ID 0x11 ENCODER    LEN 12 (0.05초마다, 모터 준비됐을 때만)
+//     [0..3] int32 왼쪽 위치  [4..7] int32 오른쪽 위치  (4096 = 바퀴 1바퀴, 앞으로 가면 커짐, 여러 바퀴 누적)
+//     [8..9] int16 왼쪽 속도  [10..11] int16 오른쪽 속도 (1 = 0.229 rpm, 앞으로 = +)
+//     모터가 재부팅되면 위치가 0~4095 근처로 다시 시작하므로 이전 값과의 차이로 거리를 구하고 큰 점프는 버린다
+//   ID 0x81 STATUS     LEN 11 이상 (0.1초마다, 펌웨어 App/proto.h)
 //     [0] 모터 준비(1)  [1] 상태(STATE_*)  [2] 스위치 비트(bit0 = S1 ... bit3 = S4)
 //     [3] 왼쪽 HW 에러  [4] 오른쪽 HW 에러  [5..6] uint16 전압 [0.1V]
 //     [7] 찾은 모터 수  [8] 왼쪽 ID  [9] 오른쪽 ID  [10] 토크 비트 (bit0 왼쪽, bit1 오른쪽)
+//     (LEN 19 펌웨어) [11..14] int16 목표 속도 왼/오  [15..18] int16 실제 속도 왼/오 (1 = 0.229 rpm, 앞 = +)
 //
 // STM32 펌웨어는 WHEEL_CMD 가 300ms 안 들어오면 스스로 모터를 정지한다.
 //
@@ -37,10 +42,17 @@ constexpr uint8_t MAX_PAYLOAD = 32;
 // 메시지 종류(ID)와 각 종류의 payload 길이
 constexpr uint8_t ID_WHEEL_CMD = 0x01;
 constexpr uint8_t ID_PSD = 0x10;
+constexpr uint8_t ID_ENCODER = 0x11;
 constexpr uint8_t ID_STATUS = 0x81;
 constexpr uint8_t LEN_WHEEL_CMD = 4;
 constexpr uint8_t LEN_PSD = 6;
+constexpr uint8_t LEN_ENCODER = 12;
 constexpr uint8_t LEN_STATUS = 11;
+constexpr uint8_t LEN_STATUS_VEL = 19;   // 목표/실제 속도까지 붙은 STATUS
+
+// 엔코더 단위 (MX-64 2.0)
+constexpr double TICKS_PER_REV = 4096.0;   // 위치 값 4096 = 바퀴 1바퀴
+constexpr double RPM_PER_UNIT = 0.229;     // 속도 값 1 = 0.229 rpm
 
 // STATUS 의 상태 값 (interfaces/DxlState STATE_* 와 같다)
 constexpr uint8_t STATE_STOP_SW = 0;     // S1 꺼짐 -> 정지
@@ -93,6 +105,20 @@ inline uint16_t get_u16(const uint8_t * p)
   return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
 
+// little-endian 2바이트 -> int16 (음수는 비트 그대로)
+inline int16_t get_i16(const uint8_t * p)
+{
+  return static_cast<int16_t>(get_u16(p));
+}
+
+// little-endian 4바이트 -> int32
+inline int32_t get_i32(const uint8_t * p)
+{
+  const uint32_t u = static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+    (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+  return static_cast<int32_t>(u);
+}
+
 // 바퀴 속도 명령 프레임 만들기 (단위 mm/s)
 inline std::vector<uint8_t> encode_wheel_cmd(int16_t left_mm_s, int16_t right_mm_s)
 {
@@ -113,12 +139,35 @@ struct Status
   uint8_t motor_count = 0;
   uint8_t id[2] = {0, 0};
   bool torque[2] = {false, false};
+  bool has_velocity = false;      // LEN 19 펌웨어일 때만 아래 두 값이 채워진다
+  int16_t goal_velocity[2] = {0, 0};      // [0.229 rpm], 앞 = +
+  int16_t present_velocity[2] = {0, 0};
 };
+
+// ENCODER 프레임 내용 ([0] 왼쪽, [1] 오른쪽, 앞으로 = +)
+struct Encoder
+{
+  int32_t position[2] = {0, 0};   // [tick] 4096 = 1바퀴
+  int16_t velocity[2] = {0, 0};   // [0.229 rpm]
+};
+
+// ENCODER payload -> Encoder. 길이가 다르면 false
+inline bool decode_encoder(const std::vector<uint8_t> & p, Encoder & e)
+{
+  if (p.size() != LEN_ENCODER) {
+    return false;
+  }
+  e.position[0] = get_i32(&p[0]);
+  e.position[1] = get_i32(&p[4]);
+  e.velocity[0] = get_i16(&p[8]);
+  e.velocity[1] = get_i16(&p[10]);
+  return true;
+}
 
 // STATUS payload -> Status. 길이가 다르면 false
 inline bool decode_status(const std::vector<uint8_t> & p, Status & s)
 {
-  if (p.size() < LEN_STATUS) {   // 펌웨어가 뒤에 값을 더 붙여도(속도 등) 앞 11바이트만 읽는다
+  if (p.size() < LEN_STATUS) {   // 11바이트(예전 펌웨어) / 19바이트(속도 포함) 모두 받는다
     return false;
   }
   s.ready = p[0] != 0;
@@ -132,6 +181,13 @@ inline bool decode_status(const std::vector<uint8_t> & p, Status & s)
   s.id[1] = p[9];
   s.torque[0] = (p[10] & 0x01) != 0;
   s.torque[1] = (p[10] & 0x02) != 0;
+  s.has_velocity = p.size() >= LEN_STATUS_VEL;
+  if (s.has_velocity) {
+    s.goal_velocity[0] = get_i16(&p[11]);
+    s.goal_velocity[1] = get_i16(&p[13]);
+    s.present_velocity[0] = get_i16(&p[15]);
+    s.present_velocity[1] = get_i16(&p[17]);
+  }
   return true;
 }
 

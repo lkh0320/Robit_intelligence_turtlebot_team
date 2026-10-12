@@ -99,6 +99,19 @@ TEST(PlannerCore, BrownBoxIsNotYellowLine)
   EXPECT_EQ(m.box_blocked.at<uchar>(250, 210), 0);
 }
 
+TEST(PlannerCore, NearBoxIsLowestOne)
+{
+  // 박스 두 개 중 바닥 접점이 더 아래(로봇에 가까운) 박스를 고른다
+  cv::Mat img = lane();
+  cv::rectangle(img, cv::Rect(120, 40, 50, 40), BROWN, cv::FILLED);
+  cv::rectangle(img, cv::Rect(230, 200, 50, 40), BROWN, cv::FILLED);
+  const auto m = pp::buildMaps(img, pp::Params{});
+  ASSERT_GT(m.near_box_area, 0);
+  EXPECT_NEAR(m.near_box.x + m.near_box.width / 2.0, 255, 5);
+  EXPECT_NEAR(m.near_box.y + m.near_box.height, 240, 5);
+  EXPECT_EQ(pp::buildMaps(lane(), pp::Params{}).near_box_area, 0);
+}
+
 TEST(PlannerCore, RedStopLineIsNotBox)
 {
   cv::Mat img = lane();

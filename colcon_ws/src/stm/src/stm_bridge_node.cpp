@@ -2,6 +2,9 @@
 //   sub: cmd_vel (geometry_msgs/Twist)  -> 차동구동 역기구학 -> WHEEL_CMD 프레임
 //   pub: psd       (interfaces/PsdArray)  <- PSD 프레임
 //        dxl_state (interfaces/DxlState) <- STATUS 프레임 (모터 준비/상태/스위치/에러/전압/ID/토크)
+//                                           + ENCODER 프레임의 실제 바퀴 속도
+//        odom      (nav_msgs/Odometry)    <- ENCODER 프레임 (바퀴 위치 누적, odom -> base_link)
+//        tf odom -> base_link (publish_tf: true 일 때만)
 // 프로토콜은 include/stm/protocol.hpp 참고.
 //
 // 동작 요약
@@ -9,6 +12,8 @@
 //   - tx_rate(20Hz) 마다 마지막 cmd_vel 을 바퀴 속도로 바꿔 STM32 로 송신
 //     cmd_vel 이 cmd_timeout 동안 안 오면 0 을 보내 로봇을 세운다 (상위 노드가 죽어도 안전)
 //   - STATUS 프레임이 오면 dxl_state 로 발행하고, 모터 상태가 바뀔 때마다 로그를 남긴다
+//   - ENCODER 프레임(20Hz)이 오면 바퀴 위치 차이로 로봇 위치를 누적해 odom 으로 발행하고,
+//     엔코더 속도를 dxl_state 의 바퀴 속도로 쓴다 (엔코더가 끊기면 예전처럼 보낸 명령 값)
 //   - 시리얼이 끊기면 1초마다 다시 연결 시도 (USB 를 뽑았다 꽂아도 노드 재시작 불필요)
 #include <algorithm>
 #include <array>
@@ -20,12 +25,16 @@
 #include <string>
 #include <tuple>
 
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "interfaces/msg/dxl_state.hpp"
 #include "interfaces/msg/psd_array.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "stm/odometry.hpp"
 #include "stm/protocol.hpp"
 #include "stm/serial_port.hpp"
+#include "tf2_ros/transform_broadcaster.h"
 
 using namespace std::chrono_literals;
 namespace proto = stm::protocol;
@@ -39,14 +48,27 @@ public:
     // 파라미터 (값은 config/stm_bridge.yaml)
     port_ = declare_parameter("port", "/dev/ttyUSB0");
     baud_ = declare_parameter("baud", 115200);
-    wheel_separation_ = declare_parameter("wheel_separation", 0.160);
+    wheel_separation_ = declare_parameter("wheel_separation", 0.190);
     max_wheel_speed_ = declare_parameter("max_wheel_speed", 0.30);
     cmd_timeout_ = declare_parameter("cmd_timeout", 0.5);
     const double tx_rate = declare_parameter("tx_rate", 20.0);
     psd_frame_id_ = declare_parameter("psd_frame_id", "base_link");
+    wheel_radius_ = declare_parameter("wheel_radius", 0.05);
+    encoder_timeout_ = declare_parameter("encoder_timeout", 0.3);
+    const auto max_jump_ticks = declare_parameter("max_jump_ticks", 2048);
+    odom_frame_id_ = declare_parameter("odom_frame_id", "odom");
+    base_frame_id_ = declare_parameter("base_frame_id", "base_link");
+    publish_tf_ = declare_parameter("publish_tf", false);
+
+    odom_ = std::make_unique<stm::WheelOdometry>(wheel_radius_, wheel_separation_,
+        proto::TICKS_PER_REV, static_cast<int32_t>(max_jump_ticks));
 
     psd_pub_ = create_publisher<interfaces::msg::PsdArray>("psd", rclcpp::SensorDataQoS());
     dxl_pub_ = create_publisher<interfaces::msg::DxlState>("dxl_state", rclcpp::SensorDataQoS());
+    odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("odom", 10);
+    if (publish_tf_) {
+      tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+    }
     // cmd_vel 은 받을 때마다 저장만 해 두고, 실제 송신은 tx_timer_ 가 일정 주기로 한다
     cmd_sub_ = create_subscription<geometry_msgs::msg::Twist>(
       "cmd_vel", 10, [this](geometry_msgs::msg::Twist::ConstSharedPtr msg) {
@@ -55,6 +77,7 @@ public:
       });
 
     last_cmd_time_ = now();
+    last_encoder_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
     // 타이머 3개: 수신(5ms), 송신(tx_rate), 재연결(1s). 전부 같은 스레드에서 돌아서 락이 필요 없다
     rx_timer_ = create_wall_timer(5ms, [this] {poll_rx();});
     tx_timer_ = create_wall_timer(
@@ -112,11 +135,14 @@ private:
     }
   }
 
-  // 완성된 프레임 하나 처리 (PSD, STATUS)
+  // 완성된 프레임 하나 처리 (PSD, ENCODER, STATUS)
   void handle_frame(const proto::Frame & f)
   {
     proto::Status st;
-    if (f.id == proto::ID_STATUS && proto::decode_status(f.payload, st)) {
+    proto::Encoder enc;
+    if (f.id == proto::ID_ENCODER && proto::decode_encoder(f.payload, enc)) {
+      handle_encoder(enc);
+    } else if (f.id == proto::ID_STATUS && proto::decode_status(f.payload, st)) {
       publish_status(st);
     } else if (f.id == proto::ID_PSD && f.payload.size() == proto::LEN_PSD) {
       interfaces::msg::PsdArray msg;
@@ -133,13 +159,65 @@ private:
     }
   }
 
+  // 모터 속도 값 [0.229 rpm] -> 바퀴 선속도 [m/s]
+  double to_mps(int16_t v) const
+  {
+    return v * proto::RPM_PER_UNIT * 2.0 * M_PI / 60.0 * wheel_radius_;
+  }
+
+  // ENCODER -> 바퀴 속도 저장 + 위치 누적 -> odom (+ tf) 발행
+  void handle_encoder(const proto::Encoder & enc)
+  {
+    const auto stamp = now();
+    last_encoder_time_ = stamp;
+    enc_left_ = to_mps(enc.velocity[0]);
+    enc_right_ = to_mps(enc.velocity[1]);
+    if (!odom_->update(enc.position)) {
+      RCLCPP_WARN(get_logger(), "Encoder jump (motor reboot?) L=%d R=%d, ignored this step",
+        enc.position[0], enc.position[1]);
+    }
+
+    // yaw -> 쿼터니언 (z 축 회전만)
+    const double half = odom_->yaw() / 2.0;
+    nav_msgs::msg::Odometry msg;
+    msg.header.stamp = stamp;
+    msg.header.frame_id = odom_frame_id_;
+    msg.child_frame_id = base_frame_id_;
+    msg.pose.pose.position.x = odom_->x();
+    msg.pose.pose.position.y = odom_->y();
+    msg.pose.pose.orientation.z = std::sin(half);
+    msg.pose.pose.orientation.w = std::cos(half);
+    // 속도는 로봇 기준 (앞 = x, 반시계 = +z)
+    msg.twist.twist.linear.x = (enc_left_ + enc_right_) / 2.0;
+    msg.twist.twist.angular.z = (enc_right_ - enc_left_) / wheel_separation_;
+    odom_pub_->publish(msg);
+
+    if (tf_) {
+      geometry_msgs::msg::TransformStamped tf;
+      tf.header = msg.header;
+      tf.child_frame_id = base_frame_id_;
+      tf.transform.translation.x = odom_->x();
+      tf.transform.translation.y = odom_->y();
+      tf.transform.rotation = msg.pose.pose.orientation;
+      tf_->sendTransform(tf);
+    }
+  }
+
   // STATUS -> dxl_state 발행
   void publish_status(const proto::Status & st)
   {
     interfaces::msg::DxlState msg;
-    msg.header.stamp = now();
-    // 엔코더 값이 없으므로 STM32 가 ROS 명령대로 달리는 중이면 마지막으로 보낸 명령을 실제 속도로 본다
-    if (st.ready && st.state == proto::STATE_ROS) {
+    const auto stamp = now();
+    msg.header.stamp = stamp;
+    // 바퀴 속도: 엔코더 프레임(20Hz) -> STATUS 의 실제 속도(19바이트 펌웨어) -> 마지막으로 보낸 명령 순
+    if ((stamp - last_encoder_time_).seconds() < encoder_timeout_) {
+      msg.left_velocity = static_cast<float>(enc_left_);
+      msg.right_velocity = static_cast<float>(enc_right_);
+    } else if (st.has_velocity) {
+      msg.left_velocity = static_cast<float>(to_mps(st.present_velocity[0]));
+      msg.right_velocity = static_cast<float>(to_mps(st.present_velocity[1]));
+    } else if (st.ready && st.state == proto::STATE_ROS) {
+      // 엔코더 값이 없는 예전 펌웨어: ROS 명령대로 달리는 중이면 보낸 명령을 실제 속도로 본다
       msg.left_velocity = static_cast<float>(sent_left_);
       msg.right_velocity = static_cast<float>(sent_right_);
     }
@@ -221,19 +299,30 @@ private:
   double max_wheel_speed_;
   double cmd_timeout_;
   std::string psd_frame_id_;
+  double wheel_radius_;
+  double encoder_timeout_;
+  std::string odom_frame_id_;
+  std::string base_frame_id_;
+  bool publish_tf_;
 
   stm::SerialPort serial_;
   proto::Parser parser_;                // 수신 바이트 -> 프레임 조립기
   geometry_msgs::msg::Twist last_cmd_;  // 마지막으로 받은 cmd_vel
   rclcpp::Time last_cmd_time_;          // 그 cmd_vel 을 받은 시각 (timeout 판단용)
-  double sent_left_ = 0.0;              // 마지막으로 보낸 바퀴 명령 [m/s] (dxl_state 속도로 사용)
+  double sent_left_ = 0.0;              // 마지막으로 보낸 바퀴 명령 [m/s] (엔코더 없을 때 dxl_state 속도)
   double sent_right_ = 0.0;
+  std::unique_ptr<stm::WheelOdometry> odom_;   // 엔코더 위치 -> 로봇 위치
+  rclcpp::Time last_encoder_time_;             // 마지막 ENCODER 프레임 시각
+  double enc_left_ = 0.0;                      // 엔코더로 잰 바퀴 속도 [m/s]
+  double enc_right_ = 0.0;
   // 마지막으로 로그를 남긴 모터 상태 (바뀔 때만 로그)
   std::optional<std::tuple<bool, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t,
     bool, bool>> last_status_key_;
 
   rclcpp::Publisher<interfaces::msg::PsdArray>::SharedPtr psd_pub_;
   rclcpp::Publisher<interfaces::msg::DxlState>::SharedPtr dxl_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
+  std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
   rclcpp::TimerBase::SharedPtr rx_timer_, tx_timer_, reconnect_timer_;
 };

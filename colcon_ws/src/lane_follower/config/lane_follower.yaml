@@ -1,22 +1,84 @@
 lane_follower:
   ros__parameters:
-    # 속도 [m/s] (stm_bridge max_wheel_speed 0.30 안에서)
+    # 어떤 선 검출 노드의 lane_info 를 받는지 -> 아래 같은 이름 묶음의 조향 게인을 쓴다
+    # (launch 인자 lane_method 가 이 값을 덮어쓴다: path / sliding / map / hybrid)
+    # hybrid 는 sliding / path 묶음을 지금 쓰는 쪽에 맞춰 바꿔 쓴다
+    lane_method: path
+    # 속도 [m/s] (stm_bridge max_wheel_speed 0.30 안에서). GUI 선속도 슬라이더가 linear_speed 를 바꾼다
     linear_speed: 0.10          # 직선
     min_linear_speed: 0.04      # 급커브 / 저신뢰
-    # 조향: w = -(v * 2 sin(angle) / pp_lookahead + kp * offset + kd * d(offset)/dt + ka * angle) [rad/s]
-    # path_planner (기본): pure pursuit. 목표점이 바퀴 축에서 pp_lookahead 앞 (path_planner lookahead_px 와 같게)
-    #   커브에서 안쪽을 파고들면 pp_lookahead 를 줄이고(path_planner lookahead_px 도 같이), 흔들리면 늘린다
-    # lane_detection (lane_method:=sliding): pp_lookahead: 0.0, kp: 0.8, kd: 0.05, ka: 1.0 로 바꿔 쓴다
-    pp_lookahead: 0.0           # [m] (lane_method:=path 로 돌아가면 0.25로)
-    kp: 0.8
-    kd: 0.005
-    ka: 0.3
-    max_angular: 1.5
-    slow_down_angle: 0.5        # |angle| 이 이 값 [rad] 이면 min_linear_speed 까지 감속
+    max_angular: 1.5            # GUI 각속도 슬라이더가 바꾼다
     low_confidence: 0.5         # confidence 가 이보다 낮으면 min_linear_speed
     d_filter_alpha: 0.3
+    # 조향: w = -(v * 2 sin(angle) / pp_lookahead + kp * offset + kd * d(offset)/dt + ka * angle) [rad/s]
+    #   slow_down_angle: |angle| 이 이 값 [rad] 이면 min_linear_speed 까지 감속
+    #
+    # path (path_planner): pure pursuit. offset/angle 이 바퀴 축에서 lookahead 앞 목표점 기준이라 kp/ka 대신 이것만 쓴다
+    #   pp_lookahead 는 path_planner lookahead_px 와 같게 (0.20m = 200px)
+    #   sliding 실주행 튜닝(kp 0.8 / 반 차선폭 0.1475m -> 횡오차 1m 당 5.4 rad/s, 코너 조기 진입 때문에 ka/kd 낮춤)에 맞춰
+    #   0.25 -> 0.20 으로 줄임: v 0.10 에서 목표점 횡오차 1m 당 2v/L^2 = 5.0 rad/s 로 비슷한 세기,
+    #   목표점이 가까워져 코너를 덜 일찍 꺾는다. 커브 안쪽을 파고들면 줄이고, 흔들리면 늘린다 (path_planner 도 같이)
+    #   slow_down_angle: 반지름 45cm 커브에서 목표점 angle ≈ asin(0.20 / 0.9) = 0.22 rad
+    #   -> sliding 이 같은 커브에서 감속하던 비율(약 60%)과 맞춰 0.35
+    #   (2026-10-13 바퀴 간격 0.160 -> 0.190 실측 반영: 전에는 실제 회전이 명령의 84% 였고 이제 계산대로 돈다.
+    #    path / map 은 예전보다 실제 조향이 약 19% 세짐. 코너 안쪽을 파고들면 pp_lookahead 를 늘린다)
+    path:
+      pp_lookahead: 0.20        # [m]
+      kp: 0.0
+      kd: 0.0
+      ka: 0.0
+      slow_down_angle: 0.35
+    # sliding (lane_detection): offset = 로봇 위치에서 차선 중심 횡오차, angle = 차선 방향.
+    #   2026-10-11 실주행 튜닝값 kp 0.8 / kd 0.005 / ka 0.3 은 stm_bridge wheel_separation 이 0.160 (실제 0.190) 일 때라
+    #   실제 회전이 명령의 84% 였다. 2026-10-13 간격을 실측값으로 고치면서 실제 조향이 같도록 x 0.16/0.19 환산
+    sliding:
+      pp_lookahead: 0.0
+      kp: 0.674
+      kd: 0.0042
+      ka: 0.253
+      slow_down_angle: 0.5
+    # map (map_planner): pure pursuit. map_planner follower_lookahead_px (250) 와 같게
+    map:
+      pp_lookahead: 0.25
+      kp: 0.0
+      kd: 0.0
+      ka: 0.0
+      slow_down_angle: 0.5
+    # hybrid (lane_method:=hybrid): 평소 sliding, 갈림길 / 공사 구간에서만 path (include/lane_follower/drive_selector.hpp)
+    #   ros2 topic echo /lane_follower/drive_state 로 구간 상태 확인
+    #   구간은 drive_hint 토픽으로 path_planner 에 알려 준다 (갈림길 방향 가점 / 공사 구간 선 넘기 허용을 구간 내내 유지)
+    #   GUI 화면(vision/lane_debug/compressed)은 평소 sliding, 갈림길 / 공사 구간에선 path 화면으로 자동 전환
+    wheel_separation: 0.190     # [m] stm_bridge 와 같게 (바퀴 속도 -> 이동 거리 / 회전)
+    hybrid:
+      enabled: true             # false: 항상 sliding
+      path_fallback: true       # 평소 sliding 이 차선을 놓치고 path 는 찾으면 그동안 path (정지 대신)
+      sign_min_confidence: 0.5
+      sign_min_area: 0.01       # 표지판 bbox 면적 / 이미지 면적 (path_planner sign_min_area_ratio 와 같게)
+      sign_confirm_count: 3     # 최근 sign_confirm_window 프레임 중 이만큼 보이면 구간 진입 (좌/우 표지판은 섞여도 같이 센다)
+      sign_confirm_window: 5    # (표지판 인식이 한 프레임씩 끊기는 경우가 있어서. = count 면 연속)
+      # 갈림길: 표지판 방향으로 fork_exit_yaw 만큼 돌면 그 차선에 들어간 것으로 보고 sliding 복귀 준비
+      #   회전량은 바퀴 속도 적분 (반지름 5cm, 간격 19cm 실측값). 교차로 90° 보다 작고, 거의 다 돌아 들어간 뒤 넘기도록 69°
+      fork_exit_yaw: 1.2        # [rad]
+      fork_max_dist: 2.0        # [m] 안전장치
+      # 공사 구간: 박스 construction_boxes 개를 지나치면 끝 (박스 통과 = 박스 앞 끝이 바퀴 축 뒤로 box_pass_margin)
+      construction_boxes: 3
+      box_confirm_count: 5      # 표지판을 놓쳐도 box_enter_dist 안 박스가 이만큼 연속 보이면 진입 (0 = 끔)
+      box_enter_dist: 0.45      # [m]
+      box_match_tol: 0.15       # [m] 같은 박스로 이어 붙이는 거리 차
+      box_pass_margin: 0.15     # [m]
+      box_min_hits: 3           # 이보다 적게 본 박스는 잡음
+      box_clip_ratio: 0.97      # BEV 아래에 걸쳐 잘린 박스 (거리 갱신 안 함)
+      construction_lost_dist: 1.0   # [m] 박스를 하나 이상 지난 뒤 이만큼 새 박스가 없으면 끝
+      construction_no_box_dist: 2.0 # [m] 박스를 하나도 못 보고 이만큼 달리면 끝 (표지판 오인식 / 다시 본 경우)
+      construction_max_dist: 4.0    # [m] 안전장치
+      # 복귀: sliding 이 연속 return_ok_count 번 정상이면 (아니어도 return_max_dist 지나면) sliding
+      return_ok_count: 5
+      return_min_confidence: 0.5
+      return_max_offset: 0.5    # sliding offset (반 차선 폭 = 1)
+      return_max_dist: 0.6      # [m]
+      rearm_dist: 1.5           # [m] 빠져나온 뒤 이 거리 동안 같은 구간 표지판 무시 (박스가 눈앞에 보이면 바로 다시 공사 구간)
     # 안전
-    lane_timeout: 0.3           # [s] lane_info 가 이보다 오래 안 오면 정지
+    lane_timeout: 0.7           # [s] lane_info 가 이보다 오래 안 오면 정지 (map_planner ~7Hz, 녹화에서 최대 0.65s 끊김)
     front_stop_distance: 0.10   # [m] 정면 PSD 가 이보다 가까우면 정지 (0 이하 = 끔)
     psd_timeout: 0.5
     autostart: false            # true: control_mode 없이 바로 주행 (autonomous.launch.py 가 정함)

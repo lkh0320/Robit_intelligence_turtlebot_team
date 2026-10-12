@@ -11,8 +11,9 @@
 
   <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
-  <depend>interfaces</depend>
   <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>interfaces</depend>
 
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>vision_bringup</exec_depend>

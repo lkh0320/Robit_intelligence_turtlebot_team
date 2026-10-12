@@ -26,7 +26,7 @@ try:
 except ImportError:
     cv2 = None
 
-WHEEL_SEPARATION = 0.160   # [m] stm_bridge.yaml 과 같은 값
+WHEEL_SEPARATION = 0.190   # [m] stm_bridge.yaml 과 같은 값
 
 
 class FakeRobot(Node):

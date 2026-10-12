@@ -9,7 +9,7 @@ lane_detection:
     yellow_search_max_ratio: 1.0  # 노란 선 시작점을 화면 왼쪽 이 비율 안에서만 찾음 (1.0 = 전체)
                                   # 주차 구역(양쪽 노란선)에서 오른쪽 노란선을 잡으면 0.6 정도로
     # 2~5. 차선 탐색
-    lane_width_px: 267.0      # BEV 에서 두 차선 중심 사이 폭 (bird_eye_view 보정 시 차선 간격 = BEV 폭의 2/3)
+    lane_width_px: 295.0      # BEV 에서 두 차선 중심 사이 폭 (2026-10-09 bird_eye_view 보정 영상에서 잰 값, 1px = 1mm)
     bev_center_x: 0.5         # BEV 에서 로봇(카메라 중심)의 가로 위치 (bird_eye_view 보정값에서 계산)
     base_min_pixels: 30       # 시작점 열에 필요한 최소 픽셀 수
     n_windows: 10

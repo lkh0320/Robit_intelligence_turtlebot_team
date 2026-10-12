@@ -2,8 +2,15 @@ stm_bridge:
   ros__parameters:
     port: /dev/ttyUSB0
     baud: 115200
-    wheel_separation: 0.160   # [m] TurtleBot3 Burger 기준, 실측 후 수정
+    wheel_separation: 0.190   # [m] 좌우 바퀴 간격 19cm (2026-10-13 실측). cmd_vel 각속도 -> 바퀴 속도 차, 오도메트리 회전
     max_wheel_speed: 0.30     # [m/s] 바퀴 선속도 상한 (펌웨어 MAX_WHEEL_MPS 와 같게)
     cmd_timeout: 0.5          # [s] cmd_vel이 끊기면 정지
     tx_rate: 20.0             # [Hz] WHEEL_CMD 송신 주기
     psd_frame_id: base_link
+    # 엔코더 (펌웨어 0x11 프레임) -> odom, dxl_state 바퀴 속도
+    wheel_radius: 0.05        # [m] 펌웨어 WHEEL_RADIUS_M 과 같게 (반지름 5cm, 2026-10-13 확인)
+    encoder_timeout: 0.3      # [s] 엔코더 프레임이 이만큼 끊기면 dxl_state 속도는 STATUS/명령 값 사용
+    max_jump_ticks: 2048      # 0.05초에 이보다 많이 변하면 (모터 재부팅) 그 차이는 버림 (4096 = 1바퀴)
+    odom_frame_id: odom
+    base_frame_id: base_link
+    publish_tf: false         # true 면 odom -> base_link TF 도 발행

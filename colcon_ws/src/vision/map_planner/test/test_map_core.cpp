@@ -9,6 +9,7 @@
 
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -23,23 +24,24 @@ constexpr int W = 400, H = 400, LINE_W = 10;
 const cv::Scalar FLOOR(80, 80, 80);
 const cv::Vec3b YELLOW(0, 200, 230), WHITE(240, 240, 240), BROWN(10, 15, 49);
 
-// 실제 BEV 처럼 아래 양 모서리는 찍히지 않는다 (사다리꼴 아랫변이 화면보다 넓음)
-cv::Mat validMask()
+// 실제 BEV 처럼 원본 밖(아래 양 모서리)은 찍히지 않는다 (사다리꼴 아랫변이 화면보다 넓음)
+cv::Mat validMask(const mp::Params & p)
 {
-  cv::Mat v(H, W, CV_8U, cv::Scalar(255));
-  std::vector<cv::Point> left{{0, 310}, {45, H}, {0, H}}, right{{W, 310}, {W - 45, H}, {W, H}};
-  cv::fillPoly(v, std::vector<std::vector<cv::Point>>{left, right}, cv::Scalar(0));
+  cv::Mat v;
+  mp::makeBev(cv::Mat(480, 640, CV_8UC3, cv::Scalar::all(0)), p, &v);
   return v;
 }
 
-// 세계 좌표 (x 오른쪽, y 앞) [px]. 차선 가운데 = lateral 0, 선은 가운데에서 ±133
+// 세계 좌표 (x 오른쪽, y 앞) [px]. 차선 가운데 = lateral 0, 선은 가운데에서 ±lane_width_px / 2
 //   curve_r > 0 이면 y >= curve_y0 부터 반지름 curve_r 로 curve_angle 만큼 돈 뒤 다시 직선
 //   curve_dir = -1 왼쪽, +1 오른쪽 커브
 struct Track
 {
   double curve_y0 = 1e9, curve_r = 0, curve_angle = CV_PI / 2;
   int curve_dir = -1;
-  double half_width = 133;   // 차선 가운데에서 선까지
+  // 실험용: SIM_HALF=값 으로 바꾸기 (예전 차선 폭 267px 이면 133)
+  double half_width = std::getenv("SIM_HALF") ? std::atof(std::getenv("SIM_HALF")) :
+    mp::Params{}.lane_width_px / 2;
   // 차선 가운데에서 오른쪽으로 벗어난 거리
   double lateral(double wx, double wy) const
   {
@@ -61,12 +63,52 @@ struct Track
     }
     return curve_dir < 0 ? d : -d;
   }
+
+  // 교차로 / 주차 구간 흉내 (세계 좌표 [px])
+  struct Seg
+  {
+    cv::Point2d a, b;
+    bool yellow;
+  };
+  std::vector<Seg> extra;                        // 지금 차선이 아닌 다른 선 (교차로 너머 차선 등)
+  std::vector<cv::Rect2d> no_yellow, no_white;   // 이 안에서는 차선 선을 안 그림 (교차로 빈틈)
+  std::vector<cv::Rect2d> white_left;            // 이 안에서는 왼쪽 선도 흰색 (주차 구간)
+
+  // 세계 좌표 점의 색: 0 바닥, 1 노란 선, 2 흰 선
+  int paint(double wx, double wy) const
+  {
+    const cv::Point2d q(wx, wy);
+    auto in = [&q](const std::vector<cv::Rect2d> & rs) {
+        return std::any_of(rs.begin(), rs.end(), [&q](const cv::Rect2d & r) {return r.contains(q);});
+      };
+    const double d = lateral(wx, wy);
+    if (std::abs(d + half_width) < LINE_W / 2.0 && !in(no_yellow)) {
+      return in(white_left) ? 2 : 1;
+    }
+    if (std::abs(d - half_width) < LINE_W / 2.0 && !in(no_white)) {
+      return 2;
+    }
+    for (const auto & s : extra) {
+      const cv::Point2d ab = s.b - s.a;
+      const double t = std::clamp((q - s.a).dot(ab) / std::max(ab.dot(ab), 1e-9), 0.0, 1.0);
+      if (cv::norm(q - (s.a + t * ab)) < LINE_W / 2.0) {
+        return s.yellow ? 1 : 2;
+      }
+    }
+    return 0;
+  }
 };
 
 struct Pose
 {
   double x = 0, y = 0, psi = 0;   // psi + = 오른쪽
 };
+
+// 로봇 몸통이 선 가장자리에 닿기 전까지 차선 가운데에서 벗어날 수 있는 거리 [px]
+double bodyMargin(const Track & tr)
+{
+  return tr.half_width - LINE_W / 2.0 - mp::Params{}.robot_half_width_px;
+}
 
 // 로봇 자세에서 본 BEV (노란 선 왼쪽, 흰 선 오른쪽). box: 세계 좌표 직사각형 (선택)
 cv::Mat render(const Track & tr, const Pose & ps, const mp::Params & p,
@@ -80,13 +122,10 @@ cv::Mat render(const Track & tr, const Pose & ps, const mp::Params & p,
     for (int x = 0; x < W; ++x) {
       const double rx = x - cx;
       const double wx = ps.x + rx * c + ry * s, wy = ps.y - rx * s + ry * c;
-      const double d = tr.lateral(wx, wy);
       if (box.area() > 0 && box.contains(cv::Point2d(wx, wy))) {
         row[x] = BROWN;
-      } else if (std::abs(d + tr.half_width) < LINE_W / 2.0) {
-        row[x] = YELLOW;
-      } else if (std::abs(d - tr.half_width) < LINE_W / 2.0) {
-        row[x] = WHITE;
+      } else if (const int c = tr.paint(wx, wy)) {
+        row[x] = c == 1 ? YELLOW : WHITE;
       }
     }
   }
@@ -114,13 +153,10 @@ cv::Mat renderRaw(const Track & tr, const Pose & ps, const mp::Params & p,
         continue;
       }
       const double wx = ps.x + rx * c + ry * s, wy = ps.y - rx * s + ry * c;
-      const double d = tr.lateral(wx, wy);
       if (box.area() > 0 && box.contains(cv::Point2d(wx, wy))) {
         row[u] = BROWN;
-      } else if (std::abs(d + tr.half_width) < LINE_W / 2.0) {
-        row[u] = YELLOW;
-      } else if (std::abs(d - tr.half_width) < LINE_W / 2.0) {
-        row[u] = WHITE;
+      } else if (const int c = tr.paint(wx, wy)) {
+        row[u] = c == 1 ? YELLOW : WHITE;
       }
     }
   }
@@ -133,7 +169,7 @@ mp::Result stepImage(mp::MapPlanner & pl, const cv::Mat & img, const mp::Params 
   const mp::Odom & od = {}, const mp::Bias & b = {})
 {
   const path_planner::Params mask;   // 색 기준은 path_planner 기본값 (실측값)
-  return pl.step(path_planner::buildMaps(img, mask), validMask(), p, b, od);
+  return pl.step(path_planner::buildMaps(img, mask), validMask(p), p, b, od);
 }
 
 struct SimResult
@@ -171,6 +207,19 @@ mp::Params tweak(mp::Params p)
       if (k == "rmem") {p.raw_memory_px = v;}
       if (k == "bw") {p.box_weight = v;}
       if (k == "bm") {p.box_margin_px = v;}
+      if (k == "off") {p.robot_y_offset_px = v;}
+      if (k == "sty") {p.src_top_y = v;}
+      if (k == "stl") {p.src_top_left_x = v;}
+      if (k == "str") {p.src_top_right_x = v;}
+      if (k == "sbl") {p.src_bottom_left_x = v;}
+      if (k == "sbr") {p.src_bottom_right_x = v;}
+      if (k == "cap") {p.clearance_cap_px = v;}
+      if (k == "lwpx") {p.lane_width_px = v;}
+      if (k == "rules") {p.lane_rules = v != 0;}
+      if (k == "gap") {p.gap_fill_px = v;}
+      if (k == "side") {p.side_weight = v;}
+      if (k == "rec") {p.recover_wrong_side = v != 0;}
+      if (k == "inlane") {p.recover_inlane_px = v;}
     }
   }
   return p;
@@ -264,14 +313,16 @@ void observeDot(mp::LocalMap & m, const mp::Params & p, const cv::Point2d & q)
   cv::Mat line = cv::Mat::zeros(H, W, CV_8U), box = cv::Mat::zeros(H, W, CV_8U);
   const cv::Point b(cvRound(p.bev_center_x * W + q.x), cvRound((H - 1) - (q.y - p.robot_y_offset_px)));
   cv::circle(line, b, 8, cv::Scalar(255), -1);
-  m.integrate(line, box, cv::Mat(H, W, CV_8U, cv::Scalar(255)), p.bev_center_x,
+  m.integrate(line, {}, box, cv::Mat(H, W, CV_8U, cv::Scalar(255)), p.bev_center_x,
     p.robot_y_offset_px);
 }
 
 TEST(LocalMap, IntegrateThenMoveForward)
 {
   // 로봇 앞 500px 에 점을 보고, 200px 앞으로 가면 그 점은 300px 앞에 있어야 한다 (안 보이는 구간)
-  const mp::Params p;
+  // 지도 동작만 확인한다: 안 보이는 구간이 긴 예전 카메라 기하(335px)로 고정
+  mp::Params p;
+  p.robot_y_offset_px = 335;
   mp::LocalMap m;
   m.configure(p);
   observeDot(m, p, {0, 500});
@@ -298,6 +349,7 @@ TEST(LocalMap, RecenterKeepsLines)
 {
   // 지도를 옮겨도 (정수 칸) 기록이 그대로 따라온다
   mp::Params p;
+  p.robot_y_offset_px = 335;   // 600px 앞 점이 BEV 안에 들도록 예전 카메라 기하로 고정
   p.map_recenter_px = 100;
   mp::LocalMap m;
   m.configure(p);
@@ -365,7 +417,8 @@ TEST(PlannerSim, LeftCurveStaysInLane)
   tr.curve_r = 450;
   const auto s = simulate(tr, {}, 350);
   ASSERT_FALSE(s.lost);
-  EXPECT_LT(maxAbs(s.lat), 20);          // 로봇 반폭 103px 이면 선까지 여유가 약 25px
+  // 몸통이 선에서 5px 넘게 떨어져 지나간다 (차선 반폭 148 - 선 반폭 5 - 로봇 반폭 103 = 여유 40px)
+  EXPECT_LT(maxAbs(s.lat), bodyMargin(tr) - 5);
 }
 
 TEST(PlannerSim, RightCurveStaysInLane)
@@ -376,21 +429,21 @@ TEST(PlannerSim, RightCurveStaysInLane)
   tr.curve_dir = 1;
   const auto s = simulate(tr, {}, 350);
   ASSERT_FALSE(s.lost);
-  EXPECT_LT(maxAbs(s.lat), 20);
+  EXPECT_LT(maxAbs(s.lat), bodyMargin(tr) - 5);
 }
 
 TEST(PlannerSim, WideLaneStaysInside)
 {
   // 폭 46cm 차선 (공사 구간처럼 넓은 곳), 10cm 오른쪽에서 출발.
   // BEV 가 로봇 좌우 약 20cm 까지만 보여 양쪽 선이 한꺼번에 안 보이므로 가운데까지는 못 가고,
-  // 보이는 선에서 반 차선 폭(133px) 떨어져 따라간다 -> 선에 닿지 않으면 된다
+  // 보이는 선에서 반 차선 폭(clearance_cap_px) 떨어져 따라간다 -> 선에 닿지 않으면 된다
   Track tr;
   tr.half_width = 230;
   Pose ps;
   ps.x = 100;
   const auto s = simulate(tr, ps, 300);
   ASSERT_FALSE(s.lost);
-  EXPECT_LT(maxAbs(s.lat), tr.half_width - LINE_W / 2.0 - 103);
+  EXPECT_LT(maxAbs(s.lat), bodyMargin(tr));
 }
 
 TEST(PlannerSim, OdometryErrorTolerated)
@@ -403,7 +456,7 @@ TEST(PlannerSim, OdometryErrorTolerated)
   for (const double scale : {0.9, 1.1}) {
     const auto s = simulate(tr, {}, 350, scale);
     ASSERT_FALSE(s.lost) << "scale " << scale;
-    EXPECT_LT(maxAbs(s.lat), 25) << "scale " << scale;
+    EXPECT_LT(maxAbs(s.lat), bodyMargin(tr)) << "scale " << scale;   // 선에 닿지 않는다
   }
 }
 
@@ -425,4 +478,90 @@ TEST(PlannerSim, AvoidsBoxInWideLane)
     // 선은 넘지 않는다
     EXPECT_LT(std::abs(s.lat[f]), tr.half_width - LINE_W / 2.0 - 103 + 5) << "frame " << f;
   }
+}
+
+namespace
+{
+// 교차로: 지금 차선의 한쪽 선(side +1 오른쪽 흰 선 / -1 왼쪽 노란 선)이 y 500 ~ 1300 동안 끊기고,
+// 그 빈틈 너머 far_x 에 다른 차선의 선이 보인다 (빈틈 사이로 건너편 차선이 찍히는 상황)
+Track gapTrack(int side, bool far_yellow, double far_x = 420)
+{
+  Track tr;
+  const cv::Rect2d gap(side > 0 ? 100 : -200, 500, 100, 800);
+  (side > 0 ? tr.no_white : tr.no_yellow).push_back(gap);
+  tr.extra.push_back({{side * far_x, 200}, {side * far_x, 1800}, far_yellow});
+  return tr;
+}
+}  // namespace
+
+TEST(PlannerSim, IntersectionGapIgnoresFarLane)
+{
+  // 한쪽 선이 끊긴 동안 건너편 차선 쪽으로 끌려가지 않고, 남은 선에서 반 차선 폭을 지켜 직진한다
+  for (const int side : {1, -1}) {
+    for (const bool far_yellow : {false, true}) {
+      const auto s = simulate(gapTrack(side, far_yellow), {}, 350);
+      ASSERT_FALSE(s.lost) << "side " << side << " far_yellow " << far_yellow;
+      EXPECT_LT(maxAbs(s.lat), 30) << "side " << side << " far_yellow " << far_yellow;
+    }
+  }
+}
+
+TEST(PlannerSim, CrossIntersectionGoesStraight)
+{
+  // 십자 교차로: 양쪽 선이 y 600 ~ 1000 동안 끊기고, 가로지르는 길의 선이 좌우로 뻗어 있다.
+  // 건너편(왼쪽 / 오른쪽) 길의 선도 보인다
+  Track tr;
+  tr.no_yellow.emplace_back(-200, 600, 100, 400);
+  tr.no_white.emplace_back(100, 600, 100, 400);
+  for (const double y : {600.0, 1000.0}) {
+    tr.extra.push_back({{-148, y}, {-700, y}, true});
+    tr.extra.push_back({{148, y}, {700, y}, false});
+  }
+  tr.extra.push_back({{-420, 650}, {-420, 950}, false});
+  tr.extra.push_back({{420, 650}, {420, 950}, true});
+  const auto s = simulate(tr, {}, 350);
+  ASSERT_FALSE(s.lost);
+  EXPECT_LT(maxAbs(s.lat), 30);
+}
+
+TEST(PlannerSim, ParkingZoneBothWhite)
+{
+  // 주차 구간: 왼쪽 선도 흰색 (y 400 부터). 색 규칙 때문에 흔들리거나 놓치지 않는다
+  Track tr;
+  tr.white_left.emplace_back(-300, 400, 300, 3000);
+  Pose ps;
+  ps.x = 30;
+  mp::Params p;
+  p.strict_colors = false;   // 노드가 주차 표지판을 보면 끈다
+  const auto s = simulate(tr, ps, 300, 1.0, {}, p);
+  ASSERT_FALSE(s.lost);
+  EXPECT_LT(maxAbs(s.lat), 35);
+  EXPECT_LT(maxAbs(s.lat, 200), 15);
+}
+
+TEST(PlannerSim, LeftOfYellowCrossesBack)
+{
+  // 코너를 잘라 노란 선(가운데에서 -148) 왼쪽으로 나간 경우: lateral -250 에서 차선과 나란히 출발
+  // -> 노란 선을 다시 넘어 차선 가운데로 돌아온다
+  //    (2026-10-12 시험: 노란 선 넘기 벌점 때문에 노란 선에서 멀어지는 쪽 = 트랙 밖으로 감)
+  Pose ps;
+  ps.x = -250;
+  const auto s = simulate({}, ps, 300);
+  ASSERT_FALSE(s.lost);
+  ASSERT_GT(s.lat.size(), 100u);
+  EXPECT_GT(s.lat[100], -100);           // 40cm 안에 노란 선을 넘어 차선 안으로
+  EXPECT_LT(maxAbs(s.lat, 150), 40);     // 그 뒤로는 차선 가운데 ±4cm
+}
+
+TEST(PlannerSim, LeftOfYellowInLeftCurveCrossesBack)
+{
+  // 왼쪽 커브 안쪽으로 노란 선을 넘어 들어간 경우 (커브 시작에서 노란 선 왼쪽 -230)
+  Track tr;
+  tr.curve_y0 = 300;
+  tr.curve_r = 450;
+  Pose ps;
+  ps.x = -230;
+  const auto s = simulate(tr, ps, 350);
+  ASSERT_FALSE(s.lost);
+  EXPECT_LT(maxAbs(s.lat, 250), 40);
 }

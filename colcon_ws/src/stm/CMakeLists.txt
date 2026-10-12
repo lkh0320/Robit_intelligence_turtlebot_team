@@ -9,10 +9,12 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(interfaces REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 add_executable(stm_bridge_node src/stm_bridge_node.cpp src/serial_port.cpp)
 target_include_directories(stm_bridge_node PRIVATE include)
-ament_target_dependencies(stm_bridge_node rclcpp geometry_msgs interfaces)
+ament_target_dependencies(stm_bridge_node rclcpp geometry_msgs interfaces nav_msgs tf2_ros)
 
 install(TARGETS stm_bridge_node
   DESTINATION lib/${PROJECT_NAME})
