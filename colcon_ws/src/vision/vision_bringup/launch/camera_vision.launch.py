@@ -13,7 +13,8 @@
 #   lane_method:=map                                 2D 지역 지도 기반 map_planner 사용
 #   lane_method:=hybrid                              lane_detection + path_planner 둘 다 (lane_info/sliding,
 #                                                    lane_info/path). lane_follower 가 구간에 따라 고른다
-#                                                    (path_planner 화면은 vision/path_debug/compressed)
+#                                                    화면은 vision/sliding_debug, vision/path_debug 로 나뉘고
+#                                                    lane_follower 가 지금 쓰는 쪽을 vision/lane_debug 로 중계
 import os
 
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
@@ -119,7 +120,7 @@ def generate_launch_description():
         include('path_planner', lane_if('path')),
         include('map_planner', lane_if('map')),
         include('lane_detection', lane_if('hybrid'),
-                {'lane_topic': 'lane_info/sliding'}),
+                {'lane_topic': 'lane_info/sliding', 'debug_topic': 'vision/sliding_debug/compressed'}),
         include('path_planner', lane_if('hybrid'),
                 {'lane_topic': 'lane_info/path', 'debug_topic': 'vision/path_debug/compressed',
                  'use_drive_hint': 'true'}),

@@ -47,6 +47,7 @@ lane_follower:
     # hybrid (lane_method:=hybrid): 평소 sliding, 갈림길 / 공사 구간에서만 path (include/lane_follower/drive_selector.hpp)
     #   ros2 topic echo /lane_follower/drive_state 로 구간 상태 확인
     #   구간은 drive_hint 토픽으로 path_planner 에 알려 준다 (갈림길 방향 가점 / 공사 구간 선 넘기 허용을 구간 내내 유지)
+    #   GUI 화면(vision/lane_debug/compressed)은 평소 sliding, 갈림길 / 공사 구간에선 path 화면으로 자동 전환
     wheel_separation: 0.190     # [m] stm_bridge 와 같게 (바퀴 속도 -> 이동 거리 / 회전)
     hybrid:
       enabled: true             # false: 항상 sliding

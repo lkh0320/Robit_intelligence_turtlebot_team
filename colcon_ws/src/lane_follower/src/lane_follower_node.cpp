@@ -19,6 +19,8 @@
 //   추가 구독: sign, box_obstacle (path_planner), dxl_state (바퀴 속도 -> 이동 거리 / 회전)
 //   추가 발행: lane_info (고른 쪽을 그대로, GUI 표시용), lane_follower/drive_state (std_msgs/String, 구간 상태)
 //             drive_hint (interfaces/Sign)  지금 구간 -> path_planner (갈림길 방향 / 공사 구간, 그 외 NONE)
+//             vision/lane_debug/compressed  GUI 화면: 평소엔 lane_detection 화면(vision/sliding_debug),
+//                                           갈림길 / 공사 구간(복귀 중 포함)엔 path_planner 화면(vision/path_debug)을 중계
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -33,6 +35,7 @@
 #include "lane_follower/controller.hpp"
 #include "lane_follower/drive_selector.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/compressed_image.hpp"
 #include "std_msgs/msg/string.hpp"
 
 class LaneFollowerNode : public rclcpp::Node
@@ -102,6 +105,8 @@ public:
       selected_pub_ = create_publisher<interfaces::msg::LaneInfo>("lane_info", qos);
       state_pub_ = create_publisher<std_msgs::msg::String>("lane_follower/drive_state", 10);
       hint_pub_ = create_publisher<interfaces::msg::Sign>("drive_hint", 10);
+      debug_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
+        "vision/lane_debug/compressed", qos);
     } else {
       lane_sub_ = create_subscription<interfaces::msg::LaneInfo>("lane_info", qos, lane_cb(lane_));
     }
@@ -341,7 +346,29 @@ private:
     if (++state_tick_ % 10 == 0) {
       publishState();   // 0.5초마다 (20Hz 기준) 상태 문자열
     }
+    updateDebugRelay();
     return l;
+  }
+
+  // GUI 화면 중계: 구간에 맞는 쪽 화면 하나만, 보는 사람이 있을 때만 구독한다
+  // (lane_detection / path_planner 는 구독자가 있을 때만 화면을 그리므로 안 보는 쪽은 그리지도 않음).
+  // 틱마다 바뀌는 path_fallback 이 아니라 구간으로 고른다 (구독을 자주 다시 만들지 않게)
+  void updateDebugRelay()
+  {
+    const int want = debug_pub_->get_subscription_count() == 0 ? -1 :
+      selector_.zone() == lane_follower::Zone::NORMAL ? 0 : 1;
+    if (want == debug_view_) {
+      return;
+    }
+    debug_view_ = want;
+    debug_sub_.reset();
+    if (want < 0) {
+      return;
+    }
+    debug_sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
+      want == 0 ? "vision/sliding_debug/compressed" : "vision/path_debug/compressed",
+      rclcpp::SensorDataQoS(),
+      [this](sensor_msgs::msg::CompressedImage::ConstSharedPtr m) {debug_pub_->publish(*m);});
   }
 
   lane_follower::Controller controller_;
@@ -373,6 +400,9 @@ private:
   rclcpp::Publisher<interfaces::msg::LaneInfo>::SharedPtr selected_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
   rclcpp::Publisher<interfaces::msg::Sign>::SharedPtr hint_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr debug_pub_;
+  rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr debug_sub_;
+  int debug_view_ = -1;   // 중계 중인 화면: -1 없음, 0 sliding, 1 path
   rclcpp::Subscription<ControlMode>::SharedPtr mode_sub_;
   rclcpp::Subscription<interfaces::msg::PsdArray>::SharedPtr psd_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
