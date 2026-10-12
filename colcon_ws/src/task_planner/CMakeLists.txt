@@ -8,9 +8,10 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(interfaces REQUIRED)
+find_package(std_msgs REQUIRED)
 
 add_executable(task_planner_node src/task_planner_node.cpp)
-ament_target_dependencies(task_planner_node rclcpp interfaces)
+ament_target_dependencies(task_planner_node rclcpp interfaces std_msgs)
 
 install(TARGETS task_planner_node
   DESTINATION lib/${PROJECT_NAME})
