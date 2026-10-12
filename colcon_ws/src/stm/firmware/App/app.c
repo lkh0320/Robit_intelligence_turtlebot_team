@@ -53,8 +53,8 @@
    이 값을 바꾸고 LEFT_DIR / RIGHT_DIR 부호도 서로 바꾼다. */
 #define LEFT_IS_SMALLER_ID 1
 
-/* ---- 로봇 치수 (임시값! 실제 로봇에 맞게 바꾸기) ---- */
-#define WHEEL_RADIUS_M     0.05f   /* 바퀴 반지름 r (m) */
+/* ---- 로봇 치수 ---- */
+#define WHEEL_RADIUS_M     0.05f   /* 바퀴 반지름 r (m), 5cm (2026-10-13 확인) */
 /* 좌우 바퀴 사이 거리는 젯슨 쪽 (stm_bridge.yaml 의 wheel_separation) 에서 쓴다 */
 
 /* ---- 안전 제한 ---- */
