@@ -119,9 +119,12 @@ struct TurnParams
   double out_guard_max_offset = 0.6;   // 출구 쪽 반대(섬 쪽)로 offset 이 이 이상이면 그 차선은 안 따라감
   double out_arc_linear = 0.08;        // [m/s] 안 따라갈 때 호 (반지름 = linear / angular = 20cm)
   double out_arc_angular = 0.4;        // [rad/s]
-  // 호는 EXIT 시작 뒤 이 거리 안에서만 (섬 끝 노란 선은 0.02~0.07m 에서 보임). 그 뒤 섬 쪽 차선 / 차선 없음은 직진
-  //   (2026-10-13 06:46~ 로그: 출구 차선에 들어간 뒤 0.27~0.29m 에서 차선을 잠깐 놓쳐 왼쪽 호 -> 갑자기 왼쪽으로 꺾임, 7번 중 2번)
+  // 호는 EXIT 시작 뒤 이 거리 안에서만 (섬 끝 노란 선은 0.02~0.07m 에서 보임). 그 뒤 섬 쪽 차선 / 차선 없음은
+  // 직전 차선 추종 명령 유지 (out_hold_time 까지, 그 뒤 직진)
+  //   (2026-10-13 06:46~ 로그: 출구 차선에 들어간 뒤 0.27~0.29m 에서 차선을 잠깐 놓쳐 왼쪽 호 -> 갑자기 왼쪽으로 꺾임.
+  //    그래서 직진으로 바꿨더니 07:26 S자 굽이에서 0.27~0.38m 곧게 가 선을 넘음 -> 휘던 대로 유지)
   double out_arc_max_dist = 0.2;       // [m]
+  double out_hold_time = 0.8;          // [s] 차선을 놓쳐도 직전 조향을 유지하는 시간
 };
 
 // interfaces/msg/Sign 과 같은 값
@@ -136,6 +139,7 @@ public:
   {
     bool active = false;   // true 면 lane_follower 는 이 명령으로 (차선 추종 대신)
     double v = 0, w = 0;
+    bool hold = false;     // active 이고 hold 면 직전 차선 추종 명령을 그대로 (없으면 v, w)
   };
 
   // 이번 틱의 lane_info
@@ -268,15 +272,27 @@ public:
         finish("출구 " + fmt(dist_) + "m 지남", true);
         return c;
       }
-      // 차선이 있고 섬 쪽으로 치우치지 않았으면 차선 추종, 아니면 처음 out_arc_max_dist 안에서는 출구 쪽으로
-      // 완만한 호, 그 뒤로는 직진 (출구 차선에 들어간 뒤 잠깐 놓친 걸로 꺾지 않게)
+      // 차선이 있고 섬 쪽으로 치우치지 않았으면 차선 추종. 아니면 처음 out_arc_max_dist 안에서는 출구 쪽으로
+      // 완만한 호 (이때 직전 조향은 고리를 따라 반대로 돌던 것이라 못 씀), 그 뒤로는 직전 차선 추종 명령 유지
+      // (휘는 길에서 잠깐 놓친 것), out_hold_time 넘게 못 찾으면 직진
       const bool follow = lane.ok && dir_ * lane.offset < p.out_guard_max_offset;
-      const bool arc = dist_ < p.out_arc_max_dist;
-      const int mode = follow ? 0 : (arc ? 1 : 2);   // 0 추종, 1 호, 2 직진
+      int mode = 0;   // 0 추종, 1 호, 2 직진, 3 직전 조향 유지
+      if (follow) {
+        hold_t_ = 0;
+        exit_followed_ = true;
+      } else if (dist_ < p.out_arc_max_dist || !exit_followed_) {
+        // 출구에서 아직 차선을 한 번도 안 따라갔으면 직전 조향 = 고리를 따라 반대로 돌던 것 -> 계속 호
+        mode = 1;
+        hold_t_ = 0;
+      } else {
+        hold_t_ += dt;
+        mode = hold_t_ <= p.out_hold_time ? 3 : 2;
+      }
       if (mode != exit_mode_) {
         const std::string what = lane.ok ? "섬 쪽 차선 (offset " + fmt(lane.offset) + ")" : "차선 없음";
         reason_ = mode == 0 ? "차선 다시 따라감" :
-          mode == 1 ? what + " -> 완만하게 " + (dir_ > 0 ? "왼쪽" : "오른쪽") : what + " -> 직진";
+          mode == 1 ? what + " -> 완만하게 " + (dir_ > 0 ? "왼쪽" : "오른쪽") :
+          mode == 3 ? what + " -> 직전 조향 유지" : what + " -> " + fmt(p.out_hold_time, 1) + "s 지나 직진";
         changed_ = true;
         exit_mode_ = mode;
       }
@@ -284,6 +300,7 @@ public:
         c.active = true;
         c.v = p.out_arc_linear;
         c.w = mode == 1 ? dir_ * p.out_arc_angular : 0.0;
+        c.hold = mode == 3;
       }
       return c;
     }
@@ -460,6 +477,8 @@ private:
     exiting_ = true;
     dist_ = 0;
     exit_mode_ = 0;
+    hold_t_ = 0;
+    exit_followed_ = false;
     reason_ = why + " -> 차선 따라 출구 (섬 쪽 차선 무시)";
     changed_ = true;
   }
@@ -498,7 +517,9 @@ private:
   int dir_ = 1;
   double dist_ = 0, yaw_ = 0, loop_yaw_ = 0, t_ = 0;
   bool exiting_ = false;   // 지금 직진 / 회전 / EXIT 가 고리 출구용
-  int exit_mode_ = 0;      // EXIT 중 0 차선 추종, 1 호, 2 직진
+  int exit_mode_ = 0;      // EXIT 중 0 차선 추종, 1 호, 2 직진, 3 직전 조향 유지
+  double hold_t_ = 0;      // EXIT 중 차선 없이 직전 조향을 유지한 시간 [s]
+  bool exit_followed_ = false;   // EXIT 에서 차선을 따라간 적이 있음 (직전 조향이 출구 쪽 것)
   double since_done_ = 1e9;
   double since_cross_ = 1e9;   // 마지막으로 가로 선을 본 뒤 [s]
   double cross_angle_ = 0;     // 마지막 가로 선 기울기 [rad]

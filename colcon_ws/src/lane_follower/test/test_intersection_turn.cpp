@@ -729,18 +729,42 @@ TEST(IntersectionTurn, ExitFollowsLaneButArcsLeftOnIslandLane)
   c = stepObs(s, lostLane(), p);                                   // 차선 없음 -> 호
   EXPECT_TRUE(c.active);
   EXPECT_FALSE(stepObs(s, oneLine(true, 0.1, 0.1), p).active);     // 왼쪽 노란 선 -> 다시 추종
-  // out_arc_max_dist 지나면 차선을 놓쳐도 꺾지 않고 직진 (출구 차선에 들어간 뒤 갑자기 왼쪽으로 꺾던 것)
+  // out_arc_max_dist 지나면 차선을 놓쳐도 호로 꺾지 않고 직전 차선 추종 명령 유지 (hold),
+  // out_hold_time 넘게 못 찾으면 직진
   s.onMove(p.out_arc_max_dist, 0.0, p);
   c = stepObs(s, lostLane(), p);
   ASSERT_TRUE(c.active);
+  EXPECT_TRUE(c.hold);
+  EXPECT_NE(s.lastReason().find("직전 조향"), std::string::npos);
+  for (int i = 0; i < 20; ++i) {   // 1s
+    c = stepObs(s, lostLane(), p);
+  }
+  EXPECT_FALSE(c.hold);
   EXPECT_DOUBLE_EQ(c.w, 0.0);
   EXPECT_NE(s.lastReason().find("직진"), std::string::npos);
+  EXPECT_FALSE(stepObs(s, oneLine(true, 0.1, 0.1), p).active);     // 다시 찾으면 추종
   // out_guard_dist 가면 끝, 표지판은 다시 rearm_dist 동안 무시
   s.onMove(p.out_guard_dist - p.out_arc_max_dist, 0.0, p);
   EXPECT_FALSE(stepObs(s, oneLine(true, 0.0, 1.0), p).active);
   EXPECT_EQ(s.phase(), Phase::IDLE);
   s.onSign(lf::TURN_SIGN_LEFT, 0.95, 0.05, p);
   EXPECT_EQ(s.phase(), Phase::IDLE);
+}
+
+TEST(IntersectionTurn, ExitKeepsArcUntilFollowedOnce)
+{
+  // 출구에서 차선을 한 번도 못 따라간 채 out_arc_max_dist 를 넘으면 직전 조향(고리 쪽) 대신 계속 호
+  const lf::TurnParams p = noCross();
+  lf::IntersectionTurn s;
+  turnLeftIntoLoop(s, p);
+  s.onMove(0.4, -1.1, p);
+  auto c = stepObs(s, lostLane(), p);
+  ASSERT_EQ(s.phase(), Phase::EXIT);
+  s.onMove(p.out_arc_max_dist + 0.05, 0.0, p);
+  c = stepObs(s, lostLane(), p);
+  EXPECT_TRUE(c.active);
+  EXPECT_FALSE(c.hold);
+  EXPECT_DOUBLE_EQ(c.w, p.out_arc_angular);
 }
 
 TEST(IntersectionTurn, LoopForgetsAfterMaxDist)

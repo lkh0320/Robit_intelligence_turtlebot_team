@@ -252,6 +252,7 @@ private:
     declare_parameter("intersection.out_arc_linear", d.out_arc_linear);
     declare_parameter("intersection.out_arc_angular", d.out_arc_angular);
     declare_parameter("intersection.out_arc_max_dist", d.out_arc_max_dist);
+    declare_parameter("intersection.out_hold_time", d.out_hold_time);
   }
 
   lane_follower::TurnParams readTurnParams()
@@ -311,6 +312,7 @@ private:
     p.out_arc_linear = dbl("intersection.out_arc_linear");
     p.out_arc_angular = dbl("intersection.out_arc_angular");
     p.out_arc_max_dist = dbl("intersection.out_arc_max_dist");
+    p.out_hold_time = dbl("intersection.out_hold_time");
     return p;
   }
 
@@ -485,6 +487,9 @@ private:
       last_tick_ok_ = false;
       cmd.linear.x = turn_cmd.v;
       cmd.angular.z = turn_cmd.w;
+      if (turn_cmd.hold && have_follow_cmd_) {   // 고리 출구에서 차선을 잠깐 놓침 -> 휘던 대로
+        cmd = last_follow_cmd_;
+      }
     } else if (lane_ok && !front_blocked) {
       const double dt = last_tick_ok_ ? (t - last_tick_).seconds() : 0.0;
       const auto c = controller_.step(lane.msg.offset, lane.msg.angle, lane.msg.confidence, dt,
@@ -492,6 +497,8 @@ private:
       cmd.linear.x = c.v;
       cmd.angular.z = c.w;
       last_tick_ok_ = true;
+      last_follow_cmd_ = cmd;
+      have_follow_cmd_ = true;
       // 교차로 표지판을 본 뒤 T자 가로 선이 보이면 다가가면서 가로 선에 수평이 되게 조향을 더한다
       double w_add = 0, v_max = 0;
       const bool assist = !hybrid_ && turn_.crossAssist(readTurnParams(), w_add, v_max);
@@ -590,6 +597,8 @@ private:
   lane_follower::Zone last_logged_zone_ = lane_follower::Zone::NORMAL;
   rclcpp::Time last_relayed_{0, 0, RCL_ROS_TIME};   // now() 와 같은 시계 종류여야 비교 가능
   bool cross_assist_ = false;   // 다가가며 정렬 중 (로그 한 번만)
+  geometry_msgs::msg::Twist last_follow_cmd_;   // 마지막 차선 추종 명령 (고리 출구에서 차선 놓쳤을 때 유지)
+  bool have_follow_cmd_ = false;
   rclcpp::Time last_turn_lane_{0, 0, RCL_ROS_TIME};   // 교차로 회전에 마지막으로 넘긴 lane_info
   int state_tick_ = 0;
   interfaces::msg::DxlState last_dxl_;
