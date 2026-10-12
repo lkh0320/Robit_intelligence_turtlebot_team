@@ -5,6 +5,8 @@
 //         dxl_state (interfaces/DxlState)  바퀴 속도 -> 로봇 이동량 (안 보이는 구간의 경로 기억을 옮기는 데 씀)
 //   발행: lane_info (interfaces/LaneInfo)  lane_detection 과 같은 토픽, 같은 규약
 //         vision/lane_debug/compressed     GUI 선·벡터 검출 화면 (구독자가 있을 때만)
+//         box_obstacle (interfaces/WallObstacle)  가장 가까운 갈색 박스 (매 프레임, lane_method:=hybrid 에서
+//                                          lane_follower 가 공사 구간 박스 통과 개수를 센다)
 //
 // 알고리즘은 include/path_planner/planner_core.hpp (ROS 없이 테스트 가능)
 // 이 노드는 파라미터 읽기, 표지판/PSD 상태 관리, 메시지 변환, 디버그 화면만 맡는다.
@@ -13,6 +15,9 @@
 //   (박스를 피하려고 선을 넘어가는 것을 허용) 박스를 본 뒤 construction_exit_sec 동안 박스가 안 보이거나,
 //   construction_timeout_sec 가 지나면 원래대로 돌아온다.
 // 갈림길: LEFT/RIGHT 표지판을 보면 fork_hold_sec 동안 그 방향으로 도는 경로에 가점.
+// use_drive_hint (lane_method:=hybrid): 위 두 가지를 sign 대신 lane_follower 가 보내는 drive_hint 로 정한다.
+//   (lane_follower 가 표지판 확정 / 박스 통과 개수로 구간을 판단하므로 구간 내내 그대로 유지.
+//    drive_hint 가 drive_hint_timeout_sec 넘게 끊기면 원래대로 sign 을 본다)
 // PSD: 좌/우 PSD 가 psd_side_threshold 보다 가까우면 그쪽으로 도는 경로에 벌점.
 #include <cmath>
 #include <memory>
@@ -26,6 +31,7 @@
 #include "interfaces/msg/lane_info.hpp"
 #include "interfaces/msg/psd_array.hpp"
 #include "interfaces/msg/sign.hpp"
+#include "interfaces/msg/wall_obstacle.hpp"
 #include "path_planner/planner_core.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
@@ -82,8 +88,8 @@ public:
     declare_parameter("hold_frames", d.hold_frames);
     declare_parameter("min_wall_pixels", d.min_wall_pixels);
     // 바퀴 속도 -> BEV 이동량
-    declare_parameter("bev_px_per_m", 1008.0);     // BEV 축척 (차선 폭 267px / 0.265m)
-    declare_parameter("wheel_separation", 0.160);  // stm_bridge 와 같게 [m]
+    declare_parameter("bev_px_per_m", 1000.0);     // BEV 축척 (1px = 1mm, bird_eye_view 보정)
+    declare_parameter("wheel_separation", 0.190);  // stm_bridge 와 같게 [m]
     // 표지판 / PSD
     declare_parameter("sign_min_confidence", 0.5);
     declare_parameter("sign_min_area_ratio", 0.01);
@@ -91,6 +97,8 @@ public:
     declare_parameter("construction_exit_sec", 3.0);
     declare_parameter("construction_timeout_sec", 30.0);
     declare_parameter("fork_hold_sec", 3.0);
+    declare_parameter("use_drive_hint", false);
+    declare_parameter("drive_hint_timeout_sec", 0.5);
     declare_parameter("psd_side_threshold", 0.30);
     declare_parameter("psd_timeout_sec", 0.5);
     // 디버그: final (경로) / mask (막힌 곳 지도)
@@ -102,6 +110,12 @@ public:
       image_topic, qos, [this](sensor_msgs::msg::Image::ConstSharedPtr msg) {onImage(msg);});
     sign_sub_ = create_subscription<Sign>(
       "sign", qos, [this](Sign::ConstSharedPtr msg) {onSign(*msg);});
+    hint_sub_ = create_subscription<Sign>(
+      "drive_hint", 10, [this](Sign::ConstSharedPtr msg) {
+        hint_ = msg->type;
+        hint_stamp_ = now();
+        hint_received_ = true;
+      });
     psd_sub_ = create_subscription<interfaces::msg::PsdArray>(
       "psd", qos, [this](interfaces::msg::PsdArray::ConstSharedPtr msg) {
         psd_ = *msg;
@@ -111,6 +125,7 @@ public:
     dxl_sub_ = create_subscription<interfaces::msg::DxlState>(
       "dxl_state", qos, [this](interfaces::msg::DxlState::ConstSharedPtr msg) {onDxl(*msg);});
     lane_pub_ = create_publisher<interfaces::msg::LaneInfo>("lane_info", qos);
+    box_pub_ = create_publisher<interfaces::msg::WallObstacle>("box_obstacle", qos);
     debug_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
       "vision/lane_debug/compressed", qos);
 
@@ -186,8 +201,18 @@ private:
     dxl_received_ = true;
   }
 
+  // lane_follower 가 구간을 정해 주고 있음
+  bool hintActive()
+  {
+    return get_parameter("use_drive_hint").as_bool() && hint_received_ &&
+           (now() - hint_stamp_).seconds() <= dblParam("drive_hint_timeout_sec");
+  }
+
   void onSign(const Sign & s)
   {
+    if (hintActive()) {
+      return;   // 구간 판단은 drive_hint 로
+    }
     if (s.confidence < dblParam("sign_min_confidence") ||
       s.area_ratio < dblParam("sign_min_area_ratio"))
     {
@@ -211,7 +236,17 @@ private:
   path_planner::Bias makeBias(bool box_now)
   {
     const auto t = now();
-    if (construction_) {
+    if (hintActive()) {
+      const bool want = hint_ == Sign::CONSTRUCTION;
+      if (want != construction_) {
+        RCLCPP_INFO(get_logger(), "공사 구간 %s (drive_hint)", want ? "진입: 선 넘기 벌점 완화" : "종료");
+      }
+      construction_ = want;
+      construction_start_ = t;
+      box_seen_ = false;
+      fork_dir_ = hint_ == Sign::LEFT ? -1 : hint_ == Sign::RIGHT ? 1 : 0;
+      fork_stamp_ = t;
+    } else if (construction_) {
       if (box_now) {
         box_seen_ = true;
         box_stamp_ = t;
@@ -265,10 +300,34 @@ private:
     lane.angle = r.angle;
     lane.confidence = r.confidence;
     lane_pub_->publish(lane);
+    publishBox(maps, p, msg->header);
 
     if (debug_pub_->get_subscription_count() > 0) {
       publishDebug(bev, maps, r, bias, msg->header);
     }
+  }
+
+  // 가장 가까운 박스 -> WallObstacle (거리는 바퀴 축 기준, BEV 1px = 1/bev_px_per_m m)
+  void publishBox(const path_planner::Maps & m, const path_planner::Params & p,
+    const std_msgs::msg::Header & header)
+  {
+    interfaces::msg::WallObstacle b;
+    b.header = header;
+    b.detected = m.near_box_area > 0;
+    if (b.detected) {
+      const double w = m.box.cols, h = m.box.rows, cx = p.bev_center_x * w;
+      const double box_cx = m.near_box.x + m.near_box.width / 2.0;
+      const int bottom = m.near_box.y + m.near_box.height - 1;
+      b.side = box_cx < cx ? interfaces::msg::WallObstacle::LEFT :
+        interfaces::msg::WallObstacle::RIGHT;
+      b.x_ratio = static_cast<float>((box_cx - cx) / (w / 2));
+      b.bottom_ratio = static_cast<float>(bottom / (h - 1));
+      b.area_ratio = static_cast<float>(m.near_box.area() / (w * h));
+      b.distance = static_cast<float>(((h - 1) - bottom + p.robot_y_offset_px) /
+        dblParam("bev_px_per_m"));
+      b.confidence = 1.0f;
+    }
+    box_pub_->publish(b);
   }
 
   // GUI 화면 (BEV 아래에 바퀴 축까지 안 보이는 구간을 붙여 그림)
@@ -343,15 +402,19 @@ private:
   rclcpp::Time construction_start_, box_stamp_;
   int fork_dir_ = 0;
   rclcpp::Time fork_stamp_;
+  uint8_t hint_ = Sign::NONE;
+  rclcpp::Time hint_stamp_;
+  bool hint_received_ = false;
   interfaces::msg::PsdArray psd_;
   rclcpp::Time psd_stamp_;
   bool psd_received_ = false;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
-  rclcpp::Subscription<Sign>::SharedPtr sign_sub_;
+  rclcpp::Subscription<Sign>::SharedPtr sign_sub_, hint_sub_;
   rclcpp::Subscription<interfaces::msg::PsdArray>::SharedPtr psd_sub_;
   rclcpp::Subscription<interfaces::msg::DxlState>::SharedPtr dxl_sub_;
   rclcpp::Publisher<interfaces::msg::LaneInfo>::SharedPtr lane_pub_;
+  rclcpp::Publisher<interfaces::msg::WallObstacle>::SharedPtr box_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr debug_pub_;
 };
 

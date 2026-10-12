@@ -7,7 +7,7 @@
 //        (BEV 에서 박스가 위로 늘어나 보이는데, 박스 뒤는 어차피 안 보이는 곳이라 막힘이 맞다)
 //      - 선 마스크는 세로로 불려(dilate) 점선의 빈틈을 메운다 (틈으로 경로가 새지 않게)
 //      - 거리 변환으로 칸마다 "가장 가까운 선 / 박스까지 거리" 를 구한다
-//   2. 경로 기억: 카메라는 바퀴 축보다 robot_y_offset_px 앞부터 보인다 (BEV 맨 아래 = 축에서 약 33cm 앞).
+//   2. 경로 기억: 카메라는 바퀴 축보다 robot_y_offset_px 앞부터 보인다 (BEV 맨 아래 = 축에서 약 14cm 앞).
 //      그 사이 안 보이는 구간은 지난 프레임에 고른 경로를 기억해 두고, 바퀴 속도(Odom)만큼 옮겨 쓴다.
 //   3. 후보 경로: 기억한 경로가 BEV 맨 아래 줄을 지나는 점과 방향(= 로봇이 거기 도착했을 때의 자세)에서
 //      곡률이 거리에 따라 일정하게 변하는 곡선 k(t) = k0 + dk t (클로소이드).
@@ -62,9 +62,9 @@ struct Params
   double path_length_px = 300.0;
   double sample_step_px = 5.0;
   // 3. 점수
-  double robot_half_width_px = 103.0;  // 경로 중심에서 이 거리 안에 선/박스가 있으면 닿은 것 (10.25cm)
+  double robot_half_width_px = 102.5;  // 경로 중심에서 이 거리 안에 선/박스가 있으면 닿은 것 (10.25cm)
   double line_soft_px = 0.0;           // > 0 이면 선 벌점이 반폭 + 이 거리부터 반폭까지 0 -> 1 로 커진다 (0 = 반폭 안만)
-  double clearance_cap_px = 133.0;     // 벽까지 거리가 이 이상이면 똑같이 만점 (보통 차선 폭 / 2)
+  double clearance_cap_px = 148.0;     // 벽까지 거리가 이 이상이면 똑같이 만점 (보통 차선 폭 / 2)
   double line_weight = 10.0;           // 샘플 평균 선 벌점 x 이 값 (공사 구간에서는 노드가 낮춤)
   double clearance_weight = 1.0;
   double smooth_weight = 0.5;          // 직전 경로와 곡률 차이 벌점
@@ -72,8 +72,8 @@ struct Params
   double fork_weight = 1.0;            // 갈림길 방향 가점
   double psd_weight = 2.0;             // 가까운 PSD 쪽으로 도는 경로 벌점
   // 4. 출력
-  double lane_width_px = 267.0;        // offset 정규화용 (반 차선 폭 = 1)
-  double lookahead_px = 120.0;         // 바퀴 축에서 목표점까지 거리
+  double lane_width_px = 295.0;        // offset 정규화용 (반 차선 폭 = 1)
+  double lookahead_px = 200.0;         // 바퀴 축에서 목표점까지 거리 (lane_follower path.pp_lookahead 와 같게)
   double smooth_alpha = 0.6;           // 고른 곡률(k0, dk)의 새 값 비중 (1 = 필터 없음)
   int hold_frames = 5;
   int min_wall_pixels = 200;           // 선 + 박스 픽셀이 이보다 적으면 "아무것도 안 보임"
@@ -99,8 +99,12 @@ struct Maps
   cv::Mat yellow, white, box;  // 색 마스크 (0/255)
   cv::Mat box_blocked;         // 박스 바닥 접점부터 위쪽 전부 (0/255)
   cv::Mat line_wall;           // 빈틈을 메운 선 마스크 (0/255)
+  cv::Mat yellow_wall;         // line_wall 중 노란 선 부분 (같은 방법으로 메움, map_planner 가 색 구분에 씀)
   cv::Mat dist_line, dist_box; // 가장 가까운 선 / 박스까지 거리 [px] (CV_32F)
   int yellow_pixels = 0, white_pixels = 0, box_pixels = 0;
+  // 가장 가까운 박스 (바닥 접점이 가장 아래인 덩어리의 bbox). near_box_area = 0 이면 없음
+  cv::Rect near_box;
+  int near_box_area = 0;
 };
 
 struct Candidate
@@ -220,13 +224,19 @@ inline Maps buildMaps(const cv::Mat & bev, const Params & p, bool with_distances
       }
     }
     m.box_pixels += stats.at<int>(i, cv::CC_STAT_AREA);
+    if (m.near_box_area == 0 || y0 + bh > m.near_box.y + m.near_box.height) {
+      m.near_box = cv::Rect(x0, y0, bw, bh);
+      m.near_box_area = stats.at<int>(i, cv::CC_STAT_AREA);
+    }
   }
 
   // 선: 세로로 불려 점선 빈틈 메우기
   cv::bitwise_or(m.yellow, m.white, m.line_wall);
+  m.yellow_wall = m.yellow.clone();
   if (p.line_gap_close_px > 1) {
-    cv::dilate(m.line_wall, m.line_wall,
-      cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, p.line_gap_close_px)));
+    const cv::Mat gap_k = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, p.line_gap_close_px));
+    cv::dilate(m.line_wall, m.line_wall, gap_k);
+    cv::dilate(m.yellow_wall, m.yellow_wall, gap_k);
   }
   m.yellow_pixels = cv::countNonZero(m.yellow);
   m.white_pixels = cv::countNonZero(m.white);
