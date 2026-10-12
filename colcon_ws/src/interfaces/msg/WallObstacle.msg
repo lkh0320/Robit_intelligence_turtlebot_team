@@ -11,4 +11,5 @@ float32 x_ratio          # 가장 가까운 벽 중심 가로 위치, 정규화 
 float32 bottom_ratio     # 가장 가까운 벽 아래 끝 세로 위치 [0.0(상단) ~ 1.0(하단)], 클수록 가까움
 float32 free_offset      # 벽이 없는 쪽 빈 공간 중심, 정규화 [-1.0, 1.0] -> 회피 목표 방향
 float32 area_ratio       # 벽 bbox 면적 / 이미지 면적
+float32 distance         # [m] 바퀴 축에서 가장 가까운 벽의 로봇 쪽 끝까지 (모르면 0, path_planner 가 채움)
 float32 confidence       # 0.0 ~ 1.0

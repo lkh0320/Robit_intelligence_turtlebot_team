@@ -10,8 +10,8 @@ uint8 STATE_NO_CMD    = 3   # 젯슨 명령이 0.3초 넘게 없음 -> 정지
 uint8 STATE_NOT_READY = 4   # 모터를 못 찾았거나 설정 실패
 uint8 STATE_MANUAL    = 5   # 스위치 고정 속도 테스트 (S3/S4)
 
-# 바퀴 선속도 [m/s]. 엔코더 피드백이 없어서 STM32 가 ROS 명령대로 주행 중(STATE_ROS)일 때만
-# 마지막으로 보낸 바퀴 명령 값을 넣고, 그 외(정지 상태)에는 0
+# 바퀴 선속도 [m/s], 앞 = +. 모터 엔코더로 잰 실제 속도 (펌웨어 ENCODER 0x11 프레임).
+# 엔코더 프레임이 없는 예전 펌웨어면 ROS 명령대로 주행 중(STATE_ROS)일 때만 마지막으로 보낸 명령 값, 그 외 0
 float32 left_velocity
 float32 right_velocity
 uint8 left_error         # 다이나믹셀 Hardware Error Status (0 = 정상)
