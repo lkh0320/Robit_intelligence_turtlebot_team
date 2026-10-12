@@ -237,6 +237,10 @@ private:
     declare_parameter("intersection.exit_lead_angle", d.exit_lead_angle);
     declare_parameter("intersection.exit_turn_side_only", d.exit_turn_side_only);
     declare_parameter("intersection.rearm_dist", d.rearm_dist);
+    declare_parameter("intersection.after_enabled", d.after_enabled);
+    declare_parameter("intersection.after_dist", d.after_dist);
+    declare_parameter("intersection.after_max_yaw", d.after_max_yaw);
+    declare_parameter("intersection.after_max_retries", d.after_max_retries);
     declare_parameter("intersection.out_enabled", d.out_enabled);
     declare_parameter("intersection.out_trigger_yaw", d.out_trigger_yaw);
     declare_parameter("intersection.out_island_offset", d.out_island_offset);
@@ -297,6 +301,10 @@ private:
     p.exit_lead_angle = dbl("intersection.exit_lead_angle");
     p.exit_turn_side_only = get_parameter("intersection.exit_turn_side_only").as_bool();
     p.rearm_dist = dbl("intersection.rearm_dist");
+    p.after_enabled = get_parameter("intersection.after_enabled").as_bool();
+    p.after_dist = dbl("intersection.after_dist");
+    p.after_max_yaw = dbl("intersection.after_max_yaw");
+    p.after_max_retries = integer("intersection.after_max_retries");
     p.out_enabled = get_parameter("intersection.out_enabled").as_bool();
     p.out_trigger_yaw = dbl("intersection.out_trigger_yaw");
     p.out_island_offset = dbl("intersection.out_island_offset");

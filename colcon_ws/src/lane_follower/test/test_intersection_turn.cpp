@@ -76,6 +76,7 @@ lf::TurnParams turnOnly()
   p.out_enabled = false;
   p.turn_pivot = false;
   p.require_cross_line = false;
+  p.after_enabled = false;
   return p;
 }
 
@@ -84,6 +85,7 @@ lf::TurnParams noCross()
 {
   lf::TurnParams p;
   p.require_cross_line = false;
+  p.after_enabled = false;
   return p;
 }
 
@@ -765,6 +767,57 @@ TEST(IntersectionTurn, ExitKeepsArcUntilFollowedOnce)
   EXPECT_TRUE(c.active);
   EXPECT_FALSE(c.hold);
   EXPECT_DOUBLE_EQ(c.w, p.out_arc_angular);
+}
+
+TEST(IntersectionTurn, RightTurnRetriesWhenLaneLostSoonAfter)
+{
+  // 07:37: 오른쪽 30° 에서 회전 끝 -> 차선 추종 중 바로 놓침 -> 멈춤. 이제 같은 쪽으로 더 돌며 찾는다
+  lf::TurnParams p = noCross();
+  p.approach_time = 0;
+  p.after_enabled = true;
+  lf::IntersectionTurn s;
+  turnTo(s, lf::TURN_SIGN_RIGHT, 0.5, p);
+  for (int i = 0; i < p.exit_ok_count; ++i) {
+    step(s, false, true, 0.4, p);   // 차선이 아직 오른쪽으로 0.4 rad (exit_lead_angle 안)
+  }
+  ASSERT_EQ(s.phase(), Phase::AFTER);
+  EXPECT_FALSE(step(s, false, true, 0.3, p).active);   // 차선 추종
+  s.onMove(0.1, 0.0, p);
+  auto c = step(s, true, false, 0, p);                  // 놓침 -> 오른쪽으로 더 돎 (찾는 속도)
+  ASSERT_EQ(s.phase(), Phase::TURN);
+  EXPECT_DOUBLE_EQ(c.w, -p.turn_search_angular);
+  EXPECT_NE(s.lastReason().find("더 돎"), std::string::npos);
+  for (int i = 0; i < p.exit_ok_count; ++i) {
+    step(s, false, true, 0.1, p);
+  }
+  EXPECT_EQ(s.phase(), Phase::AFTER);
+  // 끝까지 잘 따라가면 IDLE
+  s.onMove(p.after_dist, 0.0, p);
+  EXPECT_FALSE(step(s, false, true, 0.0, p).active);
+  EXPECT_EQ(s.phase(), Phase::IDLE);
+}
+
+TEST(IntersectionTurn, AfterRetryGivesUpAtMaxYawAndRetries)
+{
+  lf::TurnParams p = noCross();
+  p.approach_time = 0;
+  p.after_enabled = true;
+  lf::IntersectionTurn s;
+  turnTo(s, lf::TURN_SIGN_RIGHT, 0.5, p);
+  for (int i = 0; i < p.exit_ok_count; ++i) {
+    step(s, false, true, 0.2, p);
+  }
+  ASSERT_EQ(s.phase(), Phase::AFTER);
+  for (int r = 0; r < p.after_max_retries; ++r) {
+    step(s, true, false, 0, p);
+    ASSERT_EQ(s.phase(), Phase::TURN);
+    for (int i = 0; i < p.exit_ok_count; ++i) {
+      step(s, false, true, 0.1, p);
+    }
+    ASSERT_EQ(s.phase(), Phase::AFTER);
+  }
+  EXPECT_FALSE(step(s, true, false, 0, p).active);   // 재시도 다 씀 -> lane_follower 가 멈춤
+  EXPECT_EQ(s.phase(), Phase::AFTER);
 }
 
 TEST(IntersectionTurn, LoopForgetsAfterMaxDist)

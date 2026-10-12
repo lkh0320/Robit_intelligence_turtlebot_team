@@ -140,6 +140,13 @@ lane_follower:
       #   로그 "[교차로] LOOP LEFT ..m ..°" 의 각도 보고 튜닝: 출구를 지나쳐 돌면 줄이고, 출구 전에 돌면 늘린다
       #   test_044608: 고리 위쪽을 따라 오른쪽으로 60~70° (0.45m) 꺾인 곳에서 노란 선이 왼쪽으로 휘어 사라지고
       #   섬 끝 노란 선을 왼쪽 선으로 잡아 (offset +1) 섬 쪽으로 꺾임 -> 그 전에 왼쪽으로 돈다
+      # 돈 뒤 확인 (오른쪽처럼 고리로 안 가는 회전): after_dist 안에서 차선을 놓치면 같은 쪽으로 더 돌며 찾음
+      #   07:37 오른쪽 5번 중 1번: 30° 에서 회전 끝낸 뒤 (exit_lead_angle) 차선 추종 중 놓쳐 멈춤
+      #   로그 "[교차로] 돈 뒤 ..m 에서 차선 놓침 -> 같은 쪽으로 더 돎"
+      after_enabled: true
+      after_dist: 0.4             # [m]
+      after_max_yaw: 1.0          # [rad] (57°) 더 도는 최대
+      after_max_retries: 2
       out_enabled: true
       out_trigger_yaw: 1.05       # [rad] (약 60°)
       out_island_offset: 0.9      # 노란 선만 보이는데 offset 이 이 이상 (노란 선이 로봇 오른쪽 = 섬 끝) 이면 출구
