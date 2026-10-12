@@ -12,7 +12,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -42,11 +42,16 @@ def generate_launch_description():
             }],
             output='screen',
         ),
+        # 주차 노드는 lane_detection 이 채우는 right_detected 를 본다.
+        # hybrid 의 lane_info 는 lane_follower 가 고른 쪽 중계라 path 일 땐 비어 있으므로 원본을 받는다
         Node(
             package='lane_follower',
             executable='parking_node',
             name='parking',
             parameters=[parking_config, {'use_task_planner': use_task_planner}],
+            remappings=[('lane_info', PythonExpression(
+                ["'lane_info/sliding' if '", LaunchConfiguration('lane_method'),
+                 "' == 'hybrid' else 'lane_info'"]))],
             condition=IfCondition(LaunchConfiguration('parking')),
             output='screen',
         ),
