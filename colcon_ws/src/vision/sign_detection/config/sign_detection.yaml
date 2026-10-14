@@ -3,8 +3,14 @@ sign_detection:
     image_topic: image_raw
     # 노트북에서 export 한 ONNX (git 에 올리지 않음). ~ 는 노드가 홈 디렉터리로 바꾼다
     #   yolo export model=best.pt format=onnx imgsz=640 opset=12 simplify=True
-    model_path: ~/models/signs_v1.onnx
-    input_size: 640           # export 때 imgsz 와 같아야 한다
+    # 2026-10-14: v2 (v2_noflip best.pt) 를 imgsz=416 으로 다시 export (노트북 ~/yolo_export_20261014).
+    #   640 (~/models/v2.onnx) 보다 추론 약 3배 빠르고 녹화 재생에서 같은 표지판을 잡음. 되돌리려면 둘 다 바꾼다
+    model_path: ~/models/v2_416.onnx
+    input_size: 416           # export 때 imgsz 와 같아야 한다
+    process_rate: 10.0        # [Hz] 처리 횟수 제한 (0 = 할 수 있는 만큼). lane_follower sign_confirm_window 가 이 속도 기준.
+                              #   2026-10-14 녹화 재생 (BEV+lane+wall+sign+원본 녹화): 416 10Hz 에서 CPU 여유 36%
+                              #   (예전 640 약 5Hz 33%), lane_info 30Hz 유지. 5Hz 면 여유 53%
+    num_threads: 0            # OpenCV 스레드 수 (0 = 코어 전부). 3 이면 여유 40%, 추론 95ms
     conf_threshold: 0.5       # 이보다 낮은 박스는 버림
     nms_threshold: 0.45       # 같은 클래스 박스가 이 IoU 넘게 겹치면 하나만 남김
     debug_jpeg_quality: 70

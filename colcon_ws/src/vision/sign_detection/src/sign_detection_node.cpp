@@ -8,6 +8,9 @@
 //   ONNX 는 기기와 상관없이 돌아가므로 노트북에서 만들어도 된다 (.engine 과 다름)
 //   젯슨의 JetPack OpenCV 4.8 은 CUDA 없이 빌드되어 CPU 로 돈다. 느리면 imgsz=416/320 으로 export 하고
 //   input_size 를 같이 바꾼다
+//   2026-10-14 녹화 재생 (같은 42초, 다른 노드 없이): 추론 640 191ms / 416 68ms / 320 39ms.
+//     416 은 640 과 같은 표지판을 같은 때부터 잡고, 320 은 왼쪽 표지판이 빠져나갈 때 RIGHT 를 한 번 오인식
+//     추론이 빨라지면 남는 시간에 프레임을 더 처리해 CPU 는 그대로라 process_rate 로 횟수를 제한한다
 //
 // 처리 순서
 //   1. letterbox: 비율 유지하며 input_size 정사각형으로 (남는 곳 회색)
@@ -66,6 +69,14 @@ public:
     declare_parameter("conf_threshold", 0.5);   // 이보다 낮은 박스는 버림
     declare_parameter("nms_threshold", 0.45);   // 같은 클래스 박스가 이 IoU 넘게 겹치면 하나만
     declare_parameter("debug_jpeg_quality", 70);
+    // [Hz] 이보다 자주 처리하지 않음 (0 이하 = 할 수 있는 만큼). lane_follower 의 표지판 확인 창(sign_confirm_window
+    // 프레임)이 이 속도 기준이라 바꾸면 같이 바꾼다
+    declare_parameter("process_rate", 10.0);
+    // OpenCV 연산 스레드 수 (0 이하 = OpenCV 기본, 코어 전부). 적게 주면 한 장은 느려져도 총 CPU 가 준다
+    const int threads = static_cast<int>(declare_parameter("num_threads", 0));
+    if (threads > 0) {
+      cv::setNumThreads(threads);
+    }
 
     const auto qos = rclcpp::SensorDataQoS();
     sign_pub_ = create_publisher<interfaces::msg::Sign>("sign", qos);
@@ -95,6 +106,17 @@ public:
 private:
   void onImage(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
   {
+    // 영상 시각으로 솎는다 (bag 재생 속도를 바꿔도 같은 프레임을 고르게)
+    const rclcpp::Time stamp(msg->header.stamp);
+    const double rate = get_parameter("process_rate").as_double();
+    if (rate > 0 && have_last_ && (stamp - last_).seconds() < 0.9 / rate &&
+      (stamp - last_).seconds() >= 0)
+    {
+      return;
+    }
+    last_ = stamp;
+    have_last_ = true;
+
     cv::Mat img;
     try {
       img = cv_bridge::toCvShare(msg, "bgr8")->image;
@@ -180,6 +202,8 @@ private:
 
   cv::dnn::Net net_;
   int input_size_;
+  rclcpp::Time last_;
+  bool have_last_ = false;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Publisher<interfaces::msg::Sign>::SharedPtr sign_pub_;
