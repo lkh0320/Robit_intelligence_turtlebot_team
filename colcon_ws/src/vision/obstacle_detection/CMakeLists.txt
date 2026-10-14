@@ -15,6 +15,7 @@ find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 # 차단바, 벽(지그재그 구간) 은 따로 켜고 끌 수 있게 노드를 나눈다
 foreach(node barrier_detection_node wall_detection_node)
   add_executable(${node} src/${node}.cpp)
+  target_include_directories(${node} PRIVATE include)
   target_link_libraries(${node} ${OpenCV_LIBS})
   ament_target_dependencies(${node} rclcpp sensor_msgs cv_bridge interfaces)
 endforeach()
@@ -23,5 +24,12 @@ install(TARGETS barrier_detection_node wall_detection_node
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_free_space test/test_free_space.cpp)
+  target_include_directories(test_free_space PRIVATE include)
+  target_link_libraries(test_free_space ${OpenCV_LIBS})
+endif()
 
 ament_package()

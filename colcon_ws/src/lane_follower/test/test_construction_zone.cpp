@@ -1,0 +1,225 @@
+// construction_zone.hpp: 표지판 -> 박스 가까움 -> 빈 공간 조향 -> 옆 PSD 로 통과 3개 -> 차선 복귀
+#include <gtest/gtest.h>
+
+#include "lane_follower/construction_zone.hpp"
+
+using lane_follower::ConstructionParams;
+using lane_follower::ConstructionZone;
+using Phase = ConstructionZone::Phase;
+
+namespace
+{
+constexpr int SIGN = lane_follower::ZONE_SIGN_CONSTRUCTION;
+
+// 시각 now 부터 dur 초 동안 20Hz 로 PSD (left, right) + 10Hz wall + 20Hz 제어 틱
+struct Sim
+{
+  ConstructionZone z;
+  ConstructionParams p;
+  double now = 0;
+  bool box = true;
+  double bottom = 0.5, free_offset = 0.0;
+  bool lane_ok = true;
+  ConstructionZone::Cmd last;
+
+  void run(double dur, double left = 0.8, double right = 0.8)
+  {
+    const double end = now + dur;
+    int k = 0;
+    while (now < end - 1e-9) {
+      now += 0.05;
+      z.onPsd(left, right, now, p);
+      if (k++ % 2 == 0) {
+        z.onWall(box, bottom, free_offset, now, p);
+      }
+      last = z.update(lane_ok, now, p);
+    }
+  }
+
+  void arm()
+  {
+    z.onSign(SIGN, 0.9, 0.01, now, p);
+  }
+};
+}  // namespace
+
+TEST(ConstructionZone, BoxWithoutSignDoesNothing)
+{
+  Sim s;
+  s.bottom = 0.8;
+  s.run(2.0);
+  EXPECT_EQ(s.z.phase(), Phase::IDLE);
+  EXPECT_FALSE(s.last.active);
+}
+
+TEST(ConstructionZone, SignNeedsConfirmUnlessConfident)
+{
+  Sim s;
+  s.z.onSign(SIGN, 0.7, 0.01, 0, s.p);
+  EXPECT_EQ(s.z.phase(), Phase::IDLE);
+  s.z.onSign(SIGN, 0.7, 0.01, 0.2, s.p);
+  EXPECT_EQ(s.z.phase(), Phase::ARMED);
+
+  Sim t;
+  t.z.onSign(SIGN, 0.9, 0.01, 0, t.p);
+  EXPECT_EQ(t.z.phase(), Phase::ARMED);
+
+  Sim u;
+  u.z.onSign(1, 0.95, 0.05, 0, u.p);   // LEFT 표지판
+  u.z.onSign(SIGN, 0.95, 0.001, 0, u.p);   // 너무 작음
+  EXPECT_EQ(u.z.phase(), Phase::IDLE);
+}
+
+TEST(ConstructionZone, FarBoxKeepsLaneFollowing)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.2;
+  s.run(2.0);
+  EXPECT_EQ(s.z.phase(), Phase::ARMED);
+  EXPECT_FALSE(s.last.active);
+}
+
+TEST(ConstructionZone, NearBoxSteersToFreeSpace)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.35;
+  s.free_offset = -0.4;   // 빈 공간이 왼쪽
+  s.run(0.5);
+  EXPECT_EQ(s.z.phase(), Phase::AVOID);
+  ASSERT_TRUE(s.last.active);
+  EXPECT_NEAR(s.last.v, s.p.linear, 1e-9);
+  EXPECT_NEAR(s.last.w, 0.4, 1e-9);   // 왼쪽 = +
+  s.free_offset = 0.9;
+  s.run(0.2);
+  EXPECT_NEAR(s.last.w, -s.p.max_angular, 1e-9);
+}
+
+TEST(ConstructionZone, BoxAndLaneLostStartsAvoid)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.15;
+  s.lane_ok = false;
+  s.run(0.3);
+  EXPECT_EQ(s.z.phase(), Phase::AVOID);
+}
+
+// 녹화 110713_manual 의 옆 PSD 순서 (RLR, 튀는 값 포함) -> 3개
+TEST(ConstructionZone, RecordedPsdCountsThree)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.2;
+  s.run(1.0);
+  s.run(0.8, 0.17, 0.8);   // 표지판 받침대가 왼쪽 (AVOID 전이라 안 셈)
+  s.run(1.0);
+  s.bottom = 0.35;
+  s.run(1.0);
+  ASSERT_EQ(s.z.phase(), Phase::AVOID);
+  s.run(0.1, 0.8, 0.2);    // 0.1초 튀는 값
+  s.run(2.9);
+  EXPECT_EQ(s.z.passes(), 0);
+  s.run(1.1, 0.8, 0.12);   // 첫 박스 오른쪽
+  s.run(0.5, 0.12, 0.12);  // 두 번째 박스 왼쪽이 겹쳐 시작
+  s.run(1.0, 0.10, 0.8);
+  EXPECT_EQ(s.z.passes(), 1);
+  s.run(0.35, 0.8, 0.8);   // 0.35초 열렸다 다시 막힘 -> 아직 통과 아님
+  s.run(0.5, 0.15, 0.8);
+  s.run(1.0, 0.4, 0.8);    // 사이 값
+  EXPECT_EQ(s.z.passes(), 1);
+  s.run(0.3, 0.4, 0.15);   // 세 번째 박스 오른쪽
+  s.run(0.3, 0.8, 0.15);
+  s.run(0.15, 0.8, 0.8);   // 0.15초 튐
+  s.run(0.8, 0.8, 0.12);
+  EXPECT_EQ(s.z.passes(), 2);
+  s.box = false;
+  s.lane_ok = false;
+  s.run(0.6);
+  EXPECT_EQ(s.z.passes(), 3);
+  EXPECT_EQ(s.z.phase(), Phase::RETURN);
+  EXPECT_TRUE(s.last.active);
+  s.lane_ok = true;
+  s.run(0.3);
+  EXPECT_EQ(s.z.phase(), Phase::IDLE);
+  EXPECT_FALSE(s.last.active);
+}
+
+TEST(ConstructionZone, SideBlockedAtStartIsIgnoredUntilOpen)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.35;
+  s.run(0.5, 0.1, 0.8);    // AVOID 시작 때 이미 왼쪽 막힘
+  ASSERT_EQ(s.z.phase(), Phase::AVOID);
+  s.run(1.0, 0.8, 0.8);
+  EXPECT_EQ(s.z.passes(), 0);
+  s.run(0.5, 0.1, 0.8);
+  s.run(0.6, 0.8, 0.8);
+  EXPECT_EQ(s.z.passes(), 1);
+}
+
+TEST(ConstructionZone, NoBoxAfterPassReturns)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.35;
+  s.run(0.5);
+  s.run(1.0, 0.1, 0.8);
+  s.run(0.6);
+  ASSERT_EQ(s.z.passes(), 1);
+  s.box = false;
+  s.run(s.p.no_box_time + 0.2);
+  EXPECT_NE(s.z.phase(), Phase::AVOID);
+}
+
+TEST(ConstructionZone, WallStaleStops)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.35;
+  s.free_offset = 0.5;
+  s.run(0.5);
+  ASSERT_EQ(s.z.phase(), Phase::AVOID);
+  s.now += 1.0;   // wall_obstacle 안 옴
+  const auto c = s.z.update(true, s.now, s.p);
+  EXPECT_TRUE(c.active);
+  EXPECT_EQ(c.v, 0.0);
+  EXPECT_EQ(c.w, 0.0);
+}
+
+TEST(ConstructionZone, ArmTimesOutAndRearmWaits)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.1;
+  s.run(s.p.arm_max_time + 0.5);
+  EXPECT_EQ(s.z.phase(), Phase::IDLE);
+  s.arm();   // 끝난 직후 같은 표지판
+  EXPECT_EQ(s.z.phase(), Phase::IDLE);
+  s.run(s.p.rearm_time);
+  s.arm();
+  EXPECT_EQ(s.z.phase(), Phase::ARMED);
+}
+
+TEST(ConstructionZone, AvoidMaxTimeEnds)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.35;
+  s.run(s.p.avoid_max_time + 1.0);
+  EXPECT_EQ(s.z.phase(), Phase::IDLE);
+}
+
+TEST(ConstructionZone, CancelForgets)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.35;
+  s.run(0.5);
+  s.z.cancel();
+  EXPECT_EQ(s.z.phase(), Phase::IDLE);
+  s.run(0.2);
+  EXPECT_FALSE(s.last.active);
+}

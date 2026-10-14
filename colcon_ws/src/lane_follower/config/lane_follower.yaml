@@ -169,6 +169,36 @@ lane_follower:
                                   #   (06:46~ 로그: 출구 차선에 들어간 뒤 0.27~0.29m 에서 차선 잠깐 놓쳐 왼쪽 호 -> 갑자기 왼쪽, 7번 중 2번.
                                   #    직진으로 바꿨더니 07:26 S자 굽이에서 곧게 가 선을 넘음)
       out_hold_time: 0.8          # [s] 그동안 직전 차선 추종 명령 유지, 그래도 못 찾으면 직진. 로그 "-> 직전 조향 유지"
+    # 공사 구간 (hybrid 가 아닐 때, include/lane_follower/construction_zone.hpp)
+    #   공사 표지판 확인(ARMED) -> 박스가 가까워지면 wall_detection 의 빈 공간 방향으로 조향(AVOID)
+    #   -> 옆 PSD 로 박스 통과를 세어 boxes 개면 차선 찾아 복귀(RETURN). 로그 "[공사] ...",
+    #   상태: ros2 topic echo /lane_follower/construction, 화면: vision/wall_debug/compressed
+    #   값은 2026-10-13 수동 주행 녹화 (~/construction_test_20261013/110713_manual, RLR) 기준
+    construction:
+      enabled: true
+      sign_min_confidence: 0.6
+      sign_min_area: 0.005        # 녹화: 처음 볼 때 0.009
+      sign_confirm_count: 2
+      sign_confirm_window: 6
+      sign_instant_confidence: 0.85   # 녹화: 0.89~0.95
+      arm_max_time: 15.0          # [s] 표지판 뒤 이만큼 박스가 안 오면 잊음 (녹화: 표지판 3.5s 뒤 박스 가까움, 0.06m/s)
+      enter_bottom: 0.3           # 박스 아래 끝 (화면 높이 비율) 이 이 이상이면 AVOID. 녹화: 표지판 받침대를 지난 뒤 0.3,
+                                  #   사람이 피하기 시작할 때 0.34. 너무 늦게 피하면 줄이고, 커브에서 일찍 꺾이면 늘린다
+      enter_count: 2
+      wall_timeout: 0.5           # [s] wall_obstacle (10Hz) 끊기면 정지
+      linear: 0.06                # [m/s] 녹화 수동 속도
+      kp: 1.0                     # w = -kp * free_offset [rad/s]. 박스 쪽으로 붙으면 늘리고, 좌우로 흔들리면 줄인다
+      max_angular: 0.6
+      boxes: 3
+      pass_low: 0.25              # [m] 옆 PSD: 평소 0.80(최대), 박스 옆 0.10~0.13
+      pass_high: 0.6
+      pass_low_time: 0.2          # [s] 녹화: 박스 사이에서 0.1초 튀는 값 있음
+      pass_high_time: 0.5         # [s] 녹화: 두 번째 박스 옆에서 0.35초 열렸다 다시 막힘
+      no_box_time: 3.0            # [s] 하나 이상 통과한 뒤 박스가 이만큼 안 보이면 차선 찾기
+      return_ok_count: 3
+      return_max_time: 3.0
+      avoid_max_time: 30.0        # [s] 안전장치
+      rearm_time: 5.0             # [s] 끝난 뒤 공사 표지판 무시
     # 안전
     lane_timeout: 0.7           # [s] lane_info 가 이보다 오래 안 오면 정지 (map_planner ~7Hz, 녹화에서 최대 0.65s 끊김)
     front_stop_distance: 0.10   # [m] 정면 PSD 가 이보다 가까우면 정지 (0 이하 = 끔)

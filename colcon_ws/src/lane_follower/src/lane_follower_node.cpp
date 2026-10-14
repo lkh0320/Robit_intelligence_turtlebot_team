@@ -26,6 +26,11 @@
 //   LEFT/RIGHT 표지판을 본 뒤 차선을 놓치면 (교차로 정면의 가로 선) 정지 대신 조금 직진한 뒤 표지판 방향으로 돌고,
 //   차선을 다시 잡으면 원래 주행으로. 왼쪽으로 돌았으면 고리 출구에서 한 번 더 왼쪽으로.
 //   추가 구독: sign, dxl_state (이동 거리 / 회전량)
+// hybrid 가 아니면 공사 구간 (include/lane_follower/construction_zone.hpp, construction.* 파라미터):
+//   공사 표지판을 본 뒤 박스가 가까워지면 wall_detection 의 빈 공간 방향(free_offset)으로 조향하고,
+//   옆 PSD 로 박스 통과를 세어 3개 지나면 차선 추종으로 돌아간다. 로그 "[공사] ..."
+//   추가 구독: wall_obstacle (interfaces/WallObstacle, obstacle_detection wall_detection_node)
+//   추가 발행: lane_follower/construction (std_msgs/String, 공사 구간 상태가 바뀔 때)
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -38,6 +43,7 @@
 #include "interfaces/msg/sign.hpp"
 #include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "interfaces/msg/wall_obstacle.hpp"
+#include "lane_follower/construction_zone.hpp"
 #include "lane_follower/controller.hpp"
 #include "lane_follower/drive_selector.hpp"
 #include "lane_follower/intersection_turn.hpp"
@@ -79,6 +85,7 @@ public:
     const double rate = declare_parameter("control_rate", 20.0);
     declareHybridParams();
     declareTurnParams();
+    declareConstructionParams();
 
     mode_ = autostart ? ControlMode::LANE : ControlMode::STOP;
     // hybrid 는 시작할 때 정한다 (구독 토픽이 달라서 주행 중 전환 불가)
@@ -125,7 +132,15 @@ public:
           }
           turn_.onSign(m->type, m->confidence, m->area_ratio, readTurnParams());
           logTurn();
+          zone_.onSign(m->type, m->confidence, m->area_ratio, now().seconds(), readConstructionParams());
+          logZoneState();
         });
+      wall_sub_ = create_subscription<interfaces::msg::WallObstacle>(
+        "wall_obstacle", qos, [this](interfaces::msg::WallObstacle::ConstSharedPtr m) {
+          zone_.onWall(m->detected, m->bottom_ratio, m->free_offset, now().seconds(),
+          readConstructionParams());
+        });
+      zone_pub_ = create_publisher<std_msgs::msg::String>("lane_follower/construction", 10);
       dxl_sub_ = create_subscription<interfaces::msg::DxlState>(
         "dxl_state", qos, [this](interfaces::msg::DxlState::ConstSharedPtr m) {onDxl(*m);});
       // lane_detection 의 교차로 T자 가로 선: x 세로 위치, y 기울기 [rad], z 길이 (0 = 없음)
@@ -147,6 +162,10 @@ public:
         psd_ = *msg;
         psd_stamp_ = now();
         psd_received_ = true;
+        if (!hybrid_) {
+          zone_.onPsd(msg->left, msg->right, psd_stamp_.seconds(), readConstructionParams());
+          logZoneState();
+        }
       });
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
     timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / rate), [this] {tick();});
@@ -257,6 +276,73 @@ private:
     declare_parameter("intersection.out_arc_angular", d.out_arc_angular);
     declare_parameter("intersection.out_arc_max_dist", d.out_arc_max_dist);
     declare_parameter("intersection.out_hold_time", d.out_hold_time);
+  }
+
+  void declareConstructionParams()
+  {
+    const lane_follower::ConstructionParams d;
+    declare_parameter("construction.enabled", d.enabled);
+    declare_parameter("construction.sign_min_confidence", d.sign_min_confidence);
+    declare_parameter("construction.sign_min_area", d.sign_min_area);
+    declare_parameter("construction.sign_confirm_count", d.sign_confirm_count);
+    declare_parameter("construction.sign_confirm_window", d.sign_confirm_window);
+    declare_parameter("construction.sign_instant_confidence", d.sign_instant_confidence);
+    declare_parameter("construction.arm_max_time", d.arm_max_time);
+    declare_parameter("construction.enter_bottom", d.enter_bottom);
+    declare_parameter("construction.enter_count", d.enter_count);
+    declare_parameter("construction.wall_timeout", d.wall_timeout);
+    declare_parameter("construction.linear", d.linear);
+    declare_parameter("construction.kp", d.kp);
+    declare_parameter("construction.max_angular", d.max_angular);
+    declare_parameter("construction.boxes", d.boxes);
+    declare_parameter("construction.pass_low", d.pass_low);
+    declare_parameter("construction.pass_high", d.pass_high);
+    declare_parameter("construction.pass_low_time", d.pass_low_time);
+    declare_parameter("construction.pass_high_time", d.pass_high_time);
+    declare_parameter("construction.no_box_time", d.no_box_time);
+    declare_parameter("construction.return_ok_count", d.return_ok_count);
+    declare_parameter("construction.return_max_time", d.return_max_time);
+    declare_parameter("construction.avoid_max_time", d.avoid_max_time);
+    declare_parameter("construction.rearm_time", d.rearm_time);
+  }
+
+  lane_follower::ConstructionParams readConstructionParams()
+  {
+    lane_follower::ConstructionParams p;
+    p.enabled = get_parameter("construction.enabled").as_bool();
+    p.sign_min_confidence = dbl("construction.sign_min_confidence");
+    p.sign_min_area = dbl("construction.sign_min_area");
+    p.sign_confirm_count = integer("construction.sign_confirm_count");
+    p.sign_confirm_window = integer("construction.sign_confirm_window");
+    p.sign_instant_confidence = dbl("construction.sign_instant_confidence");
+    p.arm_max_time = dbl("construction.arm_max_time");
+    p.enter_bottom = dbl("construction.enter_bottom");
+    p.enter_count = integer("construction.enter_count");
+    p.wall_timeout = dbl("construction.wall_timeout");
+    p.linear = dbl("construction.linear");
+    p.kp = dbl("construction.kp");
+    p.max_angular = dbl("construction.max_angular");
+    p.boxes = integer("construction.boxes");
+    p.pass_low = dbl("construction.pass_low");
+    p.pass_high = dbl("construction.pass_high");
+    p.pass_low_time = dbl("construction.pass_low_time");
+    p.pass_high_time = dbl("construction.pass_high_time");
+    p.no_box_time = dbl("construction.no_box_time");
+    p.return_ok_count = integer("construction.return_ok_count");
+    p.return_max_time = dbl("construction.return_max_time");
+    p.avoid_max_time = dbl("construction.avoid_max_time");
+    p.rearm_time = dbl("construction.rearm_time");
+    return p;
+  }
+
+  void logZoneState()
+  {
+    if (zone_.takeChanged()) {
+      RCLCPP_INFO(get_logger(), "[공사] %s -> %s", zone_.lastReason().c_str(), zone_.describe().c_str());
+      std_msgs::msg::String s;
+      s.data = zone_.describe() + " | " + zone_.lastReason();
+      zone_pub_->publish(s);
+    }
   }
 
   lane_follower::TurnParams readTurnParams()
@@ -451,6 +537,10 @@ private:
         controller_.reset();
         turn_.cancelManeuver();
         logTurn();
+        if (!hybrid_) {
+          zone_.cancel();
+          logZoneState();
+        }
         was_driving_ = false;
       }
       return;
@@ -490,7 +580,19 @@ private:
       }
     }
 
-    if (turn_cmd.active && !front_blocked) {
+    // 공사 구간 (hybrid 아닐 때): 박스를 피하는 동안은 교차로 회전 / 차선 추종 대신 빈 공간 조향
+    lane_follower::ConstructionZone::Cmd zone_cmd;
+    if (!hybrid_) {
+      zone_cmd = zone_.update(lane_ok, t.seconds(), readConstructionParams());
+      logZoneState();
+    }
+
+    if (zone_cmd.active && !front_blocked) {
+      controller_.reset();
+      last_tick_ok_ = false;
+      cmd.linear.x = zone_cmd.v;
+      cmd.angular.z = zone_cmd.w;
+    } else if (turn_cmd.active && !front_blocked) {
       controller_.reset();
       last_tick_ok_ = false;
       cmd.linear.x = turn_cmd.v;
@@ -600,6 +702,7 @@ private:
   bool hybrid_ = false;
   lane_follower::DriveSelector selector_;
   lane_follower::IntersectionTurn turn_;   // hybrid 아닐 때 교차로 회전
+  lane_follower::ConstructionZone zone_;   // hybrid 아닐 때 공사 구간
   lane_follower::SelectorParams sel_params_;
   lane_follower::Source source_ = lane_follower::Source::SLIDING;
   lane_follower::Zone last_logged_zone_ = lane_follower::Zone::NORMAL;
@@ -622,7 +725,8 @@ private:
   rclcpp::Subscription<interfaces::msg::LaneInfo>::SharedPtr lane_sub_, sliding_sub_, path_sub_;
   rclcpp::Subscription<interfaces::msg::Sign>::SharedPtr sign_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr cross_sub_;
-  rclcpp::Subscription<interfaces::msg::WallObstacle>::SharedPtr box_sub_;
+  rclcpp::Subscription<interfaces::msg::WallObstacle>::SharedPtr box_sub_, wall_sub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr zone_pub_;
   rclcpp::Subscription<interfaces::msg::DxlState>::SharedPtr dxl_sub_;
   rclcpp::Publisher<interfaces::msg::LaneInfo>::SharedPtr selected_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
