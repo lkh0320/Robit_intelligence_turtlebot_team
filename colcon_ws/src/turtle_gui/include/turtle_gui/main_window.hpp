@@ -30,10 +30,12 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "std_msgs/msg/string.hpp"
 
 // Qt 클래스 전방 선언: 헤더에서는 포인터만 쓰므로 실제 include 는 main_window.cpp 에서 한다
 class QCheckBox;
 class QDoubleSpinBox;
+class QGroupBox;
 class QGridLayout;
 class QImage;
 class QLabel;
@@ -83,6 +85,8 @@ private:
   void setupRos();
   void subscribeCamera(CameraView & view);
   void onFrame(CameraView & view, const QImage & image);
+  // 공사 구간 (lane_follower AVOID / RETURN) 동안 선 검출 칸을 wall_detection 경로 계획 화면으로 바꾼다
+  void setWallView(bool on);
 
   // 수신 기록 / 램프 갱신 / 송신 / 로그
   void touch(const QString & key);
@@ -100,7 +104,10 @@ private:
   double ang_speed_max_;      // 각속도 슬라이더 상한 [rad/s]
 
   // --- 위젯 ---
-  std::array<CameraView, 4> cams_;   // 0 원본, 1 BEV, 2 선 검출, 3 객체 인식
+  std::array<CameraView, 4> cams_;   // 0 원본, 1 BEV, 2 선 검출 (공사 구간에서는 경로 계획), 3 객체 인식
+  QGroupBox * lane_box_ = nullptr;   // cams_[2] 제목 바꾸기용
+  QString lane_topic_, wall_topic_;
+  bool wall_view_ = false;
   QProgressBar * psd_bar_[3];        // 0 왼쪽, 1 앞, 2 오른쪽
   QLabel * psd_text_[3];
   QLabel * dxl_label_;
@@ -138,6 +145,7 @@ private:
   rclcpp::Subscription<interfaces::msg::Sign>::SharedPtr sign_sub_;
   rclcpp::Subscription<interfaces::msg::Barrier>::SharedPtr barrier_sub_;
   rclcpp::Subscription<interfaces::msg::ParkingSpot>::SharedPtr parking_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr zone_sub_;   // lane_follower 공사 구간 상태
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<interfaces::msg::ControlMode>::SharedPtr mode_pub_;

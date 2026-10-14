@@ -135,6 +135,11 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   cams_[2].key = "cam_lane";
   cams_[2].topic = QString::fromStdString(
     node_->declare_parameter("lane_image_topic", std::string("vision/lane_debug/compressed")));
+  lane_topic_ = cams_[2].topic;
+  // 공사 구간 (AVOID / RETURN) 동안 cams_[2] 에 띄울 화면. wall_detection 은 보는 사람이 있을 때만 그리므로
+  // 공사 구간에서만 구독한다
+  wall_topic_ = QString::fromStdString(
+    node_->declare_parameter("wall_image_topic", std::string("vision/wall_debug/compressed")));
   cams_[3].key = "cam_object";
   cams_[3].topic = QString::fromStdString(
     node_->declare_parameter("object_image_topic", std::string("vision/object_debug/compressed")));
@@ -157,7 +162,9 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   auto * cam_grid = new QGridLayout;
   cam_grid->addWidget(buildCameraView(cams_[0], "원본"), 0, 0);
   cam_grid->addWidget(buildCameraView(cams_[1], "Bird's Eye View"), 0, 1);
-  cam_grid->addWidget(buildCameraView(cams_[2], "선 · 벡터 검출"), 1, 0);
+  auto * lane_view = buildCameraView(cams_[2], "선 · 벡터 검출");
+  lane_box_ = qobject_cast<QGroupBox *>(lane_view);
+  cam_grid->addWidget(lane_view, 1, 0);
   cam_grid->addWidget(buildCameraView(cams_[3], "객체 인식"), 1, 1);
   for (int i = 0; i < 2; ++i) {
     cam_grid->setRowStretch(i, 1);
@@ -498,6 +505,15 @@ void MainWindow::setupRos()
         .arg(QString::fromStdString(msg->mission_state)));
     });
 
+  // lane_follower 공사 구간 상태 ("AVOID 1 (L) | 이유"). 상태가 바뀔 때만 오므로 마지막 것을 늦게 켜도 받게
+  zone_sub_ = node_->create_subscription<std_msgs::msg::String>(
+    node_->declare_parameter("construction_topic", std::string("lane_follower/construction")),
+    rclcpp::QoS(1).reliable().transient_local(), [this](std_msgs::msg::String::ConstSharedPtr m) {
+      const QString s = QString::fromStdString(m->data);
+      log("[공사] " + s);
+      setWallView(s.startsWith("AVOID") || s.startsWith("RETURN"));
+    });
+
   // --- vision ---
   lane_sub_ = node_->create_subscription<interfaces::msg::LaneInfo>(
     "lane_info", qos, [this](interfaces::msg::LaneInfo::ConstSharedPtr m) {
@@ -716,6 +732,27 @@ void MainWindow::subscribeCamera(CameraView & view)
 }
 
 // 프레임 하나를 화면에 표시하고 fps 갱신 (1초마다 받은 프레임 수로 계산)
+void MainWindow::setWallView(bool on)
+{
+  if (on == wall_view_) {
+    return;
+  }
+  wall_view_ = on;
+  auto & view = cams_[2];
+  view.sub.reset();
+  view.topic = on ? wall_topic_ : lane_topic_;
+  subscribeCamera(view);
+  view.frames = 0;
+  view.fps = 0.0;
+  view.fps_timer.restart();
+  view.image->clear();
+  view.image->setText("수신 대기 중\n" + view.topic);
+  if (lane_box_) {
+    lane_box_->setTitle(on ? "공사 구간 경로 계획 (box_planner)" : "선 · 벡터 검출");
+  }
+  log(on ? "공사 구간 -> 경로 계획 화면" : "공사 구간 끝 -> 선 검출 화면");
+}
+
 void MainWindow::onFrame(CameraView & view, const QImage & image)
 {
   touch(view.key);

@@ -12,6 +12,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(interfaces REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Widgets)
 
 add_executable(turtle_gui
@@ -21,7 +22,7 @@ add_executable(turtle_gui
 )
 target_include_directories(turtle_gui PRIVATE include)
 target_link_libraries(turtle_gui Qt5::Widgets)
-ament_target_dependencies(turtle_gui rclcpp sensor_msgs geometry_msgs interfaces)
+ament_target_dependencies(turtle_gui rclcpp sensor_msgs geometry_msgs interfaces std_msgs)
 
 install(TARGETS turtle_gui
   DESTINATION lib/${PROJECT_NAME})
