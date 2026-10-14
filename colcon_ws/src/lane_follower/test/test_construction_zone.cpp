@@ -18,7 +18,7 @@ struct Sim
   ConstructionParams p;
   double now = 0;
   bool box = true;
-  double bottom = 0.5, free_offset = 0.0;
+  double bottom = 0.5, free_offset = 0.0, confidence = 1.0;
   bool lane_ok = true;
   ConstructionZone::Cmd last;
 
@@ -30,7 +30,7 @@ struct Sim
       now += 0.05;
       z.onPsd(left, right, now, p);
       if (k++ % 2 == 0) {
-        z.onWall(box, bottom, free_offset, now, p);
+        z.onWall(box, bottom, free_offset, confidence, now, p);
       }
       last = z.update(lane_ok, now, p);
     }
@@ -222,4 +222,67 @@ TEST(ConstructionZone, CancelForgets)
   EXPECT_EQ(s.z.phase(), Phase::IDLE);
   s.run(0.2);
   EXPECT_FALSE(s.last.active);
+}
+
+TEST(ConstructionZone, SameSideTwiceQuicklyCountsOnce)
+{
+  // 10-14 실주행: 박스를 긁으며 왼쪽 PSD 가 멀어졌다 다시 가까워짐 -> 한 박스를 두 번 셈
+  Sim s;
+  s.arm();
+  s.bottom = 0.35;
+  s.run(0.5);
+  ASSERT_EQ(s.z.phase(), Phase::AVOID);
+  s.bottom = 0.2;
+  s.run(1.0, 0.1, 0.8);
+  s.run(0.6);
+  ASSERT_EQ(s.z.passes(), 1);
+  s.run(0.5, 0.1, 0.8);    // 1.1초 만에 또 왼쪽
+  s.run(0.6);
+  EXPECT_EQ(s.z.passes(), 1);
+  s.run(1.0, 0.8, 0.1);    // 오른쪽 박스
+  s.run(0.6);
+  EXPECT_EQ(s.z.passes(), 2);
+  s.run(2.0);
+  s.run(1.0, 0.1, 0.8);    // 충분히 뒤 왼쪽 박스
+  s.run(0.6);
+  EXPECT_EQ(s.z.passes(), 3);
+}
+
+TEST(ConstructionZone, NearBoxKeepsAvoidingAfterCount)
+{
+  // 3개를 셌어도 가까운 박스가 보이면 차선으로 돌아가지 않는다 (잘못 센 경우 마지막 박스에 직진하던 문제)
+  Sim s;
+  s.arm();
+  s.bottom = 0.35;
+  s.run(0.5);
+  s.p.same_side_gap = 0;
+  for (int i = 0; i < 3; ++i) {
+    s.run(1.0, 0.1, 0.8);
+    s.run(0.6);
+  }
+  ASSERT_EQ(s.z.passes(), 3);
+  EXPECT_EQ(s.z.phase(), Phase::AVOID);
+  EXPECT_TRUE(s.last.active);
+  s.lane_ok = false;       // 차선 아직 못 잡음 (잡으면 바로 끝남)
+  s.bottom = 0.2;
+  s.run(0.3);
+  EXPECT_EQ(s.z.phase(), Phase::RETURN);
+  s.bottom = 0.4;          // 차선 찾는 중 박스가 또 가까움
+  s.run(0.3);
+  EXPECT_EQ(s.z.phase(), Phase::AVOID);
+}
+
+TEST(ConstructionZone, LowConfidenceSlows)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.35;
+  s.free_offset = 0.2;
+  s.run(0.5);
+  ASSERT_TRUE(s.last.active);
+  EXPECT_DOUBLE_EQ(s.last.v, s.p.linear);
+  EXPECT_NEAR(s.last.w, -0.2 * s.p.kp, 1e-9);
+  s.confidence = 0.3;
+  s.run(0.2);
+  EXPECT_DOUBLE_EQ(s.last.v, s.p.linear * s.p.slow_ratio);
 }

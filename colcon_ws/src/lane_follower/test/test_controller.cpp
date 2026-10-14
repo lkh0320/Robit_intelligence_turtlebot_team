@@ -38,15 +38,3 @@ TEST(Controller, AngularClamped)
   lf::Controller c;
   EXPECT_DOUBLE_EQ(c.step(-1, -1.5, 0.9, 0.05, g).w, g.max_angular);
 }
-
-TEST(Controller, PurePursuitCurvature)
-{
-  // 목표점이 25cm 앞, 오른쪽 30도 -> 곡률 2 sin(30°) / 0.25 = 4 [1/m], w = -v * 4
-  lf::Gains g;
-  g.kp = g.kd = g.ka = 0;
-  g.pp_lookahead = 0.25;
-  g.slow_down_angle = 0;
-  lf::Controller c;
-  const auto cmd = c.step(0.5, M_PI / 6, 0.9, 0.05, g);
-  EXPECT_NEAR(cmd.w, -g.linear_speed * 4, 1e-9);
-}

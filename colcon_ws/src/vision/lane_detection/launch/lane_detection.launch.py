@@ -13,7 +13,7 @@ def generate_launch_description():
     config = os.path.join(get_package_share_directory('lane_detection'), 'config',
                           'lane_detection.yaml')
     return LaunchDescription([
-        # lane_method:=hybrid 에서 lane_detection 과 path_planner 를 같이 띄울 때 토픽을 나눈다
+        # 토픽 이름을 바꿔 띄울 때 (녹화 재생 시험 등)
         DeclareLaunchArgument('lane_topic', default_value='lane_info'),
         DeclareLaunchArgument('debug_topic', default_value='vision/lane_debug/compressed'),
         Node(

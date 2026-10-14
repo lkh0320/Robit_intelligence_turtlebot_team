@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.8)
 project(obstacle_detection)
 
+# 공사 구간 플래너는 후보 경로가 많아 최적화 없이(-O0) 빌드하면 느리다
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -30,6 +35,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_free_space test/test_free_space.cpp)
   target_include_directories(test_free_space PRIVATE include)
   target_link_libraries(test_free_space ${OpenCV_LIBS})
+  ament_add_gtest(test_box_planner test/test_box_planner.cpp)
+  target_include_directories(test_box_planner PRIVATE include)
+  target_link_libraries(test_box_planner ${OpenCV_LIBS})
+  # 녹화에서 뽑은 원본 프레임 (test/data)
+  target_compile_definitions(test_box_planner PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
 endif()
 
 ament_package()

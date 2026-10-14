@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <!-- 같은 젯슨 안 노드끼리: 공유 메모리 (기본 0.5MB -> 원본 영상 0.9MB 가 안 들어가 UDP 조각으로 감) -->
+    <transport_descriptor>
+      <transport_id>shm_big</transport_id>
+      <type>SHM</type>
+      <segment_size>16777216</segment_size>
+    </transport_descriptor>
+    <!-- 노트북 GUI 등 다른 컴퓨터 -->
+    <transport_descriptor>
+      <transport_id>udp</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="default_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>shm_big</transport_id>
+        <transport_id>udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

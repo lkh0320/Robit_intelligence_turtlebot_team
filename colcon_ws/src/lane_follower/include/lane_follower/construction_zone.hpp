@@ -11,11 +11,16 @@
 //                (박스만으로는 진입 안 함: test_021825 출발선 오인식, 녹화에서 앞 도로에서도 주차장 너머 박스가 보임)
 //     2. AVOID:  박스 아래 끝이 enter_bottom 아래로 (가까이) enter_count 번 연속 보이거나, 박스가 보이는데 차선을
 //                놓치면 시작. v = linear, w = -kp * free_offset (± max_angular)
+//                wall_detection planner 모드 (기본): free_offset = 로봇 폭으로 지나갈 경로 위 목표점 방향 [rad].
+//                confidence 가 low_confidence 아래 (지나갈 경로 없음 -> 가장 멀리 가는 경로) 면 v x slow_ratio
 //                옆 PSD 가 pass_low 아래로 pass_low_time 넘게 있다가 pass_high 위로 pass_high_time 넘게 있으면 1개 통과
 //                (녹화: 표지판 받침대가 왼쪽 PSD 를 0.8초 막음 -> AVOID 전이라 안 셈. 박스를 지나며 0.1~0.2초 튀는 값 무시)
 //                AVOID 를 시작할 때 이미 막혀 있던 쪽은 한 번 열린 뒤부터 센다
+//                같은 쪽 통과가 same_side_gap 안에 또 나오면 안 셈 (2026-10-14 실주행: 박스를 긁으며 PSD 가 흔들려
+//                왼-오-왼 을 왼-왼-오 로 세고 3개로 끝내 마지막 박스에 직진)
 //     3. RETURN: boxes 개 통과 (또는 하나 이상 통과한 뒤 no_box_time 동안 박스가 안 보임) -> 차선을 return_ok_count 틱
 //                연속 잡을 때까지 빈 공간 조향 계속, 잡으면 끝 (return_max_time 지나면 그냥 끝)
+//                단 가까운 박스(enter_bottom)가 보이는 동안은 RETURN 으로 안 가고, RETURN 중에 보이면 AVOID 로 돌아감
 //     안전: AVOID 가 avoid_max_time 을 넘으면 끝. wall_obstacle 이 wall_timeout 넘게 안 오면 AVOID / RETURN 중 정지.
 //           정면 PSD 비상 정지는 lane_follower 가 그대로 한다. 주행 모드에서 빠지면 (수동 / STOP) 전부 잊음
 //   끝난 뒤 rearm_time 동안 공사 표지판 무시
@@ -48,11 +53,14 @@ struct ConstructionParams
   double linear = 0.06;                // [m/s] 녹화 수동 주행 속도
   double kp = 1.0;                     // [rad/s] w = -kp * free_offset (offset 1 = 화면 끝 방향, 약 40°)
   double max_angular = 0.6;            // [rad/s] (녹화 수동 조향 키 0.6)
+  double low_confidence = 0.5;         // wall_obstacle confidence 가 이보다 낮으면 천천히
+  double slow_ratio = 0.5;             // 그때 linear 에 곱함
   int boxes = 3;
   double pass_low = 0.25;              // [m] 옆 PSD 가 이보다 가까우면 박스 옆
   double pass_high = 0.6;              // [m] 이보다 멀면 비었음
   double pass_low_time = 0.2;          // [s]
   double pass_high_time = 0.5;         // [s]
+  double same_side_gap = 3.0;          // [s] 같은 쪽 통과가 이보다 빨리 또 나오면 안 셈
   double no_box_time = 3.0;            // [s] 하나 이상 통과한 뒤 박스가 이만큼 안 보이면 RETURN
   int return_ok_count = 3;             // 차선 잡은 틱 연속 수
   double return_max_time = 3.0;        // [s]
@@ -91,11 +99,14 @@ public:
   }
 
   // wall_detection 결과 (wall_obstacle)
-  void onWall(bool detected, double bottom, double free_offset, double now, const ConstructionParams & p)
+  void onWall(
+    bool detected, double bottom, double free_offset, double confidence, double now,
+    const ConstructionParams & p)
   {
     wall_t_ = now;
     have_wall_ = true;
     free_offset_ = free_offset;
+    confidence_ = confidence;
     box_ = detected;
     if (detected) {
       last_box_t_ = now;
@@ -111,6 +122,13 @@ public:
     }
     for (int i = 0; i < 2; ++i) {
       if (side_[i].update(i == 0 ? left : right, now, p)) {
+        if (now - last_pass_t_[i] < p.same_side_gap) {
+          set(Phase::AVOID, now, std::string(i == 0 ? "왼쪽" : "오른쪽") + " 통과 " +
+            fmt(now - last_pass_t_[i], 1) + "s 만에 또 -> 같은 박스로 보고 안 셈");
+          last_pass_t_[i] = now;
+          continue;
+        }
+        last_pass_t_[i] = now;
         ++passes_;
         pass_sides_ += i == 0 ? 'L' : 'R';
         set(Phase::AVOID, now, std::string(i == 0 ? "왼쪽" : "오른쪽") + " 박스 통과 " +
@@ -147,7 +165,7 @@ public:
         }
         break;
       case Phase::AVOID:
-        if (passes_ >= p.boxes) {
+        if (passes_ >= p.boxes && !(wall_fresh && near_count_ >= p.enter_count)) {   // 가까운 박스가 보이면 아직
           set(Phase::RETURN, now, "박스 " + std::to_string(passes_) + "개 통과 (" + pass_sides_ + ") -> 차선 찾기");
           ok_count_ = 0;
         } else if (passes_ > 0 && now - last_box_t_ > p.no_box_time) {
@@ -160,6 +178,10 @@ public:
         }
         break;
       case Phase::RETURN:
+        if (wall_fresh && near_count_ >= p.enter_count) {
+          set(Phase::AVOID, now, "차선 찾는 중 가까운 박스 (아래 끝 " + fmt(bottom_) + ") -> 다시 피하기");
+          break;
+        }
         ok_count_ = lane_ok ? ok_count_ + 1 : 0;
         if (ok_count_ >= p.return_ok_count) {
           finish(now, "차선 잡음 -> 차선 추종");
@@ -181,7 +203,7 @@ public:
       return c;
     }
     stale_logged_ = false;
-    c.v = p.linear;
+    c.v = confidence_ < p.low_confidence ? p.linear * p.slow_ratio : p.linear;
     c.w = std::clamp(-p.kp * free_offset_, -p.max_angular, p.max_angular);
     return c;
   }
@@ -261,6 +283,7 @@ private:
     pass_sides_.clear();
     side_[0] = Side();
     side_[1] = Side();
+    last_pass_t_[0] = last_pass_t_[1] = -1e9;
   }
 
   void set(Phase ph, double now, const std::string & why)
@@ -295,9 +318,10 @@ private:
   bool have_wall_ = false;
   double wall_t_ = 0, last_box_t_ = 0;
   bool box_ = false;
-  double bottom_ = 0, free_offset_ = 0;
+  double bottom_ = 0, free_offset_ = 0, confidence_ = 1;
   int near_count_ = 0;
   Side side_[2];               // 왼쪽, 오른쪽
+  double last_pass_t_[2] = {-1e9, -1e9};
   int passes_ = 0;
   std::string pass_sides_;     // 통과한 순서 (예: "RLR")
   int ok_count_ = 0;

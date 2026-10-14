@@ -8,22 +8,16 @@
 # v4l2_camera 노드는 켜질 때 장치 설정을 자기 기본값으로 되돌리므로, 같은 파일을 노드 파라미터로도 넘기고
 # (GUI 에 보이는 값), 노드가 적용 순서를 지키지 않아 거부되는 항목(색온도 등)을 위해 3초 뒤 다시 적용한다.
 #   lane:=false sign:=false obstacle:=false          원하는 노드만 끄기
-#   lane_method:=sliding                             path_planner 대신 lane_detection(슬라이딩 윈도우) 사용
-#                                                    (기본 path = path_planner)
-#   lane_method:=map                                 2D 지역 지도 기반 map_planner 사용
-#   lane_method:=hybrid                              lane_detection + path_planner 둘 다 (lane_info/sliding,
-#                                                    lane_info/path). lane_follower 가 구간에 따라 고른다
-#                                                    화면은 vision/sliding_debug, vision/path_debug 로 나뉘고
-#                                                    lane_follower 가 지금 쓰는 쪽을 vision/lane_debug 로 중계
+# 선 검출은 lane_detection (슬라이딩 윈도우). 2026-10-14 path_planner / map_planner / hybrid 는 지움
 import os
 
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription,
-                            OpaqueFunction, TimerAction)
+                            OpaqueFunction, SetEnvironmentVariable, TimerAction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -91,39 +85,24 @@ def camera(context):
 
 
 def generate_launch_description():
-    lane = LaunchConfiguration('lane')
-    method = LaunchConfiguration('lane_method')
-
-    # lane:=true 이고 lane_method 가 m 일 때만
-    def lane_if(m):
-        return IfCondition(PythonExpression(["'", lane, "' == 'true' and '", method, "' == '", m, "'"]))
-
     return LaunchDescription([
+        # 원본 영상(0.9MB)이 Fast DDS 기본 공유 메모리 칸(0.5MB)에 안 들어가 UDP 조각으로 가면서 프레임이 버려짐
+        # (녹화까지 켜면 BEV/lane_info 5~9Hz, 1.2s 끊김). 16MB 칸 프로필로 30Hz. 노트북 GUI 는 UDP 로 그대로 통신
+        SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', os.path.join(
+            get_package_share_directory('vision_bringup'), 'config', 'fastdds_shm.xml')),
         DeclareLaunchArgument('video_device', default_value='/dev/video0'),
         DeclareLaunchArgument('camera_conf', default_value='/etc/turtlebot-camera.conf',
                               description='v4l2 카메라 설정 파일 (없으면 카메라 기본값)'),
         DeclareLaunchArgument('camera_params', default_value='',
                               description='카메라 파라미터 YAML (기본: 없음, 장치에 저장된 설정 그대로)'),
         DeclareLaunchArgument('lane', default_value='true'),
-        DeclareLaunchArgument('lane_method', default_value='path',
-                              description='path: path_planner (주행 가능 영역 + 경로 선택) / '
-                                          'sliding: lane_detection (차선 추적) / '
-                                          'map: map_planner (2D 지역 지도 + 경로 선택) / '
-                                          'hybrid: 평소 sliding + 갈림길/공사 구간 path'),
         DeclareLaunchArgument('sign', default_value='true'),
         DeclareLaunchArgument('obstacle', default_value='true'),
 
         # 카메라 -> BEV -> 각 비전 노드 순서로 데이터가 흐른다
         OpaqueFunction(function=camera),
         include('bird_eye_view'),
-        include('lane_detection', lane_if('sliding')),
-        include('path_planner', lane_if('path')),
-        include('map_planner', lane_if('map')),
-        include('lane_detection', lane_if('hybrid'),
-                {'lane_topic': 'lane_info/sliding', 'debug_topic': 'vision/sliding_debug/compressed'}),
-        include('path_planner', lane_if('hybrid'),
-                {'lane_topic': 'lane_info/path', 'debug_topic': 'vision/path_debug/compressed',
-                 'use_drive_hint': 'true'}),
+        include('lane_detection', IfCondition(LaunchConfiguration('lane'))),
         include('sign_detection', IfCondition(LaunchConfiguration('sign'))),
         include('obstacle_detection', IfCondition(LaunchConfiguration('obstacle'))),
     ])

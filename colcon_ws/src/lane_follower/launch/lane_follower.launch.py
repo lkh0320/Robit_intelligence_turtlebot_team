@@ -1,7 +1,5 @@
 # lane_follower 노드 + 주차 노드 실행 (파라미터: config/lane_follower.yaml, config/parking.yaml)
 #   ros2 launch lane_follower lane_follower.launch.py autostart:=true
-#   lane_method:=path|sliding|map|hybrid   어떤 선 검출 노드에 맞춘 조향 게인을 쓸지 (기본 path)
-#     hybrid: lane_info/sliding + lane_info/path 를 받아 구간에 따라 고른다
 # 주차 노드는 주차 표지판을 직접 보고 주차 구간을 시작한다.
 #   task_planner:=true -> control_mode 는 task_planner 가 보내고, 주차 노드는 parking_active 만 알림
 #   task_planner:=false (기본) -> 주차 노드가 control_mode 를 직접 PARKING / LANE 으로 바꿈
@@ -12,7 +10,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -26,8 +24,6 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('autostart', default_value='false',
                               description='true: control_mode 없이 바로 LANE 주행'),
-        DeclareLaunchArgument('lane_method', default_value='path',
-                              description='path / sliding / map / hybrid: lane_follower.yaml 의 같은 이름 게인 사용'),
         DeclareLaunchArgument('task_planner', default_value='false',
                               description='true: task_planner 가 control_mode 를 보냄'),
         DeclareLaunchArgument('parking', default_value='true',
@@ -38,20 +34,15 @@ def generate_launch_description():
             name='lane_follower',
             parameters=[config, {
                 'autostart': ParameterValue(LaunchConfiguration('autostart'), value_type=bool),
-                'lane_method': LaunchConfiguration('lane_method'),
             }],
             output='screen',
         ),
-        # 주차 노드는 lane_detection 이 채우는 right_detected 를 본다.
-        # hybrid 의 lane_info 는 lane_follower 가 고른 쪽 중계라 path 일 땐 비어 있으므로 원본을 받는다
+        # 주차 노드는 lane_detection 이 채우는 right_detected 를 본다
         Node(
             package='lane_follower',
             executable='parking_node',
             name='parking',
             parameters=[parking_config, {'use_task_planner': use_task_planner}],
-            remappings=[('lane_info', PythonExpression(
-                ["'lane_info/sliding' if '", LaunchConfiguration('lane_method'),
-                 "' == 'hybrid' else 'lane_info'"]))],
             condition=IfCondition(LaunchConfiguration('parking')),
             output='screen',
         ),

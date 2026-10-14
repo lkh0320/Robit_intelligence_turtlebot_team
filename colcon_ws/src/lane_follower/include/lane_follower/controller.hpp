@@ -1,9 +1,7 @@
 // lane_info(offset, angle) -> cmd_vel(v, w) 제어 법칙 (ROS 없이 테스트 가능)
 //
-//   w = -(v * 2 sin(angle) / pp_lookahead + kp * offset + kd * d(offset)/dt + ka * angle)
+//   w = -(kp * offset + kd * d(offset)/dt + ka * angle)
 //     offset/angle 은 + 가 "목표가 오른쪽" 이고, ROS 각속도는 + 가 왼쪽(반시계) 이라 부호를 뒤집는다
-//     첫 항은 pure pursuit: 바퀴 축에서 pp_lookahead [m] 떨어진 목표점(방향 angle)을 지나는 원호의 곡률 x v
-//     (path_planner 용. 0 이면 끔, lane_detection 은 offset/angle 이 다른 뜻이라 kp/ka 만 쓴다)
 //   v = linear_speed 에서 커브(|angle|)가 클수록, confidence 가 낮을수록 줄인다 (min_linear_speed 까지)
 #pragma once
 
@@ -20,7 +18,6 @@ struct Gains
   double kp = 0.8;                 // offset -> 각속도 [rad/s]
   double kd = 0.05;                // offset 변화율 -> 각속도
   double ka = 1.0;                 // angle [rad] -> 각속도
-  double pp_lookahead = 0.0;       // pure pursuit 목표점 거리 [m] (0 = 끔)
   double max_angular = 1.5;        // [rad/s]
   double slow_down_angle = 0.5;    // |angle| 이 이 값 [rad] 이면 min_linear_speed 까지 감속
   double low_confidence = 0.5;     // confidence 가 이보다 낮으면 min_linear_speed
@@ -55,8 +52,7 @@ public:
       c.v = std::min(c.v, g.min_linear_speed);
     }
     c.v = std::max(0.0, c.v);
-    const double pp = g.pp_lookahead > 0 ? c.v * 2 * std::sin(angle) / g.pp_lookahead : 0.0;
-    c.w = std::clamp(-(pp + g.kp * offset + g.kd * d_offset + g.ka * angle), -g.max_angular,
+    c.w = std::clamp(-(g.kp * offset + g.kd * d_offset + g.ka * angle), -g.max_angular,
         g.max_angular);
     return c;
   }
