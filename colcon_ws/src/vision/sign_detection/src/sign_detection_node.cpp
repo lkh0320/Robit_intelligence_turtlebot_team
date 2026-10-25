@@ -1,6 +1,8 @@
-// 표지판용 객체 인식 (YOLOv8 ONNX + OpenCV DNN, CPU)
+// 표지판 / 신호등 / 차단바 인식 (YOLOv8 ONNX + OpenCV DNN, CPU) - 같은 모델, 한 번의 추론으로 셋 다 처리
 //   구독: image_raw (sensor_msgs/Image)
 //   발행: sign (interfaces/Sign)                   매 프레임, 표지판이 없으면 type = NONE
+//         traffic_light (interfaces/TrafficLight)  매 프레임, 안 보이면 state = UNKNOWN
+//         barrier (interfaces/Barrier)              매 프레임, 안 보이면 detected = false
 //         vision/object_debug/compressed           GUI 객체 인식 화면 (구독자가 있을 때만)
 //
 // 모델: 노트북에서 best.pt 를 ONNX 로 바꿔 젯슨에 복사한다 (config/sign_detection.yaml 의 model_path)
@@ -34,7 +36,9 @@
 #include <opencv2/imgproc.hpp>
 
 #include "cv_bridge/cv_bridge.hpp"
+#include "interfaces/msg/barrier.hpp"
 #include "interfaces/msg/sign.hpp"
+#include "interfaces/msg/traffic_light.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/image.hpp"
@@ -80,6 +84,8 @@ public:
 
     const auto qos = rclcpp::SensorDataQoS();
     sign_pub_ = create_publisher<interfaces::msg::Sign>("sign", qos);
+    light_pub_ = create_publisher<interfaces::msg::TrafficLight>("traffic_light", qos);
+    barrier_pub_ = create_publisher<interfaces::msg::Barrier>("barrier", qos);
     debug_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
       "vision/object_debug/compressed", qos);
 
@@ -153,6 +159,8 @@ private:
       static_cast<float>(get_parameter("conf_threshold").as_double()),
       static_cast<float>(get_parameter("nms_threshold").as_double()));
     const auto best = sd::bestSign(dets);
+    const auto best_light = sd::bestLight(dets);
+    const auto best_bar = sd::bestBar(dets);
 
     interfaces::msg::Sign sign;
     sign.header = msg->header;
@@ -163,23 +171,45 @@ private:
     }   // 없으면 기본값 NONE, 0, 0
     sign_pub_->publish(sign);
 
+    interfaces::msg::TrafficLight light;
+    light.header = msg->header;
+    if (best_light) {
+      light.state = sd::to_light_state(best_light->cls);
+      light.confidence = best_light->conf;
+    }   // 없으면 기본값 UNKNOWN, 0
+    light_pub_->publish(light);
+
+    interfaces::msg::Barrier barrier;
+    barrier.header = msg->header;
+    if (best_bar) {
+      barrier.detected = true;
+      barrier.state = sd::to_barrier_state(best_bar->cls);
+      barrier.confidence = best_bar->conf;
+    }   // 없으면 기본값 detected=false, UNKNOWN, 0
+    barrier_pub_->publish(barrier);
+
     RCLCPP_DEBUG(get_logger(), "추론 %.1f ms, 박스 %zu개", ms, dets.size());
 
     // 디버그 화면은 GUI 가 보고 있을 때만 만든다
     if (debug_pub_->get_subscription_count() > 0) {
-      publishDebug(img, dets, best, ms, msg->header);
+      publishDebug(img, dets, best, best_light, best_bar, ms, msg->header);
     }
   }
 
   // GUI "객체 인식" 화면
-  //   초록 굵은 상자: sign 으로 발행한 박스, 노란 얇은 상자: 나머지 박스
-  //   왼쪽 위: 발행한 표지판, 추론 시간
+  //   초록 굵은 상자: 발행한 박스(표지판/신호등/차단바), 노란 얇은 상자: 나머지 박스
+  //   왼쪽 위: 발행한 표지판/신호등/차단바, 추론 시간
   void publishDebug(const cv::Mat & img, const std::vector<sd::Detection> & dets,
-    const std::optional<sd::Detection> & best, double ms, const std_msgs::msg::Header & header)
+    const std::optional<sd::Detection> & best, const std::optional<sd::Detection> & best_light,
+    const std::optional<sd::Detection> & best_bar, double ms,
+    const std_msgs::msg::Header & header)
   {
+    auto isChosen = [](const sd::Detection & d, const std::optional<sd::Detection> & b) {
+        return b && d.cls == b->cls && d.box == b->box;
+      };
     cv::Mat out = img.clone();
     for (const auto & d : dets) {
-      const bool chosen = best && d.cls == best->cls && d.box == best->box;
+      const bool chosen = isChosen(d, best) || isChosen(d, best_light) || isChosen(d, best_bar);
       const cv::Scalar color = chosen ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 255, 255);
       cv::rectangle(out, d.box, color, chosen ? 3 : 1);
       char label[48];
@@ -187,9 +217,10 @@ private:
       const cv::Point org(static_cast<int>(d.box.x), std::max(14, static_cast<int>(d.box.y) - 4));
       cv::putText(out, label, org, cv::FONT_HERSHEY_SIMPLEX, 0.5, color, chosen ? 2 : 1);
     }
-    char text[96];
-    std::snprintf(text, sizeof(text), "sign %s  %.0f ms",
-      best ? sd::NAMES[best->cls] : "-", ms);
+    char text[160];
+    std::snprintf(text, sizeof(text), "sign %s  light %s  bar %s  %.0f ms",
+      best ? sd::NAMES[best->cls] : "-", best_light ? sd::NAMES[best_light->cls] : "-",
+      best_bar ? sd::NAMES[best_bar->cls] : "-", ms);
     cv::putText(out, text, {6, 20}, cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 255), 2);
 
     sensor_msgs::msg::CompressedImage jpeg;
@@ -207,6 +238,8 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Publisher<interfaces::msg::Sign>::SharedPtr sign_pub_;
+  rclcpp::Publisher<interfaces::msg::TrafficLight>::SharedPtr light_pub_;
+  rclcpp::Publisher<interfaces::msg::Barrier>::SharedPtr barrier_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr debug_pub_;
 };
 

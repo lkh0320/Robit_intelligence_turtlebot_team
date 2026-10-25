@@ -103,17 +103,36 @@ inline std::vector<Detection> decode(
   return dets;
 }
 
-// 표지판 클래스 중 신뢰도가 가장 높은 박스 하나 (없으면 nullopt)
-// 한 표지판에 좌/우회전처럼 다른 클래스 박스가 겹쳐 잡혀도 NMS 는 클래스별이라 둘 다 남으므로 여기서 하나만 고른다
-inline std::optional<Detection> bestSign(const std::vector<Detection> & dets)
+// 클래스 조건(pred)을 만족하는 박스 중 신뢰도가 가장 높은 것 하나 (없으면 nullopt)
+// 한 물체에 다른 클래스 박스가 겹쳐 잡혀도 NMS 는 클래스별이라 둘 다 남으므로 여기서 하나만 고른다
+template<typename Pred>
+inline std::optional<Detection> bestOf(const std::vector<Detection> & dets, Pred pred)
 {
   std::optional<Detection> best;
   for (const auto & d : dets) {
-    if (is_sign(d.cls) && (!best || d.conf > best->conf)) {
+    if (pred(d.cls) && (!best || d.conf > best->conf)) {
       best = d;
     }
   }
   return best;
+}
+
+// 표지판 클래스 중 신뢰도가 가장 높은 박스 하나 (없으면 nullopt)
+inline std::optional<Detection> bestSign(const std::vector<Detection> & dets)
+{
+  return bestOf(dets, is_sign);
+}
+
+// 신호등 클래스 중 신뢰도가 가장 높은 박스 하나 (없으면 nullopt)
+inline std::optional<Detection> bestLight(const std::vector<Detection> & dets)
+{
+  return bestOf(dets, is_light);
+}
+
+// 차단봉 클래스 중 신뢰도가 가장 높은 박스 하나 (없으면 nullopt)
+inline std::optional<Detection> bestBar(const std::vector<Detection> & dets)
+{
+  return bestOf(dets, is_bar);
 }
 
 }  // namespace sign_detection
