@@ -331,12 +331,18 @@ QWidget * MainWindow::buildControlPanel()
   auto * mode_row = new QHBoxLayout;
   mode_row->addWidget(new QLabel("control_mode:"));
   using M = interfaces::msg::ControlMode;
-  for (uint8_t m : {M::STOP, M::LANE, M::AVOID, M::PARKING, M::MANUAL}) {
+  for (uint8_t m : {M::STOP, M::LANE, M::AVOID, M::PARKING}) {
     auto * btn = new QPushButton(modeName(m));
     btn->setFocusPolicy(Qt::NoFocus);   // 버튼이 포커스를 가져가 Space 로 눌리는 일이 없도록
     connect(btn, &QPushButton::clicked, this, [this, m] {sendControlMode(m);});
     mode_row->addWidget(btn);
   }
+  // 자율주행 시작: task_planner 가 신호등 대기(WAIT_LIGHT)부터 미션을 진행한다. 멈추려면 STOP
+  auto * start_btn = new QPushButton("자율주행 시작");
+  start_btn->setFocusPolicy(Qt::NoFocus);
+  start_btn->setStyleSheet("font-weight:bold; color:#2e7d32;");
+  connect(start_btn, &QPushButton::clicked, this, &MainWindow::sendMissionStart);
+  mode_row->addWidget(start_btn);
   layout->addLayout(mode_row);
 
   // 수동 주행
@@ -556,6 +562,7 @@ void MainWindow::setupRos()
   // cmd_vel 은 stm_bridge 가 받아 바로 바퀴로 보낸다 (수동 주행 체크 시에만 발행)
   cmd_pub_ = node_->create_publisher<geometry_msgs::msg::Twist>(cmd_topic, 10);
   mode_pub_ = node_->create_publisher<interfaces::msg::ControlMode>("control_mode", 10);
+  start_pub_ = node_->create_publisher<std_msgs::msg::Empty>("mission_start", 10);
 
   // 선속도/각속도 슬라이더 -> lane_follower 의 linear_speed/max_angular 파라미터
   // (lane_follower 가 안 떠 있어도 요청이 조용히 무시될 뿐 에러는 안 남)
@@ -624,6 +631,15 @@ void MainWindow::sendControlMode(uint8_t mode)
   msg.mission_state = "turtle_gui";
   mode_pub_->publish(msg);
   log(QString("control_mode 발행: %1").arg(modeName(mode)));
+}
+
+// 자율주행 시작 버튼: task_planner 에 mission_start 를 보낸다 (처음부터 다시 시작, GUI 오버라이드 해제)
+//   수동 주행 cmd_vel 과 섞이지 않도록 수동 주행 체크는 끈다
+void MainWindow::sendMissionStart()
+{
+  manual_enable_->setChecked(false);
+  start_pub_->publish(std_msgs::msg::Empty());
+  log("mission_start 발행: 자율주행 시작 (신호등 대기부터)");
 }
 
 // 앱 전체 키 입력 가로채기. W/A/S/D/Space 는 여기서 처리하고 true 를 반환해 다른 위젯에 안 넘긴다

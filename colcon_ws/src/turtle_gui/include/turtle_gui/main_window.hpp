@@ -1,6 +1,6 @@
 // 노트북용 모니터링/조종 GUI
 //   수신: 카메라 4종(원본 / Bird's Eye View / 선·벡터 검출 / 객체 인식), psd, dxl_state, cmd_vel, control_mode, 비전 인식 결과 6종
-//   송신: cmd_vel (수동 주행), control_mode (모드 강제 변경)
+//   송신: cmd_vel (수동 주행), control_mode (모드 강제 변경), mission_start (자율주행 시작)
 // ROS 콜백은 QTimer에서 spin_some으로 GUI 스레드에서 처리한다 (스레드 동기화 불필요).
 //   Qt 위젯은 GUI 스레드에서만 건드려야 하는데, ROS 콜백도 같은 스레드에서 돌기 때문에
 //   콜백 안에서 바로 라벨/화면을 바꿔도 안전하다.
@@ -30,6 +30,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/string.hpp"
 
 // Qt 클래스 전방 선언: 헤더에서는 포인터만 쓰므로 실제 include 는 main_window.cpp 에서 한다
@@ -93,6 +94,7 @@ private:
   void refreshLamps();
   void sendManualCmd();
   void sendControlMode(uint8_t mode);
+  void sendMissionStart();
   void log(const QString & text);
 
   rclcpp::Node::SharedPtr node_;
@@ -149,6 +151,7 @@ private:
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<interfaces::msg::ControlMode>::SharedPtr mode_pub_;
+  rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr start_pub_;
 
   // 선속도/각속도 슬라이더를 lane_follower 노드의 linear_speed/max_angular 파라미터에도 반영
   rclcpp::AsyncParametersClient::SharedPtr lane_param_client_;

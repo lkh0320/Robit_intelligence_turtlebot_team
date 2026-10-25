@@ -1,6 +1,6 @@
-# 수동 조작/모니터링 테스트용: 카메라 + 비전 + STM 브릿지 + lane_follower 실행 (Jetson 쪽)
-# (task_planner 는 안 띄움 — lane_follower 는 떠 있어도 control_mode 가 LANE/AVOID 일 때만
-#  움직이므로 GUI 로 모드만 바꾸면 그때 바로 반응한다)
+# 수동 조작/모니터링 테스트용: 카메라 + 비전 + STM 브릿지 + lane_follower + task_planner 실행 (Jetson 쪽)
+# (lane_follower 는 떠 있어도 control_mode 가 LANE/AVOID 일 때만 움직이므로 GUI 로 모드만 바꾸면 바로 반응한다.
+#  task_planner 는 대기 상태로 떠 있다가 GUI "자율주행 시작" 버튼을 누르면 신호등 대기(WAIT_LIGHT)부터 시작)
 # turtle_gui 는 노트북에서 따로 실행 (같은 ROS_DOMAIN_ID 면 네트워크로 토픽을 그대로 받음):
 #   ros2 run turtle_gui turtle_gui
 #   ros2 launch turtle_gui manual_bringup.launch.py
@@ -8,6 +8,8 @@
 #   sign:=false obstacle:=false        표지판/장애물 인식 노드 끄기
 #   stm:=false                         STM 브릿지 없이 (하드웨어 연결 안 됐을 때)
 #   lane_follower:=false               lane_follower 는 안 띄움
+#   task_planner:=false                task_planner 는 안 띄움
+#   start_state:=TO_PARKING            "자율주행 시작" 때 이 구간부터 (기본 WAIT_LIGHT)
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -33,6 +35,8 @@ def generate_launch_description():
         DeclareLaunchArgument('obstacle', default_value='true'),
         DeclareLaunchArgument('stm', default_value='true'),
         DeclareLaunchArgument('lane_follower', default_value='true'),
+        DeclareLaunchArgument('task_planner', default_value='true'),
+        DeclareLaunchArgument('start_state', default_value='WAIT_LIGHT'),
 
         IncludeLaunchDescription(
             launch_file('vision_bringup', 'camera_vision.launch.py'),
@@ -44,4 +48,11 @@ def generate_launch_description():
                                  condition=IfCondition(LaunchConfiguration('stm'))),
         IncludeLaunchDescription(launch_file('lane_follower', 'lane_follower.launch.py'),
                                  condition=IfCondition(LaunchConfiguration('lane_follower'))),
+        IncludeLaunchDescription(
+            launch_file('task_planner', 'task_planner.launch.py'),
+            launch_arguments={
+                'wait_start': 'true',
+                'start_state': LaunchConfiguration('start_state'),
+            }.items(),
+            condition=IfCondition(LaunchConfiguration('task_planner'))),
     ])

@@ -13,3 +13,6 @@ task_planner:
     parking_sign_hits_needed: 3            # 주차 표지판을 연속으로 이만큼 봐야 PARKING 진입
     barrier_cross_duration: 3.0            # [s] 차단바 통과 후 정지까지 임시 고정시간
                                             # TODO(vision): 터널 입구 인식 메시지 생기면 교체
+    barrier_stop_y_ratio: 0.5              # 차단바가 화면 세로 비율로 이만큼(0 상단~1 하단) 가까워져야 정지
+    barrier_lost_count: 10                 # [tick] 차단바가 이만큼 연속으로 안 보여야 "치워짐"으로 보고 통과
+                                            # (bar_open 인식이 잘 안 돼서 안 보이는 것도 열림으로 취급)

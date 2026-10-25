@@ -185,7 +185,10 @@ private:
       barrier.detected = true;
       barrier.state = sd::to_barrier_state(best_bar->cls);
       barrier.confidence = best_bar->conf;
-    }   // 없으면 기본값 detected=false, UNKNOWN, 0
+      // 박스 세로 중심 / 이미지 높이: 로봇이 다가갈수록(차단바가 가까워질수록) 아래로 내려와 커진다
+      barrier.y_ratio = static_cast<float>(
+        (best_bar->box.y + best_bar->box.height / 2.0) / img.rows);
+    }   // 없으면 기본값 detected=false, UNKNOWN, 0, 0
     barrier_pub_->publish(barrier);
 
     RCLCPP_DEBUG(get_logger(), "추론 %.1f ms, 박스 %zu개", ms, dets.size());
@@ -217,10 +220,15 @@ private:
       const cv::Point org(static_cast<int>(d.box.x), std::max(14, static_cast<int>(d.box.y) - 4));
       cv::putText(out, label, org, cv::FONT_HERSHEY_SIMPLEX, 0.5, color, chosen ? 2 : 1);
     }
-    char text[160];
+    char bar_text[32] = "-";
+    if (best_bar) {
+      std::snprintf(bar_text, sizeof(bar_text), "%s y%.2f", sd::NAMES[best_bar->cls],
+        (best_bar->box.y + best_bar->box.height / 2.0) / img.rows);
+    }
+    char text[192];
     std::snprintf(text, sizeof(text), "sign %s  light %s  bar %s  %.0f ms",
       best ? sd::NAMES[best->cls] : "-", best_light ? sd::NAMES[best_light->cls] : "-",
-      best_bar ? sd::NAMES[best_bar->cls] : "-", ms);
+      bar_text, ms);
     cv::putText(out, text, {6, 20}, cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 255), 2);
 
     sensor_msgs::msg::CompressedImage jpeg;

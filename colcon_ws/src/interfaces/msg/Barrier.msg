@@ -8,3 +8,4 @@ std_msgs/Header header
 bool detected
 uint8 state              # 위 상수 중 하나
 float32 confidence       # 0.0 ~ 1.0
+float32 y_ratio           # 이미지 내 차단바 세로 위치 [0.0(상단) ~ 1.0(하단)], 클수록 가까움

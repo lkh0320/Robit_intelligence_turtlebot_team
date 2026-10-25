@@ -3,7 +3,7 @@
 //   autonomous driving 쪽 책임이며 이 노드는 관여하지 않는다.
 //
 // sub: traffic_light, sign, psd, parking_spot, dxl_state, barrier, parking_active, parking_done,
-//      control_mode (GUI 강제 오버라이드 감지용)
+//      control_mode (GUI 강제 오버라이드 감지용), mission_start (GUI "자율주행 시작" 버튼)
 // pub: control_mode (interfaces/ControlMode)
 //
 // 상태 순서 (트랙 구성은 고정, 구간 내 장애물/표지판/주차 위치만 랜덤):
@@ -13,6 +13,8 @@
 // mission_state 문자열만 FORK_LEFT/FORK_RIGHT 로 바뀐다 (GUI 로그/디버깅용).
 // 차단바 통과 후 "터널 직전 정지" 지점은 터널 인식 메시지가 아직 없어서 임시로 고정 시간
 // (barrier_cross_duration) 주행 후 정지한다. vision에 터널 입구 인식이 추가되면 교체할 것.
+// wait_start=true 면 mission_start 를 받기 전까지 아무것도 안 보낸다 (GUI 모드 버튼/수동 주행 그대로 사용).
+// mission_start 를 받으면 언제든 start_state(기본 WAIT_LIGHT)부터 다시 시작하고 GUI 오버라이드도 푼다.
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -26,6 +28,7 @@
 #include "interfaces/msg/traffic_light.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/empty.hpp"
 
 class TaskPlannerNode : public rclcpp::Node
 {
@@ -57,6 +60,18 @@ public:
     parking_stop_velocity_threshold_ = declare_parameter("parking_stop_velocity_threshold", 0.02);
     parking_stable_duration_ = declare_parameter("parking_stable_duration", 0.5);
     barrier_cross_duration_ = declare_parameter("barrier_cross_duration", 3.0);
+    // 차단바가 이 위치(이미지 세로 비율, 0 상단~1 하단)보다 가까워져야 정지/통과 판단.
+    // 멀리서 잠깐 잘못 보이거나, 닫힌 채로 멀리 있을 때 미리 서버리지 않고 정해진 위치까지 접근하게 함
+    barrier_stop_y_ratio_ = declare_parameter("barrier_stop_y_ratio", 0.5);
+    // 모델이 "열림(bar_open)"을 잘 못 맞혀서, 차단바가 아예 안 보이는 것도 "치워짐"으로 봄.
+    // 한 프레임만 놓쳐도 바로 출발하면 위험하니 이만큼 연속으로 못 봐야 인정 (psd_clear_count 와 같은 방식)
+    barrier_lost_count_ = declare_parameter("barrier_lost_count", 10);
+    // 테스트용: 특정 상태부터 바로 시작 (기본 WAIT_LIGHT = 실제 미션과 동일하게 처음부터)
+    //   예: start_state:=TO_BARRIER 로 차단바 구간만 따로 테스트
+    start_state_ = stateFromName(declare_parameter("start_state", std::string("WAIT_LIGHT")));
+    state_ = start_state_;
+    // true: GUI "자율주행 시작"(mission_start) 을 받을 때까지 대기 (manual_bringup 에서 사용)
+    started_ = !declare_parameter("wait_start", false);
     parking_sign_area_ratio_threshold_ =
       declare_parameter("parking_sign_area_ratio_threshold", 0.03);
     parking_sign_hits_needed_ = declare_parameter("parking_sign_hits_needed", 3);
@@ -111,16 +126,55 @@ public:
         }
       });
 
+    // GUI "자율주행 시작" 버튼: 처음부터(start_state) 다시 시작
+    start_sub_ = create_subscription<std_msgs::msg::Empty>(
+      "mission_start", 10, [this](std_msgs::msg::Empty::ConstSharedPtr) {start();});
+
     mode_pub_ = create_publisher<ControlMode>("control_mode", 10);
     tick_timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / tick_rate), [this] {tick();});
   }
 
 private:
+  // 테스트용 start_state 파라미터(문자열) -> State. 모르는 이름이면 경고 찍고 WAIT_LIGHT
+  State stateFromName(const std::string & name)
+  {
+    static const std::pair<const char *, State> kNames[] = {
+      {"WAIT_LIGHT", State::WAIT_LIGHT}, {"TO_OBSTACLE", State::TO_OBSTACLE},
+      {"AVOIDING", State::AVOIDING}, {"TO_PARKING", State::TO_PARKING},
+      {"PARKING", State::PARKING}, {"TO_BARRIER", State::TO_BARRIER},
+      {"BARRIER_WAIT", State::BARRIER_WAIT}, {"FINISHING", State::FINISHING},
+      {"DONE", State::DONE},
+    };
+    for (const auto & [n, s] : kNames) {
+      if (name == n) {
+        return s;
+      }
+    }
+    RCLCPP_WARN(get_logger(), "start_state '%s' 모름 -> WAIT_LIGHT", name.c_str());
+    return State::WAIT_LIGHT;
+  }
+
+  // 상태머신을 start_state 부터 새로 시작 (지난 주행에서 남은 값 초기화)
+  void start()
+  {
+    state_ = start_state_;
+    started_ = true;
+    manual_override_ = false;
+    psd_clear_streak_ = 0;
+    barrier_lost_streak_ = 0;
+    parking_timer_running_ = false;
+    parking_sign_hits_ = 0;
+    parking_done_ = false;
+    parking_active_ = false;
+    light_ = interfaces::msg::TrafficLight();   // 시작 전에 본 GREEN 으로 바로 출발하지 않도록
+    RCLCPP_INFO(get_logger(), "mission_start 수신: 자율주행 시작");
+  }
+
   void tick()
   {
-    if (manual_override_) {
-      return;   // GUI가 제어권을 가져간 상태: 아무것도 보내지 않는다
+    if (!started_ || manual_override_) {
+      return;   // 시작 전이거나 GUI가 제어권을 가져간 상태: 아무것도 보내지 않는다
     }
 
     std::string mission_state;
@@ -178,9 +232,12 @@ private:
         mission_state = "LANE_FOLLOW";
         if (barrier_.detected && barrier_.confidence >= min_confidence_) {
           if (barrier_.state == interfaces::msg::Barrier::OPEN) {
+            // 이미 열려 있으면 정해진 위치까지 기다릴 필요 없이 바로 통과
             state_ = State::FINISHING;
             finishing_since_ = now();
-          } else {
+          } else if (barrier_.y_ratio >= barrier_stop_y_ratio_) {
+            // 닫혀 있고, 정해진 정지 위치(화면 세로 비율)까지 가까워졌을 때만 멈춘다
+            // (멀리서 CLOSED 로 본 순간 바로 서버리면 정지 위치가 매번 달라짐)
             state_ = State::BARRIER_WAIT;
           }
         }
@@ -191,6 +248,14 @@ private:
         if (barrier_.state == interfaces::msg::Barrier::OPEN) {
           state_ = State::FINISHING;
           finishing_since_ = now();
+          barrier_lost_streak_ = 0;
+        } else if (!barrier_.detected) {
+          if (++barrier_lost_streak_ >= barrier_lost_count_) {
+            state_ = State::FINISHING;
+            finishing_since_ = now();
+          }
+        } else {
+          barrier_lost_streak_ = 0;   // 여전히 CLOSED 로 보이는 중
         }
         break;
 
@@ -279,10 +344,15 @@ private:
   double parking_stop_velocity_threshold_;
   double parking_stable_duration_;
   double barrier_cross_duration_;
+  double barrier_stop_y_ratio_;
+  int64_t barrier_lost_count_;
+  int64_t barrier_lost_streak_ = 0;
   double parking_sign_area_ratio_threshold_;
   int64_t parking_sign_hits_needed_;
 
+  State start_state_ = State::WAIT_LIGHT;
   State state_ = State::WAIT_LIGHT;
+  bool started_ = true;
   bool manual_override_ = false;
   int64_t psd_clear_streak_ = 0;
   bool parking_timer_running_ = false;
@@ -309,6 +379,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr parking_active_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr parking_done_sub_;
   rclcpp::Subscription<ControlMode>::SharedPtr mode_sub_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr start_sub_;
   rclcpp::Publisher<ControlMode>::SharedPtr mode_pub_;
   rclcpp::TimerBase::SharedPtr tick_timer_;
 };
