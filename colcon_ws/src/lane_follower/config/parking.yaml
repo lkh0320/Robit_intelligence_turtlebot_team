@@ -1,39 +1,77 @@
 parking:
   ros__parameters:
-    # 1) 주차 표지판 -> 가로 노란선 찾기 시작
+    backup_time: 2.0
+    # 1) 주차 표지판이 가까이 보이면 시작
     min_confidence: 0.5             # YOLO 신뢰도가 이보다 낮으면 무시
-    sign_area_ratio_threshold: 0.0  # 표지판 크기 / 화면 크기. 이보다 커야 시작 (0 = 크기 상관없음)
-    sign_hits_needed: 1             # 연속으로 이만큼 봐야 시작
-    search_timeout: 40.0            # [s] 표지판 본 뒤 이 시간 안에 가로선을 못 찾으면 그만둠 (0 = 끔)
-    skip_sign: false                # 시험용. true 면 표지판 없이 켜자마자 가로선 찾기
-                                    #   ros2 launch lane_follower parking.launch.py skip_sign:=true
+    sign_area_ratio_threshold: 0.02 # 표지판 크기 / 화면 크기. 이보다 커야(= 가까워야) 시작
+                                    #   입구 근처에서 GUI 표지판 area 가 0.036 정도였음. 너무 일찍 시작하면 키우기
+    sign_hits_needed: 2             # 연속으로 이만큼 봐야 시작
+    skip_sign: false                # 시험용. true 면 표지판 없이 켜자마자 시작
 
-    # 2) 가로 노란선 찾기. BEV 400x400, 1px = 1mm (bird_eye_view.yaml 과 같게, 2026-10-13 카메라 각도 수정 후 재보정)
+    # 2) 색 / 화면 (BEV 400x400, 1px = 1mm)
     image_topic: image_bev
-    yellow_l_min: 80                # 노란색 범위 (lane_detection.yaml 과 같게)
+    yellow_l_min: 80                # 노란색 (lane_detection.yaml 과 같게)
     yellow_b_min: 150
     yellow_a_max: 135
-    bev_center_x: 0.5               # 로봇 가로 위치 (화면 폭 비율). 이보다 왼쪽에서만 찾는다
-    robot_y_offset_px: 179.0        # 화면 맨 아래가 바퀴 축에서 몇 px(mm) 앞인지 (17.9cm, 2026-10-13 재보정. 예전 14.1cm)
-                                    #   path_planner / map_planner 의 robot_y_offset_px 와 같게
-    bev_m_per_px: 0.001
-    lane_width_px: 295.0            # 차선 폭 (lane_detection.yaml 과 같게). 입구 가운데 = 가로선 + 이 절반
-    hline_min_pixels: 35            # 한 줄에 노란 점이 이만큼 이상이면 "가로선" 줄 (못 찾으면 줄이기)
-    hline_min_rows: 3               # 가로선 두께가 이 줄 수보다 얇으면 잡음
-    hline_hits_needed: 2            # 연속 이만큼 프레임에서 보여야 시작
-    road_min_rows: 40               # 가로선 아래 차선이 이 줄 수 이상 보여야 도로 방향을 계산 (아니면 로봇 방향 사용)
+    white_l_min: 190                # 흰색 (lane_detection.yaml 과 같게)
+    white_ab_dev: 15
+    bev_center_x: 0.5               # 로봇 가로 위치 (화면 폭 비율)
+    lane_width_px: 295.0            # 차선 폭 [px]
+    line_min_rows: 40               # 선을 이을 때 필요한 최소 줄 수
+    flat_min_pixels: 35             # 한 줄에 점이 이만큼 이상이면 가로로 누운 부분 -> 선 이을 때 뺌
 
-    # 3) 움직이기 (엔코더 odom 으로 거리/각도를 잰다)
-    forward_speed: 0.08             # [m/s]
-    forward_extra_m: 0.0            # [m] 계산한 거리에 더할 값 (늦게 돌면 -, 일찍 돌면 +)
-    heading_kp: 2.0                 # 직진 중 방향이 틀어지면 되돌리는 세기
-    turn_angle_deg: 90.0            # 왼쪽으로 돌 각도
-    turn_kp: 2.0                    # 남은 각도 -> 회전 속도
-    turn_max_speed: 0.6             # [rad/s]
-    turn_min_speed: 0.12            # [rad/s] 끝에서 너무 느려 멈추지 않게
-    turn_tolerance_deg: 0.5         # 이만큼 안으로 들어오면 회전 끝
+    # 3) 흰선 따라 직진 (입구 전까지. 왼쪽 노란선이 휘어도 안 따라감)
+    use_lane_speed: true            # true = 주차 시작할 때 lane_follower 의 linear_speed (GUI 선속도) 와 같은 속도로 감
+    drive_speed: 0.10               # [m/s] lane_follower 속도를 못 받거나 use_lane_speed 가 false 일 때
+    heading_gain: 1.0
+    offset_gain: 1.0
+    offset_soft_px: 300.0
+    max_angular: 0.6                # [rad/s]
+    robot_y_offset_px: 179.0        # 화면 맨 아래가 바퀴 축에서 몇 px(mm) 앞인지. bird_eye_view.yaml 과 같게!
+                                    #   2026-10-13 카메라 각도 수정 후 보정 = 179 (17.9cm), 그 전 보정 = 141
+
+    # 4) 입구 찾기: 왼쪽 아래 칸의 노란선이 있음 -> 없음(입구) -> 다시 있음(반대쪽 모서리)이면 회전
+    watch_x_max: 120                # 칸 가로 범위 [0, 이 값) px
+    watch_rows: 20                  # 칸 세로 줄 수
+    watch_bottom: 390               # 칸의 맨 아래 줄 (최대 399). 도는 위치는 이 값과 robot_y_offset_px 로 자동 계산
+    present_pixels: 80              # 이 이상이면 "노란선 있음"
+    empty_pixels: 15                # 이 이하면 "노란선 없음"
+    gap_frames_needed: 2            # 연속 이만큼 프레임
+    extra_forward_m: -0.04          # [m] 돌기 전 더 갈 거리 (늦게 돌면 -, 일찍 돌면 +). 자동 계산한 거리에 더해짐
+                                    #   실제 시험에서 지나쳐서 돌아서 -0.02 -> -0.04
+                                    #   자동 거리(카메라 17.9cm 기준 약 4cm)보다 더 빼도 0 보다 일찍은 안 돎.
+                                    #   그보다 더 일찍 돌려면 watch_bottom 을 줄이기 (10 줄 = 1cm 일찍)
+
+    # 5) 회전: 입구 길의 두 노란선이 화면에 세로로 똑바로 보일 때까지 왼쪽으로
+    turn_speed: 0.4                 # [rad/s]
+    turn_kp: 1.5
+    turn_min_speed: 0.08
+    aligned_deg: 4.0                # 두 선이 모두 이 각도 안이면 멈춤
+    parallel_deg: 15.0               # 두 선 기울기 차이가 이보다 크면 아직 길이 아님
+    pair_gap_min_px: 150.0          # 두 선 간격이 이 범위여야 길로 봄
+    pair_gap_max_px: 420.0
+    turn_min_time: 1.0              # [s] 돌기 시작하고 이 시간 전에는 안 멈춤
+    turn_fit_rows: 230              # 화면 위쪽 이 줄까지만 봄 (아래쪽은 입구의 둥근 모서리)
+
+    # 6) 주차장 길 올라가기: 양쪽 노란선 가운데로. 노란선이 끝나면 흰 점선(통로 / 칸 경계)을 이어서 따라감
+    #    차선(노란선 / 흰 점선)이 다 끝나면 멈춤
+    stem_use_white: true            # false 면 노란선만 보고, 노란선이 끝나는 곳(주차장 입구)에서 멈춤
+    stem_end_frames: 3              # 노란선이 둘 다 연속 이만큼 안 보이면 길 끝
+    stem_min_time: 2.0              # [s] 올라가기 시작하고 이 시간 전에는 길 끝으로 안 봄
+    stem_timeout: 20.0              # [s]
+
+    # 7) 주차장 길 / 통로를 올라가는 중 옆 PSD 가 가까우면 반대쪽으로 90도 돌고 멈춤
+    #    (도로를 달릴 때는 안 봄. 90도는 엔코더 odom 으로 실제 돈 각도를 잰다. odom 이 없으면 시간으로)
+    side_psd_threshold: 0.15        # [m] 왼쪽이 이 이하 -> 오른쪽으로, 오른쪽이 이 이하 -> 왼쪽으로
+    side_hits_needed: 3             # 연속 이만큼 (PSD 20Hz -> 0.15초). 잡음 거르기
+    side_turn_deg: 90.0             # 돌 각도
+    side_turn_speed: 0.3            # [rad/s] 최대 회전 속도
+    side_min_speed: 0.08            # [rad/s] 끝에서 너무 느려 안 돌지 않게
+    side_tolerance_deg: 1.0         # 남은 각도가 이 이하면 멈춤
+    odom_timeout: 0.5               # [s] odom 이 이보다 오래 안 오면 odom 없는 걸로 봄
 
     # 안전
-    front_stop_distance: 0.10       # [m] 직진 중 정면 PSD 가 이보다 가까우면 대기 (0 = 끔)
-    odom_timeout: 0.5               # [s] odom 이 이만큼 안 오면 정지
-    control_rate: 20.0              # [Hz]
+    front_stop_distance: 0.10       # [m]
+    image_timeout: 0.5              # [s]
+    approach_timeout: 30.0          # [s]
+    turn_timeout: 15.0               # [s]
