@@ -121,7 +121,9 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   psd_max_range_ = node_->declare_parameter("psd_max_range", 0.80);
   // 수동 주행 속도: 시작값과 슬라이더 상한 (GUI 에서 바로 바꿀 수 있고, 여기서는 처음 값만 정한다)
   lin_speed_init_ = node_->declare_parameter("linear_speed", 0.10);
-  ang_speed_init_ = node_->declare_parameter("angular_speed", 1.0);
+  // lane_follower.yaml 의 max_angular(1.5) 와 맞춰둠 - 안 맞으면 슬라이더를 건드리는 순간
+  // lane_follower 의 max_angular 를 이 값으로 덮어써서 코너링이 갑자기 약해짐
+  ang_speed_init_ = node_->declare_parameter("angular_speed", 1.5);
   lin_speed_max_ = node_->declare_parameter("max_linear_speed", 1.0);   // 실제 상한은 stm_bridge max_wheel_speed / 펌웨어 MAX_WHEEL_MPS
   ang_speed_max_ = node_->declare_parameter("max_angular_speed", 10.0);
 
