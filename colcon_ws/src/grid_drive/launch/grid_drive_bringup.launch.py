@@ -21,34 +21,34 @@ from launch.substitutions import LaunchConfiguration
 
 def launch_file(package, name):
     return PythonLaunchDescriptionSource(
-        os.path.join(get_package_share_directory(package), launch, name))
+        os.path.join(get_package_share_directory(package), 'launch', name))
 
 
 def generate_launch_description():
     return LaunchDescription([
         # 원본 영상이 Fast DDS 기본 공유 메모리 칸에 안 들어가 프레임이 버려지는 것 (manual_bringup 과 같음)
-        SetEnvironmentVariable(FASTRTPS_DEFAULT_PROFILES_FILE, os.path.join(
-            get_package_share_directory(vision_bringup), config, fastdds_shm.xml)),
-        DeclareLaunchArgument(autostart, default_value=false),
-        DeclareLaunchArgument(use_road, default_value=true),
-        DeclareLaunchArgument(lane, default_value=false),
-        DeclareLaunchArgument(sign, default_value=true),
-        DeclareLaunchArgument(obstacle, default_value=false),
-        DeclareLaunchArgument(stm, default_value=true),
+        SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', os.path.join(
+            get_package_share_directory('vision_bringup'), 'config', 'fastdds_shm.xml')),
+        DeclareLaunchArgument('autostart', default_value='false'),
+        DeclareLaunchArgument('use_road', default_value='true'),
+        DeclareLaunchArgument('lane', default_value='false'),
+        DeclareLaunchArgument('sign', default_value='true'),
+        DeclareLaunchArgument('obstacle', default_value='false'),
+        DeclareLaunchArgument('stm', default_value='true'),
 
         IncludeLaunchDescription(
-            launch_file(vision_bringup, camera_vision.launch.py),
+            launch_file('vision_bringup', 'camera_vision.launch.py'),
             launch_arguments={
-                lane: LaunchConfiguration(lane),
-                sign: LaunchConfiguration(sign),
-                obstacle: LaunchConfiguration(obstacle),
+                'lane': LaunchConfiguration('lane'),
+                'sign': LaunchConfiguration('sign'),
+                'obstacle': LaunchConfiguration('obstacle'),
             }.items()),
-        IncludeLaunchDescription(launch_file(stm, stm_bridge.launch.py),
-                                 condition=IfCondition(LaunchConfiguration(stm))),
+        IncludeLaunchDescription(launch_file('stm', 'stm_bridge.launch.py'),
+                                 condition=IfCondition(LaunchConfiguration('stm'))),
         IncludeLaunchDescription(
-            launch_file(grid_drive, grid_drive.launch.py),
+            launch_file('grid_drive', 'grid_drive.launch.py'),
             launch_arguments={
-                autostart: LaunchConfiguration(autostart),
-                use_road: LaunchConfiguration(use_road),
+                'autostart': LaunchConfiguration('autostart'),
+                'use_road': LaunchConfiguration('use_road'),
             }.items()),
     ])
