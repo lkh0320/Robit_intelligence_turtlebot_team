@@ -8,7 +8,7 @@ stm_bridge:
     tx_rate: 20.0             # [Hz] WHEEL_CMD 송신 주기
     psd_frame_id: base_link
     # 엔코더 (펌웨어 0x11 프레임) -> odom, dxl_state 바퀴 속도
-    wheel_radius: 0.05        # [m] 펌웨어 WHEEL_RADIUS_M 과 같게 (반지름 5cm, 2026-10-13 확인)
+    wheel_radius: 0.1225      # [m] 모터 1바퀴당 유효 반지름 = 바퀴 4.8cm x 벨트 약 2.55 (2026-10-28 줄자 13cm / odom 5.3cm). 펌웨어 WHEEL_RADIUS_M(0.05) 은 그대로 -> 실제 속도는 cmd_vel 의 약 2.45배
     encoder_timeout: 0.3      # [s] 엔코더 프레임이 이만큼 끊기면 dxl_state 속도는 STATUS/명령 값 사용
     max_jump_ticks: 2048      # 0.05초에 이보다 많이 변하면 (모터 재부팅) 그 차이는 버림 (4096 = 1바퀴)
     odom_frame_id: odom
