@@ -29,6 +29,9 @@ install(TARGETS barrier_detection_node wall_detection_node
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
+# color_maps.hpp 등 헤더를 다른 패키지 (grid_drive) 에서도 쓰게 설치
+install(DIRECTORY include/
+  DESTINATION include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -42,4 +45,5 @@ if(BUILD_TESTING)
   target_compile_definitions(test_box_planner PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
 endif()
 
+ament_export_include_directories(include)
 ament_package()
