@@ -88,6 +88,7 @@ private:
   void onFrame(CameraView & view, const QImage & image);
   // 공사 구간 (lane_follower AVOID / RETURN) 동안 선 검출 칸을 wall_detection 경로 계획 화면으로 바꾼다
   void setWallView(bool on);
+  void updateLaneView();   // cams_[2]: grid_drive 가 떠 있으면 그 화면, 공사 구간이면 wall, 아니면 선 검출
 
   // 수신 기록 / 램프 갱신 / 송신 / 로그
   void touch(const QString & key);
@@ -108,8 +109,9 @@ private:
   // --- 위젯 ---
   std::array<CameraView, 4> cams_;   // 0 원본, 1 BEV, 2 선 검출 (공사 구간에서는 경로 계획), 3 객체 인식
   QGroupBox * lane_box_ = nullptr;   // cams_[2] 제목 바꾸기용
-  QString lane_topic_, wall_topic_;
-  bool wall_view_ = false;
+  QString lane_topic_, wall_topic_, grid_topic_;
+  bool wall_view_ = false;   // 공사 구간 (lane_follower)
+  bool grid_view_ = false;   // grid_drive 디버그 토픽 발행자가 있음
   QProgressBar * psd_bar_[3];        // 0 왼쪽, 1 앞, 2 오른쪽
   QLabel * psd_text_[3];
   QLabel * dxl_label_;

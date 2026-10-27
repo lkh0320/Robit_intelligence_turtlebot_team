@@ -142,6 +142,9 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   // 공사 구간에서만 구독한다
   wall_topic_ = QString::fromStdString(
     node_->declare_parameter("wall_image_topic", std::string("vision/wall_debug/compressed")));
+  // grid_drive (격자 계획 주행) 가 떠 있으면 cams_[2] 에 원본 + 도로 마스크 | 계획 지도 를 띄운다 (1초마다 발행자 확인)
+  grid_topic_ = QString::fromStdString(
+    node_->declare_parameter("grid_image_topic", std::string("grid_drive/debug/compressed")));
   cams_[3].key = "cam_object";
   cams_[3].topic = QString::fromStdString(
     node_->declare_parameter("object_image_topic", std::string("vision/object_debug/compressed")));
@@ -588,6 +591,11 @@ void MainWindow::touch(const QString & key)
 
 void MainWindow::refreshLamps()
 {
+  const bool grid = node_->count_publishers(grid_topic_.toStdString()) > 0;
+  if (grid != grid_view_) {
+    grid_view_ = grid;
+    updateLaneView();
+  }
   // 1초마다 호출 -> count 가 곧 Hz
   for (auto & [key, s] : stats_) {
     if (!s.lamp || !s.last.isValid()) {
@@ -756,19 +764,30 @@ void MainWindow::setWallView(bool on)
     return;
   }
   wall_view_ = on;
+  updateLaneView();
+}
+
+void MainWindow::updateLaneView()
+{
+  const QString topic = grid_view_ ? grid_topic_ : wall_view_ ? wall_topic_ : lane_topic_;
   auto & view = cams_[2];
+  if (topic == view.topic) {
+    return;
+  }
   view.sub.reset();
-  view.topic = on ? wall_topic_ : lane_topic_;
+  view.topic = topic;
   subscribeCamera(view);
   view.frames = 0;
   view.fps = 0.0;
   view.fps_timer.restart();
   view.image->clear();
   view.image->setText("수신 대기 중\n" + view.topic);
+  const QString title = grid_view_ ? "격자 계획 주행 (grid_drive): 원본 + 도로 | 지도 + 경로" :
+    wall_view_ ? "공사 구간 경로 계획 (box_planner)" : "선 · 벡터 검출";
   if (lane_box_) {
-    lane_box_->setTitle(on ? "공사 구간 경로 계획 (box_planner)" : "선 · 벡터 검출");
+    lane_box_->setTitle(title);
   }
-  log(on ? "공사 구간 -> 경로 계획 화면" : "공사 구간 끝 -> 선 검출 화면");
+  log("선 검출 칸 -> " + title);
 }
 
 void MainWindow::onFrame(CameraView & view, const QImage & image)
