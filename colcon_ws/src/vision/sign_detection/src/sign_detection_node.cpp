@@ -1,4 +1,4 @@
-// 표지판 / 신호등 / 차단바 인식 (YOLOv8 ONNX + OpenCV DNN, CPU) - 같은 모델, 한 번의 추론으로 셋 다 처리
+// 표지판 / 신호등 / 차단바 인식 (YOLOv8, TensorRT GPU 또는 ONNX + OpenCV DNN CPU) - 같은 모델, 한 번의 추론으로 셋 다 처리
 //   구독: image_raw (sensor_msgs/Image)
 //   발행: sign (interfaces/Sign)                   매 프레임, 표지판이 없으면 type = NONE
 //         traffic_light (interfaces/TrafficLight)  매 프레임, 안 보이면 state = UNKNOWN
@@ -13,6 +13,8 @@
 //   2026-10-14 녹화 재생 (같은 42초, 다른 노드 없이): 추론 640 191ms / 416 68ms / 320 39ms.
 //     416 은 640 과 같은 표지판을 같은 때부터 잡고, 320 은 왼쪽 표지판이 빠져나갈 때 RIGHT 를 한 번 오인식
 //     추론이 빨라지면 남는 시간에 프레임을 더 처리해 CPU 는 그대로라 process_rate 로 횟수를 제한한다
+//   GPU: engine_path 의 TensorRT 엔진이 있으면 그것으로 추론 (2026-10-27 v2_416 FP16 3.3ms), 없거나 못 읽으면
+//     위 ONNX 를 OpenCV CPU 로. 엔진은 젯슨에서 trtexec 로 만든다 (config/sign_detection.yaml)
 //
 // 처리 순서
 //   1. letterbox: 비율 유지하며 input_size 정사각형으로 (남는 곳 회색)
@@ -44,6 +46,9 @@
 #include "sensor_msgs/msg/image.hpp"
 #include "sign_detection/yolo_classes.hpp"
 #include "sign_detection/yolo_detector.hpp"
+#ifdef SIGN_DETECTION_TENSORRT
+#include "sign_detection/trt_engine.hpp"
+#endif
 
 namespace sd = sign_detection;
 
@@ -89,15 +94,39 @@ public:
     debug_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
       "vision/object_debug/compressed", qos);
 
+    // TensorRT 엔진 (GPU) 을 먼저 시도하고, 안 되면 ONNX 를 OpenCV CPU 로
+    const auto engine_path = expandHome(declare_parameter("engine_path", std::string("")));
+#ifdef SIGN_DETECTION_TENSORRT
+    if (!engine_path.empty()) {
+      try {
+        trt_ = std::make_unique<sd::TrtEngine>(engine_path);
+        if (trt_->inputSize() != input_size_) {
+          RCLCPP_WARN(get_logger(), "엔진 입력 %d 이 input_size %d 와 다름 -> 엔진 크기 사용",
+            trt_->inputSize(), input_size_);
+          input_size_ = trt_->inputSize();
+        }
+      } catch (const std::exception & e) {
+        RCLCPP_WARN(get_logger(), "TensorRT 엔진을 못 씀 -> OpenCV CPU 로: %s", e.what());
+        trt_.reset();
+      }
+    }
+#else
+    if (!engine_path.empty()) {
+      RCLCPP_WARN(get_logger(), "TensorRT 없이 빌드됨 -> engine_path 무시, OpenCV CPU 로");
+    }
+#endif
+
     // 모델이 없거나 못 읽으면 노드는 켜 둔 채 아무것도 안 한다 (launch 의 다른 노드는 계속 돈다)
-    try {
-      net_ = cv::dnn::readNetFromONNX(model_path);
-      net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
-      net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-    } catch (const cv::Exception & e) {
-      RCLCPP_ERROR(get_logger(), "모델을 읽지 못함: %s\n  %s\n  model_path 파라미터 확인 "
-        "(config/sign_detection.yaml). 표지판 인식 꺼짐", model_path.c_str(), e.what());
-      return;
+    if (!usingTrt()) {
+      try {
+        net_ = cv::dnn::readNetFromONNX(model_path);
+        net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+        net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+      } catch (const cv::Exception & e) {
+        RCLCPP_ERROR(get_logger(), "모델을 읽지 못함: %s\n  %s\n  model_path 파라미터 확인 "
+          "(config/sign_detection.yaml). 표지판 인식 꺼짐", model_path.c_str(), e.what());
+        return;
+      }
     }
 
     // 추론이 카메라보다 느리므로 대기열은 1: 밀린 옛 프레임 대신 항상 최신 프레임을 처리한다
@@ -105,11 +134,33 @@ public:
       image_topic, rclcpp::SensorDataQoS().keep_last(1),
       [this](sensor_msgs::msg::Image::ConstSharedPtr msg) {onImage(msg);});
 
-    RCLCPP_INFO(get_logger(), "sign_detection 시작 (구독: %s, 모델: %s, 입력 %d)",
-      image_topic.c_str(), model_path.c_str(), input_size_);
+    RCLCPP_INFO(get_logger(), "sign_detection 시작 (구독: %s, %s: %s, 입력 %d)",
+      image_topic.c_str(), usingTrt() ? "TensorRT GPU" : "OpenCV CPU",
+      usingTrt() ? engine_path.c_str() : model_path.c_str(), input_size_);
   }
 
 private:
+  bool usingTrt() const
+  {
+#ifdef SIGN_DETECTION_TENSORRT
+    return trt_ != nullptr;
+#else
+    return false;
+#endif
+  }
+
+  // 1 x 3 x S x S blob -> 1 x (4 + nc) x N 출력
+  cv::Mat infer(const cv::Mat & blob)
+  {
+#ifdef SIGN_DETECTION_TENSORRT
+    if (trt_) {
+      return trt_->infer(blob);
+    }
+#endif
+    net_.setInput(blob);
+    return net_.forward();
+  }
+
   void onImage(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
   {
     // 영상 시각으로 솎는다 (bag 재생 속도를 바꿔도 같은 프레임을 고르게)
@@ -136,8 +187,13 @@ private:
     cv::Mat input;
     const sd::Letterbox lb = sd::letterbox(img, input_size_, input);
     // 0~255 -> 0~1, BGR -> RGB (학습 이미지는 RGB), HWC -> NCHW
-    net_.setInput(cv::dnn::blobFromImage(input, 1.0 / 255.0, cv::Size(), cv::Scalar(), true, false));
-    const cv::Mat out = net_.forward();
+    cv::Mat out;
+    try {
+      out = infer(cv::dnn::blobFromImage(input, 1.0 / 255.0, cv::Size(), cv::Scalar(), true, false));
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000, "추론 실패: %s", e.what());
+      return;
+    }
     const double ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - t0).count();
 
@@ -240,6 +296,9 @@ private:
   }
 
   cv::dnn::Net net_;
+#ifdef SIGN_DETECTION_TENSORRT
+  std::unique_ptr<sd::TrtEngine> trt_;
+#endif
   int input_size_;
   rclcpp::Time last_;
   bool have_last_ = false;

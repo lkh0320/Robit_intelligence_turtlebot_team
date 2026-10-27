@@ -7,6 +7,11 @@ sign_detection:
     #   640 (~/models/v2.onnx) 보다 추론 약 3배 빠르고 녹화 재생에서 같은 표지판을 잡음. 되돌리려면 둘 다 바꾼다
     model_path: ~/models/v2_416.onnx
     input_size: 416           # export 때 imgsz 와 같아야 한다
+    # TensorRT 엔진 (젯슨 GPU). 있으면 이걸로 추론하고 model_path 는 안 읽는다. 없거나 못 읽으면 model_path 를 CPU 로.
+    # 엔진은 기기 + TensorRT 버전에 묶여 있어 젯슨에서 만든다 (약 7분, JetPack 다시 깔거나 모델 바꾸면 다시):
+    #   trtexec --onnx=$HOME/models/v2_416.onnx --saveEngine=$HOME/models/trt/v2_416_fp16.engine --fp16 --memPoolSize=workspace:512
+    # 2026-10-27: 추론 3.3ms (CPU 68ms). "" 이면 CPU
+    engine_path: ~/models/trt/v2_416_fp16.engine
     process_rate: 10.0        # [Hz] 처리 횟수 제한 (0 = 할 수 있는 만큼). lane_follower sign_confirm_window 가 이 속도 기준.
                               #   2026-10-14 녹화 재생 (BEV+lane+wall+sign+원본 녹화): 416 10Hz 에서 CPU 여유 36%
                               #   (예전 640 약 5Hz 33%), lane_info 30Hz 유지. 5Hz 면 여유 53%

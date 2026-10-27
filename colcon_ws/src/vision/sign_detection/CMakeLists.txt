@@ -17,6 +17,19 @@ target_include_directories(sign_detection_node PRIVATE include)
 target_link_libraries(sign_detection_node ${OpenCV_LIBS})
 ament_target_dependencies(sign_detection_node rclcpp sensor_msgs cv_bridge interfaces)
 
+# TensorRT (젯슨 JetPack) 가 있으면 GPU 추론도 넣는다. 없으면 (노트북 등) OpenCV DNN CPU 만
+find_package(CUDAToolkit QUIET)
+find_path(TENSORRT_INCLUDE_DIR NvInfer.h PATH_SUFFIXES aarch64-linux-gnu x86_64-linux-gnu)
+find_library(NVINFER_LIBRARY nvinfer)
+if(CUDAToolkit_FOUND AND TENSORRT_INCLUDE_DIR AND NVINFER_LIBRARY)
+  message(STATUS "sign_detection: TensorRT GPU 추론 사용 (${NVINFER_LIBRARY})")
+  target_compile_definitions(sign_detection_node PRIVATE SIGN_DETECTION_TENSORRT)
+  target_include_directories(sign_detection_node SYSTEM PRIVATE ${TENSORRT_INCLUDE_DIR})
+  target_link_libraries(sign_detection_node ${NVINFER_LIBRARY} CUDA::cudart)
+else()
+  message(STATUS "sign_detection: TensorRT 없음 -> OpenCV DNN CPU 만")
+endif()
+
 install(TARGETS sign_detection_node
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch config
