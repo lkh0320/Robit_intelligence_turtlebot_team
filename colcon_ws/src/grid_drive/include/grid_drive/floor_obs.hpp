@@ -27,8 +27,8 @@ namespace grid_drive
 
 struct FloorParams
 {
-  double src_top_y = 0.360, src_top_left_x = 0.286, src_top_right_x = 0.714;
-  double src_bottom_y = 1.0, src_bottom_left_x = -0.023, src_bottom_right_x = 1.023;
+  double src_top_y = 0.392, src_top_left_x = 0.274, src_top_right_x = 0.726;   // 2026-10-28 바닥 표시 보정 (f 399, 카메라 발 = 축 앞 85mm)
+  double src_bottom_y = 1.109, src_bottom_left_x = -0.096, src_bottom_right_x = 1.096;
   double bev_size_mm = 400.0;
   double bev_near_mm = 179.0;          // BEV 맨 아래 = 바퀴 축 앞 [mm]
   double cell_mm = 4.0;
@@ -37,6 +37,7 @@ struct FloorParams
   double raw_scale = 0.5;              // 색 방식: 원본을 이 배율로 줄여서 편다 (속도)
   double box_depth_mm = 200.0;         // 박스 앞면에서 뒤로 막힘 길이 (지도 단위)
   double box_gap_mm = 40.0;
+  double road_min_ratio = 0.05;        // 보인 곳 중 road 가 이보다 적으면 (내 차선 안 보임, 회전 중 등) 주행 불가를 모름으로
 };
 
 struct FloorObs
@@ -137,7 +138,11 @@ inline FloorObs observeSegmentation(const SegMasks & s, const FloorParams & p, c
   o.line = warpOr0(s.line);
   o.box = warpOr0(s.box);
   if (!s.road.empty()) {
-    o.offroad = o.valid & ~warpMask(s.road, p);
+    const cv::Mat road = warpMask(s.road, p) & o.valid;
+    const int nv = cv::countNonZero(o.valid);
+    if (nv > 0 && cv::countNonZero(road) >= p.road_min_ratio * nv) {
+      o.offroad = o.valid & ~road;
+    }
   }
   if (!raw.empty()) {
     cv::warpPerspective(raw, o.ground, fineToRaw(p, raw.size()), fs,

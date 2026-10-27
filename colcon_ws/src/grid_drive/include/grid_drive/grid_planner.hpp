@@ -49,14 +49,20 @@ enum class Turn {NONE, LEFT, RIGHT};
 // 1. 바닥 지도 크기 / 변환은 FloorParams (floor_obs.hpp)
 struct Params : FloorParams
 {
-  double map_y_scale = 2.4;            // 지도 앞뒤 [mm] / 실제 [mm] (box_planner odom_scale)
+  double map_y_scale = 1.0;            // 지도 앞뒤 [mm] / 실제 [mm] (box_planner odom_scale)
   // 2. 기억
-  bool memory = true;
+  bool memory = false;                 // 2026-10-28: 벨트 미끄럼 / 직진 중 틀어짐을 odom 이 못 봐 기억이 어긋남 (replay soft 31 -> 102)
   double memory_back_mm = 250.0;       // 바퀴 축 뒤로 이만큼 지나면 잊음 (지도 단위)
   // 3. 비용 지도
   double plan_cell_mm = 12.0;          // 탐색 칸 [실제 mm] (색 마스크보다 거칠게, 속도. 지도 세로로는 x map_y_scale)
-  double robot_half_width_mm = 102.5;  // 실측 폭 20.5cm
+  double robot_half_width_mm = 100.0;  // 바퀴 바깥 끝 폭 20cm (2026-10-28 사용자)
   double line_margin_mm = 10.0;        // 선 / 주행 불가와 로봇 옆면 사이 최소 여유 (선 밟으면 실격)
+  // 복귀 구간: 로봇이 이미 가운데에서 벗어나 있으면 바로 앞은 위 여유를 못 지킴 (차선 320mm 면 가운데 +-47mm 뿐).
+  // 실제 recover_mm 앞까지는 선 / 주행 불가에서 경로 중심이 hard_line_mm 만 떨어지면 되고 (대신 near_line_cost),
+  // 그 너머는 원래 여유 (로봇 반폭 + line_margin) 를 지켜야 함 -> 차선 안이면 hard 경로로 가운데로 돌아옴
+  double recover_mm = 200.0;           // [실제 mm]
+  double hard_line_mm = 30.0;
+  double near_line_cost = 6.0;
   double box_margin_mm = 30.0;         // 박스와 로봇 옆면 사이 최소 여유
   double clear_k_mm = 40.0;            // 비용 = 1 + clear_k / d (d = 진입 금지 경계까지 [mm])
   double clear_min_mm = 6.0;           // d 가 이보다 작으면 이 값으로 (비용 상한)
@@ -423,14 +429,18 @@ private:
           soft_cost_.at<float>(y, x) = -1.0f;
           continue;
         }
-        const double d = std::min(dl.at<float>(y, x) * g - line_lim, db.at<float>(y, x) * g - box_lim);
+        const double dline = dl.at<float>(y, x) * g;
+        const bool recover = fy / p.map_y_scale < p.recover_mm;
+        const double d = std::min(dline - line_lim, db.at<float>(y, x) * g - box_lim);
+        const bool forbid = recover ?
+          (dline < p.hard_line_mm || db.at<float>(y, x) * g < box_lim) : d < 0;
         float c;
-        if (d < 0) {
+        if (forbid) {
           forbid_.at<uint8_t>(y, x) = 255;
           const double ds = std::hypot(x - start.x, y - start.y);
           c = ds <= esc ? static_cast<float>(p.escape_cost) : -1.0f;   // -1 = 못 감
           float sc = static_cast<float>(p.soft_forbid_cost);
-          if (lines.at<uint8_t>(y, x) || boxes.at<uint8_t>(y, x)) {
+          if (lines.at<uint8_t>(y, x) || boxes.at<uint8_t>(y, x) || off_g_.at<uint8_t>(y, x)) {
             sc += static_cast<float>(p.soft_cross_cost);
           }
           soft_cost_.at<float>(y, x) = sc;
@@ -438,6 +448,9 @@ private:
           c = 1.0f;
           if (d < p.clear_cap_mm) {
             c += static_cast<float>(p.clear_k_mm / std::max(d, p.clear_min_mm));
+          }
+          if (dline < line_lim) {   // 복귀 구간에서 여유를 못 지키는 칸
+            c += static_cast<float>(p.near_line_cost * (line_lim - dline) / (line_lim - p.hard_line_mm));
           }
           if (!known_.at<uint8_t>(y, x)) {
             c += static_cast<float>(p.unknown_cost);
@@ -450,6 +463,20 @@ private:
         cost_.at<float>(y, x) = c;
       }
     }
+  }
+
+  // 보이는 칸인데 옆 (8방향) 에 안 보이는 칸이 있음
+  bool onVisibleEdge(int x, int y) const
+  {
+    for (int dy = -1; dy <= 1; ++dy) {
+      for (int dx = -1; dx <= 1; ++dx) {
+        const int nx = x + dx, ny = y + dy;
+        if (nx >= 0 && ny >= 0 && nx < valid_g_.cols && ny < valid_g_.rows && !valid_g_.at<uint8_t>(ny, nx)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // 4. Dijkstra + 목표 + 5. 다듬기
@@ -519,6 +546,9 @@ private:
           kind = 1;
         } else if (y <= side_max_row && x >= W - band) {
           kind = 2;
+        } else if (y <= side_max_row && onVisibleEdge(x, y)) {
+          // 보이는 사다리꼴의 비스듬한 옆변: 커브에서 차선이 여기로 빠져나감 (위 / 좌우 끝에 안 닿음)
+          kind = x < W / 2 ? 1 : 2;
         }
         if (kind < 0) {
           continue;

@@ -67,6 +67,11 @@ Params params()
 {
   Params p;
   p.memory = false;
+  // 장면은 보정 전 지도 기준으로 만들었다 (2026-10-28 보정값과 무관하게 계획 논리만 본다)
+  p.map_y_scale = 2.4;
+  p.robot_half_width_mm = 102.5;
+  p.src_top_y = 0.360; p.src_top_left_x = 0.286; p.src_top_right_x = 0.714;
+  p.src_bottom_y = 1.0; p.src_bottom_left_x = -0.023; p.src_bottom_right_x = 1.023;
   return p;
 }
 }  // namespace
@@ -171,8 +176,11 @@ TEST(GridPlanner, SoftWhenOnLine)
 {
   const Params p = params();
   FloorObs o = empty(p);
-  line(p, o, 40, 0, 40, farReal(p));     // 로봇 바로 오른쪽에 선
-  line(p, o, -300, 0, -300, farReal(p));  // 왼쪽 선 (차선 폭 340, 로봇이 오른쪽 선에 붙음)
+  line(p, o, 10, 0, 10, farReal(p));      // 로봇 바로 오른쪽에 선 (hard_line_mm 안)
+  line(p, o, -330, 0, -330, farReal(p));  // 왼쪽 선 (차선 폭 340, 로봇이 오른쪽 선 위)
+  o.offroad = cv::Mat::zeros(o.valid.size(), CV_8U);   // 오른쪽 선 너머는 road 밖
+  cv::rectangle(o.offroad, px(p, 25, farReal(p)), px(p, p.half_width_mm, 0), cv::Scalar(255), cv::FILLED);
+  o.offroad.setTo(0, ~o.valid);
   Params q = p;
   q.start_escape_mm = 0;
   GridPlanner g;
@@ -181,6 +189,51 @@ TEST(GridPlanner, SoftWhenOnLine)
   EXPECT_TRUE(r.soft);
   EXPECT_LT(xAt(p, r.path, 1000), 0.0);   // 왼쪽 (차선 가운데) 으로 빠져나감
   EXPECT_LE(r.v, p.linear * p.soft_speed_ratio + 1e-9);
+}
+
+// 선에 붙었지만 위는 아님: 복귀 구간 덕에 hard 경로로 차선 가운데로 돌아옴 (예전엔 soft)
+TEST(GridPlanner, RecoverWhenNearLine)
+{
+  const Params p = params();
+  FloorObs o = empty(p);
+  line(p, o, 40, 0, 40, farReal(p));
+  line(p, o, -300, 0, -300, farReal(p));
+  GridPlanner g;
+  const auto r = g.plan(o, p);
+  ASSERT_TRUE(r.path_ok);
+  EXPECT_FALSE(r.soft);
+  EXPECT_LT(xAt(p, r.path, 1000), -100.0);   // 차선 가운데 (-130) 근처로
+}
+
+// 내 차선이 거의 안 보이면 (road 가 보인 곳의 road_min_ratio 미만) 주행 불가를 모름으로
+TEST(FloorObs, TinyRoadIsUnknown)
+{
+  const Params p = params();
+  grid_drive::SegMasks s;
+  s.road = cv::Mat::zeros(480, 640, CV_8U);
+  EXPECT_TRUE(grid_drive::observeSegmentation(s, p).offroad.empty());
+  cv::rectangle(s.road, {150, 200}, {490, 479}, cv::Scalar(255), cv::FILLED);
+  EXPECT_FALSE(grid_drive::observeSegmentation(s, p).offroad.empty());
+}
+
+// 커브: 차선이 보이는 사다리꼴의 비스듬한 옆변으로 빠져나가도 (위 / 좌우 끝에 안 닿음) hard 목표가 있다
+TEST(GridPlanner, GoalOnVisibleEdge)
+{
+  Params p = params();
+  p.robot_half_width_mm = 40.0;   // 차선 폭 조건과 섞이지 않게 (목표 후보만 본다)
+  FloorObs o = empty(p);
+  o.valid = grid_drive::visibleMask(p, cv::Size(640, 480));   // 실제 카메라 사다리꼴 (실제 앞 320mm 부터 좌우 끝)
+  // 오른쪽으로 급히 꺾이는 차선: 실제 앞 150~250mm 에서 사다리꼴 오른쪽 옆변으로 빠져나감 (위 / 좌우 끝 열에 안 닿음)
+  const std::vector<cv::Point> lane = {px(p, -150, 0), px(p, -150, 80), px(p, 300, 250), px(p, 700, 250),
+    px(p, 700, 150), px(p, 150, 30), px(p, 150, 0)};
+  o.offroad = o.valid.clone();
+  cv::fillPoly(o.offroad, std::vector<std::vector<cv::Point>>{lane}, cv::Scalar(0));
+  GridPlanner g;
+  const auto r = g.plan(o, p);
+  ASSERT_TRUE(r.path_ok);
+  EXPECT_FALSE(r.soft);
+  EXPECT_EQ(r.goal_kind, 2);
+  EXPECT_GT(r.goal.x, 200.0);
 }
 
 // 안 보이는 띠 (바퀴 축 ~ bev_near) 로 옆으로 빠지지 않는다
