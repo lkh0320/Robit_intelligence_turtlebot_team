@@ -482,14 +482,19 @@ TEST(IntersectionTurn, OppositeSignDuringApproachSwitchesDirection)
 
 namespace
 {
-// 왼쪽으로 돌고 차선을 잡을 때까지 (LOOP 로 들어갈 때까지) 진행
-void turnLeftIntoLoop(lf::IntersectionTurn & s, const lf::TurnParams & p)
+// 표지판 방향으로 돌고 차선을 잡을 때까지 (LOOP 로 들어갈 때까지) 진행
+void turnIntoLoop(lf::IntersectionTurn & s, const lf::TurnParams & p, int sign)
 {
-  s.onSign(lf::TURN_SIGN_LEFT, 0.95, 0.03, p);
+  s.onSign(sign, 0.95, 0.03, p);
   for (int i = 0; i < 2000 && s.phase() != Phase::LOOP && s.phase() != Phase::IDLE; ++i) {
     const bool turning = s.phase() == Phase::TURN;
     step(s, !turning, turning, 0.0, p);
   }
+}
+
+void turnLeftIntoLoop(lf::IntersectionTurn & s, const lf::TurnParams & p)
+{
+  turnIntoLoop(s, p, lf::TURN_SIGN_LEFT);
 }
 }  // namespace
 
@@ -775,6 +780,7 @@ TEST(IntersectionTurn, RightTurnRetriesWhenLaneLostSoonAfter)
   lf::TurnParams p = noCross();
   p.approach_time = 0;
   p.after_enabled = true;
+  p.out_right_enabled = false;
   lf::IntersectionTurn s;
   turnTo(s, lf::TURN_SIGN_RIGHT, 0.5, p);
   for (int i = 0; i < p.exit_ok_count; ++i) {
@@ -802,6 +808,7 @@ TEST(IntersectionTurn, AfterRetryGivesUpAtMaxYawAndRetries)
   lf::TurnParams p = noCross();
   p.approach_time = 0;
   p.after_enabled = true;
+  p.out_right_enabled = false;
   lf::IntersectionTurn s;
   turnTo(s, lf::TURN_SIGN_RIGHT, 0.5, p);
   for (int i = 0; i < p.exit_ok_count; ++i) {
@@ -827,12 +834,13 @@ TEST(IntersectionTurn, LoopForgetsAfterMaxDist)
   turnLeftIntoLoop(s, p);
   ASSERT_EQ(s.phase(), Phase::LOOP);
   s.onMove(p.out_max_dist + 0.1, 0, p);
-  EXPECT_EQ(s.phase(), Phase::IDLE);
+  EXPECT_EQ(s.phase(), Phase::EXIT);   // 출구 신호를 못 봐도 도는 쪽 기준으로 탈출 시도
 }
 
-TEST(IntersectionTurn, RightTurnHasNoLoopExit)
+TEST(IntersectionTurn, RightTurnHasNoLoopExitWhenDisabled)
 {
-  const lf::TurnParams p = noCross();
+  lf::TurnParams p = noCross();
+  p.out_right_enabled = false;
   lf::IntersectionTurn s;
   s.onSign(lf::TURN_SIGN_RIGHT, 0.95, 0.03, p);
   for (int i = 0; i < 2000 && (s.phase() != Phase::IDLE || i == 0); ++i) {
@@ -840,4 +848,62 @@ TEST(IntersectionTurn, RightTurnHasNoLoopExit)
     step(s, !turning, turning, 0.0, p);
   }
   EXPECT_EQ(s.phase(), Phase::IDLE);
+}
+
+TEST(IntersectionTurn, RightTurnLoopsLeftThenExitsRight)
+{
+  // 182547_run 2회차: 오른쪽으로 돈 뒤 고리를 왼쪽으로 62~66° 돈 출구에서 노란 S자만 보여 차선 놓침
+  //   -> 왼쪽 길의 거울: 왼쪽으로 out_trigger_yaw 꺾이면 EXIT, 섬 쪽(왼쪽) 차선은 무시하고 오른쪽 호
+  const lf::TurnParams p = noCross();
+  lf::IntersectionTurn s;
+  turnIntoLoop(s, p, lf::TURN_SIGN_RIGHT);
+  ASSERT_EQ(s.phase(), Phase::LOOP);
+  EXPECT_EQ(s.direction(), -1);
+  // 섬 끝 노란 선 조건은 왼쪽 길만: 노란 선이 오른쪽에 보여도 출구 아님
+  s.onMove(0.35, 0.7, p);
+  EXPECT_FALSE(stepObs(s, oneLine(true, 0.0, 1.0), p).active);
+  EXPECT_EQ(s.phase(), Phase::LOOP);
+  // 오른쪽으로 꺾이는 건 출구 쪽 반대가 아님 (고리 회전량 줄어듦)
+  s.onMove(0.05, -0.2, p);
+  EXPECT_FALSE(step(s, false, true, 0.0, p).active);
+  EXPECT_EQ(s.phase(), Phase::LOOP);
+  s.onMove(0.1, 0.6, p);   // 왼쪽으로 합 1.1 rad
+  EXPECT_FALSE(stepObs(s, oneLine(false, 0.0, 0.2), p).active);   // 차선 그대로 추종
+  ASSERT_EQ(s.phase(), Phase::EXIT);
+  auto c = stepObs(s, oneLine(true, 1.1, -0.64), p);              // 섬 쪽 (왼쪽) 차선 -> 오른쪽 호
+  ASSERT_TRUE(c.active);
+  EXPECT_DOUBLE_EQ(c.w, -p.out_arc_angular);
+  EXPECT_NE(s.lastReason().find("오른쪽"), std::string::npos);
+  EXPECT_FALSE(stepObs(s, oneLine(true, -0.8, 0.7), p).active);   // 오른쪽으로 치우친 차선은 따라감
+  s.onMove(p.out_guard_dist, 0.0, p);
+  stepObs(s, oneLine(false, 0.0, 0.0), p);
+  EXPECT_EQ(s.phase(), Phase::IDLE);
+}
+
+TEST(IntersectionTurn, LoopLaneLostEarlyTurnsMoreThenBackToLoop)
+{
+  // 돈 직후 (out_min_dist 안) 차선을 놓치면 AFTER 처럼 같은 쪽으로 더 돈 뒤 고리로 돌아감
+  lf::TurnParams p = noCross();
+  p.after_enabled = true;
+  lf::IntersectionTurn s;
+  turnIntoLoop(s, p, lf::TURN_SIGN_RIGHT);
+  ASSERT_EQ(s.phase(), Phase::LOOP);
+  s.onMove(0.1, 0.0, p);
+  auto c = step(s, true, false, 0, p);
+  ASSERT_EQ(s.phase(), Phase::TURN);
+  EXPECT_DOUBLE_EQ(c.w, -p.turn_search_angular);
+  EXPECT_NE(s.lastReason().find("고리"), std::string::npos);
+  s.onMove(0.0, -0.2, p);   // 오른쪽으로 더 돎 -> 고리 회전량 -0.2
+  for (int i = 0; i < p.exit_ok_count; ++i) {
+    step(s, false, true, 0.1, p);
+  }
+  ASSERT_EQ(s.phase(), Phase::LOOP);
+  EXPECT_NE(s.lastReason().find("고리 다시"), std::string::npos);
+  // 거리는 이어서 잼 (0.1 + 0.25 >= out_min_dist), 고리 회전량은 약 -0.25 + 1.2 < 1.05 -> 아직 출구 아님
+  s.onMove(0.25, 1.2, p);
+  EXPECT_FALSE(step(s, false, true, 0.0, p).active);
+  EXPECT_EQ(s.phase(), Phase::LOOP);
+  s.onMove(0.05, 0.2, p);
+  step(s, false, true, 0.0, p);
+  EXPECT_EQ(s.phase(), Phase::EXIT);
 }

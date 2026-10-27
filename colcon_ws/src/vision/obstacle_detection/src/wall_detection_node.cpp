@@ -11,7 +11,9 @@
 //           free_offset  고른 경로 위 목표점 방향 [rad] (+ 오른쪽, ±1 로 자름) -> lane_follower w = -kp * 이 값
 //           confidence   1 = 지나갈 경로 있음, fallback_confidence = 전부 막혀 가장 멀리 가는 경로 (천천히)
 //           distance     가장 가까운 박스 (기억 포함) 까지 [지도 m, 엔코더의 약 odom_scale 배]
-//           detected / side / x_ratio / bottom_ratio 는 지금 화면에 보이는 가장 가까운 박스 (free_space 와 같은 뜻)
+//           detected / x_ratio / bottom_ratio 는 지금 화면에 보이는 가장 가까운 박스 (free_space 와 같은 뜻)
+//           side         그 박스가 바닥 지도에서 노란 선(LEFT) / 흰 선(RIGHT) 중 어디에 붙었나, 모르면 NONE
+//                        (화면 위치가 아님: 커브에서는 길 오른쪽 박스가 화면 왼쪽에 보인다)
 //         free_space 모드:
 //           detected     박스가 보이나 (box_min_area 넘는 덩어리)
 //           side         가장 가까운 박스가 화면 왼쪽(LEFT) / 오른쪽(RIGHT)
@@ -136,7 +138,12 @@ private:
     declare_parameter("planner.robot_half_width_mm", p.robot_half_width_mm);
     declare_parameter("planner.box_margin_mm", p.box_margin_mm);
     declare_parameter("planner.box_depth_mm", p.box_depth_mm);
+    declare_parameter("planner.box_gap_mm", p.box_gap_mm);
+    declare_parameter("planner.fallback_tie_mm", p.fallback_tie_mm);
     declare_parameter("planner.react_mm", p.react_mm);
+    declare_parameter("planner.side_band_mm", p.side_band_mm);
+    declare_parameter("planner.side_line_max_mm", p.side_line_max_mm);
+    declare_parameter("planner.side_margin_mm", p.side_margin_mm);
     declare_parameter("planner.odom_scale", p.odom_scale);
     declare_parameter("planner.memory_back_mm", p.memory_back_mm);
     declare_parameter("planner.psd_keep_mm", p.psd_keep_mm);
@@ -156,6 +163,12 @@ private:
     declare_parameter("planner.smooth_weight", p.smooth_weight);
     declare_parameter("planner.lookahead_mm", p.lookahead_mm);
     declare_parameter("planner.fallback_confidence", 0.3);
+    declare_parameter("planner.stuck_confidence", 0.1);    // 박스에 바짝 붙어 전부 막힘 (lane_follower construction.stuck_confidence 이하로)
+    declare_parameter("planner.real_angle", p.real_angle);
+    declare_parameter("planner.side_ext_mm", p.side_ext_mm);
+    declare_parameter("planner.unknown_weight", p.unknown_weight);
+    declare_parameter("planner.pivot_weight", p.pivot_weight);
+    declare_parameter("planner.stuck_mm", p.stuck_mm);
     declare_parameter("planner.reset_after", 3.0);         // [s] 박스가 이만큼 안 보이면 기억 지움
     const obstacle_detection::ColorParams c;
     declare_parameter("planner.color.yellow_l_min", c.yellow_l_min);
@@ -189,7 +202,12 @@ private:
     p.robot_half_width_mm = dbl("planner.robot_half_width_mm");
     p.box_margin_mm = dbl("planner.box_margin_mm");
     p.box_depth_mm = dbl("planner.box_depth_mm");
+    p.box_gap_mm = dbl("planner.box_gap_mm");
+    p.fallback_tie_mm = dbl("planner.fallback_tie_mm");
     p.react_mm = dbl("planner.react_mm");
+    p.side_band_mm = dbl("planner.side_band_mm");
+    p.side_line_max_mm = dbl("planner.side_line_max_mm");
+    p.side_margin_mm = dbl("planner.side_margin_mm");
     p.odom_scale = dbl("planner.odom_scale");
     p.memory_back_mm = dbl("planner.memory_back_mm");
     p.psd_keep_mm = dbl("planner.psd_keep_mm");
@@ -204,6 +222,11 @@ private:
     p.curve_weight = dbl("planner.curve_weight");
     p.smooth_weight = dbl("planner.smooth_weight");
     p.lookahead_mm = dbl("planner.lookahead_mm");
+    p.real_angle = get_parameter("planner.real_angle").as_bool();
+    p.side_ext_mm = dbl("planner.side_ext_mm");
+    p.unknown_weight = dbl("planner.unknown_weight");
+    p.pivot_weight = dbl("planner.pivot_weight");
+    p.stuck_mm = dbl("planner.stuck_mm");
     return p;
   }
 
@@ -283,6 +306,7 @@ private:
     const double close = dbl("planner.psd_close");
     const bool left_close = psd_fresh && psd_.left < close;
     const bool right_close = psd_fresh && psd_.right < close;
+    planner_.setPsdDistance(psd_fresh ? psd_.left * 1000.0 : -1, psd_fresh ? psd_.right * 1000.0 : -1);
     const auto t0 = std::chrono::steady_clock::now();
     const auto r = planner_.plan(bgr, pp, readColorParams(), left_close, right_close);
     const double ms_plan = std::chrono::duration<double, std::milli>(
@@ -298,25 +322,27 @@ private:
     out.header = header;
     out.detected = r.box_visible;
     out.free_offset = static_cast<float>(std::clamp(r.angle, -1.0, 1.0));
-    out.confidence = static_cast<float>(r.ok ? 1.0 : r.fallback ? dbl("planner.fallback_confidence") : 0.0);
+    out.confidence = static_cast<float>(r.ok ? 1.0 : !r.fallback ? 0.0 :
+      r.stuck ? dbl("planner.stuck_confidence") : dbl("planner.fallback_confidence"));
     const auto ms = obstacle_detection::BoxPlanner::mapSize(pp);
     out.area_ratio = static_cast<float>(r.box_pixels / static_cast<double>(ms.area()));
     out.distance = r.box_ahead ? static_cast<float>(std::max(0.0, r.box_dist_mm) / 1000.0) : 0.0f;
     if (r.box_visible) {
       out.x_ratio = static_cast<float>(2 * r.box_raw_x - 1);
       out.bottom_ratio = static_cast<float>(r.box_raw_bottom);
-      out.side = out.x_ratio < 0 ? interfaces::msg::WallObstacle::LEFT :
-        interfaces::msg::WallObstacle::RIGHT;
+      out.side = r.box_side == 'L' ? interfaces::msg::WallObstacle::LEFT :
+        r.box_side == 'R' ? interfaces::msg::WallObstacle::RIGHT : interfaces::msg::WallObstacle::NONE;
     }
     wall_pub_->publish(out);
 
     if (debug_pub_->get_subscription_count() > 0) {
       cv::Mat vis = planner_.draw(r, pp);
-      char text[128];
-      std::snprintf(text, sizeof(text), "%s ang %+.2f box %s %.2f mem %d %.0fms %s%s",
+      char text[160];
+      std::snprintf(text, sizeof(text), "%s ang %+.2f box %s %.2f w%.0f y%.0f mem %d %.0fms %s%s",
         r.ok ? "ok" : r.fallback ? "FALLBACK" : "none", r.angle,
-        !out.detected ? "-" : out.side == interfaces::msg::WallObstacle::LEFT ? "L" : "R",
-        out.bottom_ratio, r.memory_points, ms_plan, left_close ? "PL " : "", right_close ? "PR" : "");
+        !out.detected ? "-" : out.side == interfaces::msg::WallObstacle::LEFT ? "L" :
+        out.side == interfaces::msg::WallObstacle::RIGHT ? "R" : "?",
+        out.bottom_ratio, r.box_white_mm, r.box_yellow_mm, r.memory_points, ms_plan, left_close ? "PL " : "", right_close ? "PR" : "");
       cv::putText(vis, text, {4, 14}, cv::FONT_HERSHEY_SIMPLEX, 0.42, cv::Scalar(0, 255, 255), 1);
       publishJpeg(vis, header);
     }

@@ -11,6 +11,11 @@
 //                (박스만으로는 진입 안 함: test_021825 출발선 오인식, 녹화에서 앞 도로에서도 주차장 너머 박스가 보임)
 //     2. AVOID:  박스 아래 끝이 enter_bottom 아래로 (가까이) enter_count 번 연속 보이거나, 박스가 보이는데 차선을
 //                놓치면 시작. v = linear, w = -kp * free_offset (± max_angular)
+//                + 차선이 보이면 길 방향 맞추기 w += -heading_gain * lane angle (2026-10-15 001420_test: 차선은 길이 왼쪽으로
+//                꺾인다고 (angle -0.5) 계속 보는데 경로 계획은 박스만 피해서 길 바깥을 향한 채 다음 박스에 붙음)
+//                |free_offset| 이 크면 (제자리 꺾기 후보) v 를 줄임 (turn_slow_angle 에서 0)
+//                wall_detection 이 stuck (박스에 바짝 붙어 전부 막힘, confidence <= stuck_confidence) 이면
+//                stuck_reverse_time 동안 후진 -> stuck_turn_time 동안 제자리에서 고른 쪽으로 -> 정지
 //                wall_detection planner 모드 (기본): free_offset = 로봇 폭으로 지나갈 경로 위 목표점 방향 [rad].
 //                confidence 가 low_confidence 아래 (지나갈 경로 없음 -> 가장 멀리 가는 경로) 면 v x slow_ratio
 //                옆 PSD 가 pass_low 아래로 pass_low_time 넘게 있다가 pass_high 위로 pass_high_time 넘게 있으면 1개 통과
@@ -23,6 +28,16 @@
 //                단 가까운 박스(enter_bottom)가 보이는 동안은 RETURN 으로 안 가고, RETURN 중에 보이면 AVOID 로 돌아감
 //     안전: AVOID 가 avoid_max_time 을 넘으면 끝. wall_obstacle 이 wall_timeout 넘게 안 오면 AVOID / RETURN 중 정지.
 //           정면 PSD 비상 정지는 lane_follower 가 그대로 한다. 주행 모드에서 빠지면 (수동 / STOP) 전부 잊음
+//   line 방식 (method = line, 2026-10-26 사용자: 빈 공간 조향이 좌우로 흔들려 바꿈):
+//     AVOID 동안 조향은 평소 차선 추종 제어기 그대로, 목표만 차선 중심에서 옆으로 옮긴다 (lane_follower 가 offset - bias 로 추종).
+//     가장 가까운 박스가 바닥 지도에서 흰 선(오른쪽) / 노란 선(왼쪽) 중 어디에 붙었나로 박스 쪽을 정하고
+//     (side_by_line, wall_detection 의 side. false 면 원본 화면 가로 위치 x_ratio 부호), 반대쪽이 side_votes 번 연속 보여야 바꾼다
+//     (화면 맨 아래에 걸린 지금 지나가는 박스는 뺌) -> 반대쪽 선으로 line_shift 만큼 (shift_rate 로 천천히) 붙어 간다.
+//     옆 PSD 는 통과 개수 세기에만 쓴다.
+//     박스 왼쪽 -> 오른쪽(흰 선) 으로 bias -line_shift, 박스 오른쪽 -> 왼쪽(노란 선) 으로 +line_shift.
+//     선을 밟으면 실격이라 line_shift 는 로봇이 선 안에 남는 값으로 (1 = 차선 중심이 선 위).
+//     차선을 놓치면 천천히, wall_detection 경로 방향으로 (line_lost_steer, 끄면 직진).
+//     RETURN 은 bias 를 0 으로 되돌리며 차선 추종.
 //   끝난 뒤 rearm_time 동안 공사 표지판 무시
 //   시간은 초 단위 now 를 받는다 (lane_follower 가 노드 시계로)
 #pragma once
@@ -41,6 +56,20 @@ constexpr int ZONE_SIGN_CONSTRUCTION = 3;   // interfaces/Sign CONSTRUCTION
 struct ConstructionParams
 {
   bool enabled = true;
+  bool line_mode = true;               // true: 차선 추종 + 옆으로 옮기기 (method line), false: 빈 공간 조향 (method planner)
+  double line_shift = 0.35;            // 박스 반대쪽으로 옮기는 차선 중심 [반 차선 폭 = 1]
+  double shift_rate = 1.5;             // [1/s] bias 바뀌는 속도
+  int side_votes = 3;                  // 박스 쪽을 정하는 연속 같은 판단 수 (wall_obstacle 10Hz)
+  bool side_by_line = true;            // true: wall_obstacle side (바닥 지도에서 박스가 붙은 선) 로, 모르면 판단 안 함
+                                       // false: 원본 화면 가로 위치 x_ratio (아래 side_dead / side_angle_gain)
+  double side_dead = 0.1;              // |x_ratio| 이 이보다 작으면 (가운데) 판단 안 함
+  double line_lost_ratio = 0.5;        // 차선을 놓치면 linear 에 곱함
+  bool line_lost_steer = true;         // 차선을 놓치면 직진 대신 wall_detection 경로 방향으로 (w = -kp * free_offset)
+  double side_bottom = 0.1;            // 박스 아래 끝이 이 이상일 때만 쪽을 판단 (너무 먼 박스 빼기)
+  double side_angle_gain = 1.8;        // 박스 쪽 판단 전에 x_ratio -= 이 값 x 차선 방향 [rad] (커브에서 길이 휜 만큼 박스가 옆으로 보임)
+  double side_bottom_max = 0.85;       // 이보다 아래(화면 맨 아래에 걸림 = 지금 옆을 지나는 박스)는 판단에서 뺌
+  double lane_kp = 1.2;                // 공사 구간 차선 추종 kp (옆으로 옮기는 반응, 평소 kp 보다 크게)
+  double lane_ka = 0.6;                // 공사 구간 차선 추종 ka (옆으로 옮길 때 너무 틀어지지 않게)
   double sign_min_confidence = 0.6;
   double sign_min_area = 0.005;        // bbox 면적 / 이미지 면적 (녹화: 처음 볼 때 0.009)
   int sign_confirm_count = 2;
@@ -50,11 +79,18 @@ struct ConstructionParams
   double enter_bottom = 0.3;           // 박스 아래 끝 (화면 높이 비율, 1 = 맨 아래) 이 이 이상이면 가까움
   int enter_count = 2;                 // 연속 wall_obstacle 수
   double wall_timeout = 0.5;           // [s]
-  double linear = 0.06;                // [m/s] 녹화 수동 주행 속도
+  double linear = 0.10;                // [m/s] (10-14 0.06 = 녹화 수동 주행 속도 -> 10-15 사용자 "더 빠르게")
   double kp = 1.0;                     // [rad/s] w = -kp * free_offset (offset 1 = 화면 끝 방향, 약 40°)
-  double max_angular = 0.6;            // [rad/s] (녹화 수동 조향 키 0.6)
+  double max_angular = 0.8;            // [rad/s]
+  double heading_gain = 0.5;           // [rad/s per rad] 차선이 보이면 w += -heading_gain * lane angle (0 = 끔)
+  double offset_alpha = 0.4;           // free_offset 새 값 비중 (1 = 필터 없음, wall_obstacle 10Hz)
+  double turn_slow_angle = 1.0;        // [rad] |free_offset| 이 이만큼이면 v = 0 (제자리 꺾기)
   double low_confidence = 0.5;         // wall_obstacle confidence 가 이보다 낮으면 천천히
-  double slow_ratio = 0.5;             // 그때 linear 에 곱함
+  double slow_ratio = 0.6;             // 그때 linear 에 곱함
+  double stuck_confidence = 0.15;      // confidence 가 이 이하 = stuck (wall_detection planner.stuck_confidence)
+  double stuck_reverse_speed = 0.05;   // [m/s]
+  double stuck_reverse_time = 1.0;     // [s]
+  double stuck_turn_time = 2.0;        // [s] 후진 뒤 제자리에서 고른 쪽으로 도는 시간 (그 뒤 정지)
   int boxes = 3;
   double pass_low = 0.25;              // [m] 옆 PSD 가 이보다 가까우면 박스 옆
   double pass_high = 0.6;              // [m] 이보다 멀면 비었음
@@ -77,6 +113,8 @@ public:
   {
     bool active = false;   // true 면 lane_follower 는 이 명령으로 (차선 추종 대신)
     double v = 0, w = 0;
+    bool lane_bias = false;   // true 면 v, w 대신 차선 추종 (offset - bias, 속도는 v 이하)
+    double bias = 0;
   };
 
   void onSign(int type, double confidence, double area, double now, const ConstructionParams & p)
@@ -96,16 +134,44 @@ public:
     }
     set(Phase::ARMED, now, "공사 표지판 확인 (" + fmt(confidence) + ")");
     near_count_ = 0;
+    votes_ = 0;
+    vote_side_ = 0;
+    box_side_ = 0;
   }
 
   // wall_detection 결과 (wall_obstacle)
   void onWall(
     bool detected, double bottom, double free_offset, double confidence, double now,
-    const ConstructionParams & p)
+    const ConstructionParams & p, double x_ratio = 0.0, char line_side = 0)
   {
+    // line 방식: 가장 가까운 박스 쪽. 화면 맨 아래에 걸린 박스(side_bottom_max 넘음 = 지금 옆을 지나는 것)는 빼고,
+    //   지금과 다른 쪽이 side_votes 번 연속 보여야 바꾼다 (같은 쪽 박스가 이어지면 그대로)
+    //   커브에서는 길이 휜 쪽으로 박스가 보이므로 차선 방향만큼 빼고 본다 (2026-10-27 시뮬: 왼쪽 코너 직후 오른쪽 박스가 화면 왼쪽)
+    //   2026-10-27 005115_line: 그래도 왼쪽 커브 끝 오른쪽 박스를 왼쪽으로 봄 (아직 커브 전이라 차선 방향 ~0)
+    //   -> side_by_line: 바닥 지도에서 박스가 흰 선(R) / 노란 선(L) 중 어디에 붙었나 (wall_detection)
+    const double x = x_ratio - p.side_angle_gain * lane_angle_;
+    const char s = p.side_by_line ? line_side : std::abs(x) >= p.side_dead ? (x < 0 ? 'L' : 'R') : 0;
+    if ((phase_ == Phase::ARMED || phase_ == Phase::AVOID) && detected && bottom >= p.side_bottom &&
+      bottom <= p.side_bottom_max && s != 0)
+    {
+      votes_ = s != box_side_ && s == vote_side_ ? votes_ + 1 : (s != box_side_ ? 1 : 0);
+      vote_side_ = s;
+      if (votes_ >= std::max(1, p.side_votes)) {
+        box_side_ = s;
+        votes_ = 0;
+        if (p.line_mode) {
+          set(phase_, now, std::string("박스 ") + (s == 'L' ? "왼쪽 -> 오른쪽 선으로" : "오른쪽 -> 왼쪽 선으로") +
+            (p.side_by_line ? std::string(" (붙은 선") : " (x " + fmt(x_ratio) + " 보정 " + fmt(x)) +
+            ", 아래 끝 " + fmt(bottom) + ")");
+        }
+      }
+    }
+    // 경로 방향을 걸러서 쓴다 (2026-10-26 215056_box_test: 영상마다 평균 0.21 씩 튀어 w 가 ±max 에서 초당 2번 넘게 뒤집힘)
+    const bool fresh = have_wall_ && now - wall_t_ <= p.wall_timeout;
+    const double a = std::clamp(p.offset_alpha, 0.0, 1.0);
+    free_offset_ = fresh ? a * free_offset + (1.0 - a) * free_offset_ : free_offset;
     wall_t_ = now;
     have_wall_ = true;
-    free_offset_ = free_offset;
     confidence_ = confidence;
     box_ = detected;
     if (detected) {
@@ -137,10 +203,13 @@ public:
     }
   }
 
-  // 매 제어 틱. lane_ok: 차선 추종할 lane_info 가 있음
-  Cmd update(bool lane_ok, double now, const ConstructionParams & p)
+  // 매 제어 틱. lane_ok: 차선 추종할 lane_info 가 있음, lane_angle: 그 차선 방향 (lane_info angle)
+  Cmd update(bool lane_ok, double now, const ConstructionParams & p, double lane_angle = 0.0)
   {
     Cmd c;
+    const double dt = last_update_ > 0 ? std::clamp(now - last_update_, 0.0, 0.3) : 0.0;
+    last_update_ = now;
+    lane_angle_ = lane_ok ? lane_angle : 0.0;
     if (!p.enabled) {
       if (phase_ != Phase::IDLE) {
         finish(now, "끔");
@@ -183,7 +252,7 @@ public:
           break;
         }
         ok_count_ = lane_ok ? ok_count_ + 1 : 0;
-        if (ok_count_ >= p.return_ok_count) {
+        if (ok_count_ >= p.return_ok_count && (!p.line_mode || std::abs(bias_) < 0.05)) {
           finish(now, "차선 잡음 -> 차선 추종");
           return c;
         }
@@ -194,6 +263,28 @@ public:
         break;
     }
     c.active = true;
+    if (p.line_mode) {
+      // 차선 추종 + 박스 반대쪽으로 bias (RETURN 은 0 으로)
+      double target = 0;
+      if (phase_ == Phase::AVOID && box_side_ != 0) {
+        target = box_side_ == 'L' ? -p.line_shift : p.line_shift;
+      }
+      const double step = p.shift_rate * dt;
+      bias_ += std::clamp(target - bias_, -step, step);
+      c.v = p.linear;
+      if (lane_ok) {
+        c.lane_bias = true;
+        c.bias = bias_;
+      } else {
+        // 차선을 놓치면 천천히, 경로 계획 방향으로 (2026-10-27 011237_side: 박스를 비켜 오른쪽으로 꺾은 뒤 선을 놓치고
+        //   0.05m/s 직진 5초로 트랙 바깥 쪽으로 감. 그동안 경로 계획은 계속 왼쪽(-0.4 ~ -1.0) = 길 안쪽을 가리킴)
+        c.v = p.linear * p.line_lost_ratio;
+        if (p.line_lost_steer && wall_fresh) {
+          c.w = std::clamp(-p.kp * free_offset_, -p.max_angular, p.max_angular);
+        }
+      }
+      return c;
+    }
     if (!wall_fresh) {   // 빈 공간을 모르면 정지 (wall_detection 꺼짐 / 카메라 끊김)
       if (!stale_logged_) {
         reason_ = "wall_obstacle 끊김 -> 정지";
@@ -203,8 +294,41 @@ public:
       return c;
     }
     stale_logged_ = false;
-    c.v = confidence_ < p.low_confidence ? p.linear * p.slow_ratio : p.linear;
-    c.w = std::clamp(-p.kp * free_offset_, -p.max_angular, p.max_angular);
+    if (confidence_ <= p.stuck_confidence) {
+      // 박스에 바짝 붙어 갈 경로가 없음: 후진 -> 제자리에서 고른 쪽으로 -> 정지
+      stuck_t_ += dt;
+      unstuck_t_ = 0;
+      int step = 0;
+      if (stuck_t_ <= p.stuck_reverse_time) {
+        c.v = -p.stuck_reverse_speed;
+      } else if (stuck_t_ <= p.stuck_reverse_time + p.stuck_turn_time) {
+        c.w = std::clamp(-p.kp * free_offset_, -p.max_angular, p.max_angular);
+        step = 1;
+      } else {
+        step = 2;
+      }
+      if (step != stuck_step_) {
+        static const char * what[] = {"후진", "제자리에서 고른 쪽으로", "정지"};
+        reason_ = std::string("박스에 붙어 갈 경로 없음 -> ") + what[step];
+        changed_ = true;
+        stuck_step_ = step;
+      }
+      return c;
+    }
+    if (stuck_t_ > 0) {   // 한동안 안 막히면 다음 막힘은 처음부터 (후진부터)
+      unstuck_t_ += dt;
+      if (unstuck_t_ > 1.0) {
+        stuck_t_ = 0;
+        stuck_step_ = -1;
+      }
+    }
+    const double turn = std::min(1.0, std::abs(free_offset_) / std::max(1e-3, p.turn_slow_angle));
+    c.v = (confidence_ < p.low_confidence ? p.linear * p.slow_ratio : p.linear) * (1.0 - turn);
+    double w = -p.kp * free_offset_;
+    if (lane_ok) {
+      w -= p.heading_gain * lane_angle;
+    }
+    c.w = std::clamp(w, -p.max_angular, p.max_angular);
     return c;
   }
 
@@ -233,7 +357,8 @@ public:
     switch (phase_) {
       case Phase::IDLE: return "IDLE";
       case Phase::ARMED: return "ARMED";
-      case Phase::AVOID: return "AVOID " + std::to_string(passes_) + " (" + pass_sides_ + ")";
+      case Phase::AVOID: return "AVOID " + std::to_string(passes_) + " (" + pass_sides_ + ")" +
+               (box_side_ ? std::string(" next ") + box_side_ : std::string());
       case Phase::RETURN: return "RETURN " + std::to_string(passes_) + " (" + pass_sides_ + ")";
     }
     return "?";
@@ -284,6 +409,9 @@ private:
     side_[0] = Side();
     side_[1] = Side();
     last_pass_t_[0] = last_pass_t_[1] = -1e9;
+    stuck_t_ = 0;
+    stuck_step_ = -1;
+    bias_ = 0;
   }
 
   void set(Phase ph, double now, const std::string & why)
@@ -298,6 +426,8 @@ private:
 
   void finish(double now, const std::string & why)
   {
+    stuck_t_ = 0;
+    stuck_step_ = -1;
     phase_ = Phase::IDLE;
     done_t_ = now;
     reason_ = why;
@@ -319,6 +449,9 @@ private:
   double wall_t_ = 0, last_box_t_ = 0;
   bool box_ = false;
   double bottom_ = 0, free_offset_ = 0, confidence_ = 1;
+  double last_update_ = 0;
+  double stuck_t_ = 0, unstuck_t_ = 0;   // 막힘 동작 시간 / 막힘이 풀린 시간 [s]
+  int stuck_step_ = -1;                  // 로그용 (0 후진, 1 돌기, 2 정지)
   int near_count_ = 0;
   Side side_[2];               // 왼쪽, 오른쪽
   double last_pass_t_[2] = {-1e9, -1e9};
@@ -326,6 +459,11 @@ private:
   std::string pass_sides_;     // 통과한 순서 (예: "RLR")
   int ok_count_ = 0;
   bool stale_logged_ = false;
+  // line 방식
+  char vote_side_ = 0, box_side_ = 0;   // 'L' / 'R' (0 = 아직)
+  int votes_ = 0;
+  double bias_ = 0;            // 지금 차선 중심 옮김 [반 차선 폭]
+  double lane_angle_ = 0;      // 마지막 차선 방향 (박스 쪽 판단 보정)
   std::string reason_;
   bool changed_ = false;
 };

@@ -34,7 +34,7 @@
 //     3b. AFTER:   (오른쪽 등 LOOP 로 안 가는 회전, after_enabled) 돈 뒤 after_dist 동안 차선을 놓치면 같은 쪽으로
 //                  더 돌며 다시 찾는다 (최대 after_max_yaw, after_max_retries 번). exit_lead_angle 로 일찍 끝내서
 //                  나머지를 차선 추종이 도는데, 그 사이 차선을 놓치면 멈추던 것 (07:37 오른쪽 5번 중 1번, 30° 에서 끝낸 뒤)
-//     4. LOOP:     (왼쪽으로 돈 경우만, out_enabled) 교차로 고리를 시계 방향으로 돌아 출구를 찾는다.
+//     4. LOOP:     (out_enabled, 오른쪽은 아래 4b) 교차로 고리를 시계 방향으로 돌아 출구를 찾는다.
 //                  트랙 맵: 왼쪽 길은 고리 위쪽을 돌아 오른쪽 아래로 내려오고, 출구는 진행 방향 왼쪽(동쪽)으로 갈라진다.
 //                  그런데 출구에서 오른쪽에 섬의 노란 선이 곧게 이어져 lane_detection 이 그걸 왼쪽 선으로 잡고
 //                  고리를 계속 돈다 (사용자: "왼쪽 표지판 보고 들어가서는 교차로 나가지지 않아").
@@ -51,6 +51,12 @@
 //                  34° 넘게 돌면 노란 선을 넘어 트랙 바깥만 보였다. 그 순간 흰 ∩ 선을 오른쪽 선으로 한 차선은
 //                  거의 정면 (사용자: "거기서 왼쪽으로 가야 해" = S자 길을 따라 왼쪽으로)
 //                  오른쪽 길은 출구에서 오른쪽 흰 선이 출구로 이어져 그냥 나간다 (사용자 확인)
+//     4b. 오른쪽 길도 LOOP / EXIT (out_right_enabled, 2026-10-27 사용자 "오른쪽 표지판 보고 들어가서 탈출하는 것도
+//                  왼쪽처럼"): 182547_run 2회차에서 오른쪽으로 돈 뒤 고리를 따라 왼쪽으로 62~66° 돈 곳(출구)에서
+//                  흰 선 없는 노란 S자만 보여 lane angle +1.1 / offset ±0.6 뒤집힘 -> 직진하다 차선 놓쳐 정지.
+//                  성공한 1·3회차도 같은 곳에서 오른쪽으로 꺾여 나감 -> 왼쪽의 거울: 고리 쪽(왼쪽)으로 out_trigger_yaw
+//                  꺾이면 EXIT, 섬 쪽(왼쪽) 차선은 무시하고 오른쪽 호. 섬 끝 노란 선 조건은 왼쪽 길만.
+//                  LOOP 처음 out_min_dist 안에서 차선을 놓치면 AFTER 처럼 같은 쪽으로 더 돈 뒤 LOOP 로 돌아감 (양쪽)
 //   끝난 뒤 rearm_dist 동안은 표지판을 무시한다 (돌고 나서 같은 표지판을 다시 보는 경우)
 //
 //   회전량 / 이동 거리는 onMove 로 받는다 (lane_follower 가 dxl_state 바퀴 속도를 적분해서 넘김)
@@ -75,6 +81,10 @@ struct TurnParams
   double sign_instant_confidence = 0.9;   // 이 이상이면 한 번만 봐도 확정 (1 이상 = 끔)
   double arm_max_dist = 1.5;           // [m] 표지판을 본 뒤 이만큼 가도 교차로가 없으면 잊음
   bool require_cross_line = true;      // 차선을 놓쳐도 최근에 T자 가로 선을 봤을 때만 교차로로 봄
+  // 가로 선이 없어도(헤어핀처럼 가로지르는 선이 아예 없는 급커브), 표지판을 본 뒤 차선을 이 시간
+  // 넘게 계속 놓치고 있으면 그냥 교차로로 보고 돈다. 너무 짧으면 진입 곡선 중 한 프레임만 놓친 것도
+  // (test_052007) 교차로로 오인하니 어느 정도 여유를 둔다 (require_cross_line 이 false 면 안 씀)
+  double require_cross_line_grace = 0.4;   // [s]
   bool approach_align = true;          // ARMED 중 가로 선이 보이면 다가가며 수평 맞춤 (crossAssist)
   double approach_align_kp = 2.0;      // [rad/s per rad] 차선 추종 조향에 더함
   double approach_align_max = 0.4;     // [rad/s]
@@ -113,6 +123,7 @@ struct TurnParams
   double after_max_yaw = 1.0;          // [rad] 더 도는 최대 각도 (약 57°)
   int after_max_retries = 2;
   bool out_enabled = true;
+  bool out_right_enabled = true;       // 오른쪽으로 돈 뒤에도 LOOP / EXIT (false = 예전처럼 AFTER 만)
   double out_trigger_yaw = 1.05;       // [rad] (약 60°) 돈 뒤 오른쪽으로 이만큼 꺾였으면 출구
   double out_island_offset = 0.9;      // 노란 선만 보이는데 offset 이 이 이상 (노란 선이 로봇 오른쪽) 이면 섬 끝 = 출구
   double out_island_min_yaw = 0.6;     // [rad] 섬 끝 판단은 고리를 이만큼 돈 뒤부터 (선을 넘어 밖으로 나간 경우와 구분)
@@ -197,6 +208,7 @@ public:
     phase_ = Phase::ARMED;
     dir_ = dir;
     dist_ = 0;
+    armed_lost_t_ = 0;
   }
 
   // ds: 이동 거리 [m], dyaw: 회전 [rad] (반시계 = 왼쪽 +)
@@ -212,12 +224,20 @@ public:
         break;
       case Phase::TURN:
         yaw_ += dyaw * dir_;
+        if (loop_retry_) {
+          loop_yaw_ -= dyaw * dir_;   // 고리에서 차선 놓쳐 더 도는 것도 고리 회전량에 넣음 (출구 쪽 반대라 -)
+        }
         break;
       case Phase::LOOP:
         dist_ += std::abs(ds);
         loop_yaw_ -= dyaw * dir_;   // 왼쪽으로 돌았으면 고리는 오른쪽(시계)으로 돈다 -> + 가 출구 쪽
         if (dist_ > p.out_max_dist) {
-          finish(fmt(p.out_max_dist) + "m 가도 출구 없음 -> 잊음 (" + fmt(loop_yaw_ * 57.2958, 0) + "°)", false);
+          // 출구 신호(각도/차선 놓침/섬 끝)를 하나도 못 봤어도, 돌던 방향(dir_)을 아니까 완전히 포기하는 대신
+          // EXIT 단계로 넘겨 그 방향 기준 탈출 동작(호 -> 직전 조향 유지 -> 직진)을 그대로 시도한다.
+          // (예전엔 finish(false)로 완전히 포기해서, 그 뒤 lane_follower 의 lostHold 도 last_lane_ok_ 가
+          //  오래전(회전 시작 전) 값이라 작동 못 하고 그대로 정지했다)
+          startExit(fmt(p.out_max_dist) + "m 가도 출구 못 찾음 -> 그래도 " +
+            (dir_ > 0 ? "왼쪽" : "오른쪽") + " 기준 탈출 시도 (" + fmt(loop_yaw_ * 57.2958, 0) + "°)", p);
         }
         break;
       case Phase::EXIT:
@@ -243,9 +263,16 @@ public:
       return c;
     }
     since_cross_ += dt;
+    if (phase_ == Phase::ARMED) {
+      armed_lost_t_ = lane_lost ? armed_lost_t_ + dt : 0;
+    }
     if (phase_ == Phase::ARMED && lane_lost) {
-      if (!p.require_cross_line || since_cross_ <= p.cross_recent_time) {
-        const std::string why = p.require_cross_line ? "차선 놓침 + 가로 선 (교차로)" : "차선 놓침 (교차로)";
+      const bool cross_ok = !p.require_cross_line || since_cross_ <= p.cross_recent_time;
+      const bool sustained = p.require_cross_line && armed_lost_t_ >= p.require_cross_line_grace;
+      if (cross_ok || sustained) {
+        const std::string why = cross_ok ?
+          (p.require_cross_line ? "차선 놓침 + 가로 선 (교차로)" : "차선 놓침 (교차로)") :
+          "차선 놓침 " + fmt(armed_lost_t_, 1) + "s 지속, 가로 선 없어도 교차로로 판단";
         if (p.align_enabled) {
           phase_ = Phase::ALIGN;
           t_ = 0;
@@ -263,13 +290,26 @@ public:
     } else if (!lane_lost) {
       no_cross_logged_ = false;
     }
+    if (phase_ == Phase::LOOP && dist_ < p.out_min_dist && lane_lost && p.after_enabled &&
+      retries_ < p.after_max_retries)
+    {
+      // 돈 직후 차선을 놓침 (덜 돎) -> 같은 쪽으로 더 돌며 찾은 뒤 고리로 돌아감 (아래 TURN 이 이번 틱에 돎)
+      ++retries_;
+      phase_ = Phase::TURN;
+      yaw_ = p.turn_min_yaw;
+      ok_count_ = 0;
+      after_turn_ = true;
+      loop_retry_ = true;
+      reason_ = "고리 " + fmt(dist_) + "m 에서 차선 놓침 -> 같은 쪽으로 더 돎 (" + std::to_string(retries_) + "번째)";
+      changed_ = true;
+    }
     if (phase_ == Phase::LOOP && dist_ >= p.out_min_dist) {
       const std::string at = fmt(dist_) + "m " + fmt(loop_yaw_ * 57.2958, 0) + "°";
       if (loop_yaw_ >= p.out_trigger_yaw) {
         startExit("고리 " + at + " 돎 (출구)", p);
       } else if (lane_lost) {
         startExit("고리에서 차선 놓침 (출구, " + at + ")", p);
-      } else if (loop_yaw_ >= p.out_island_min_yaw && lane.fresh && lane.ok && lane.left && !lane.right &&
+      } else if (dir_ > 0 && loop_yaw_ >= p.out_island_min_yaw && lane.fresh && lane.ok && lane.left && !lane.right &&
         lane.offset >= p.out_island_offset)
       {
         startExit("노란 선이 오른쪽 = 섬 끝 (출구, " + at + ")", p);
@@ -384,8 +424,14 @@ public:
       }
       if (ok_count_ >= p.exit_ok_count) {
         const std::string why = fmt(yaw_ * 57.2958, 0) + "° 돌고 차선 찾음";
-        if (!exiting_ && dir_ > 0 && p.out_enabled) {
-          // 왼쪽 길: 고리를 따라가다 출구에서 다시 왼쪽으로
+        if (loop_retry_) {
+          // 고리에서 차선 놓쳐 더 돈 것: 재던 거리 / 고리 회전량 그대로 고리로 돌아감
+          phase_ = Phase::LOOP;
+          loop_retry_ = false;
+          reason_ = fmt(yaw_ * 57.2958 - p.turn_min_yaw * 57.2958, 0) + "° 더 돌고 차선 찾음 -> 고리 다시 따라감";
+          changed_ = true;
+        } else if (!exiting_ && p.out_enabled && (dir_ > 0 || p.out_right_enabled)) {
+          // 고리를 따라가다 출구에서 다시 도는 쪽으로 (왼쪽 길: 시계 방향 고리 -> 왼쪽 출구, 오른쪽 길: 반대)
           phase_ = Phase::LOOP;
           dist_ = 0;
           loop_yaw_ = 0;
@@ -525,6 +571,7 @@ private:
     ok_count_ = 0;
     approach_why_ = why;
     after_turn_ = false;
+    loop_retry_ = false;
     if (!exiting) {
       retries_ = 0;
     }
@@ -536,6 +583,7 @@ private:
   {
     phase_ = Phase::IDLE;
     exiting_ = false;
+    loop_retry_ = false;
     reason_ = why;
     changed_ = true;
     if (turned) {
@@ -555,12 +603,14 @@ private:
   double dist_ = 0, yaw_ = 0, loop_yaw_ = 0, t_ = 0;
   bool exiting_ = false;   // 지금 직진 / 회전 / EXIT 가 고리 출구용
   bool after_turn_ = false;   // AFTER 에서 차선 놓쳐 다시 도는 중
+  bool loop_retry_ = false;   // LOOP 처음에 차선 놓쳐 다시 도는 중 (찾으면 LOOP 로)
   int retries_ = 0;           // AFTER 에서 다시 돈 횟수
   int exit_mode_ = 0;      // EXIT 중 0 차선 추종, 1 호, 2 직진, 3 직전 조향 유지
   double hold_t_ = 0;      // EXIT 중 차선 없이 직전 조향을 유지한 시간 [s]
   bool exit_followed_ = false;   // EXIT 에서 차선을 따라간 적이 있음 (직전 조향이 출구 쪽 것)
   double since_done_ = 1e9;
   double since_cross_ = 1e9;   // 마지막으로 가로 선을 본 뒤 [s]
+  double armed_lost_t_ = 0;    // ARMED 상태에서 차선을 계속 놓치고 있는 시간 [s] (require_cross_line_grace 용)
   double cross_angle_ = 0;     // 마지막 가로 선 기울기 [rad]
   bool cross_fresh_ = false;   // ALIGN 이 아직 안 쓴 가로 선
   int align_ok_ = 0;

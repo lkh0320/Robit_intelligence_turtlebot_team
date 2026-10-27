@@ -19,6 +19,8 @@ struct Sim
   double now = 0;
   bool box = true;
   double bottom = 0.5, free_offset = 0.0, confidence = 1.0;
+  double x_ratio = 0.0;
+  char line_side = 0;   // wall_obstacle side (붙은 선)
   bool lane_ok = true;
   ConstructionZone::Cmd last;
 
@@ -30,7 +32,7 @@ struct Sim
       now += 0.05;
       z.onPsd(left, right, now, p);
       if (k++ % 2 == 0) {
-        z.onWall(box, bottom, free_offset, confidence, now, p);
+        z.onWall(box, bottom, free_offset, confidence, now, p, x_ratio, line_side);
       }
       last = z.update(lane_ok, now, p);
     }
@@ -83,6 +85,7 @@ TEST(ConstructionZone, FarBoxKeepsLaneFollowing)
 TEST(ConstructionZone, NearBoxSteersToFreeSpace)
 {
   Sim s;
+  s.p.line_mode = false;   // planner 방식
   s.arm();
   s.bottom = 0.35;
   s.free_offset = -0.4;   // 빈 공간이 왼쪽
@@ -177,6 +180,7 @@ TEST(ConstructionZone, NoBoxAfterPassReturns)
 TEST(ConstructionZone, WallStaleStops)
 {
   Sim s;
+  s.p.line_mode = false;   // planner 방식
   s.arm();
   s.bottom = 0.35;
   s.free_offset = 0.5;
@@ -275,6 +279,7 @@ TEST(ConstructionZone, NearBoxKeepsAvoidingAfterCount)
 TEST(ConstructionZone, LowConfidenceSlows)
 {
   Sim s;
+  s.p.line_mode = false;   // planner 방식
   s.arm();
   s.bottom = 0.35;
   s.free_offset = 0.2;
@@ -285,4 +290,44 @@ TEST(ConstructionZone, LowConfidenceSlows)
   s.confidence = 0.3;
   s.run(0.2);
   EXPECT_DOUBLE_EQ(s.last.v, s.p.linear * s.p.slow_ratio);
+}
+
+// line 방식: 박스 쪽은 화면 위치가 아니라 붙은 선 (005115_line: 오른쪽 박스가 커브 때문에 화면 왼쪽에 보임)
+TEST(ConstructionZone, LineModeUsesAttachedLineNotScreenSide)
+{
+  Sim s;
+  s.arm();
+  s.bottom = 0.35;
+  s.x_ratio = -0.7;      // 화면 왼쪽
+  s.line_side = 'R';     // 흰 선에 붙음
+  s.run(1.0);
+  ASSERT_EQ(s.z.phase(), Phase::AVOID);
+  ASSERT_TRUE(s.last.lane_bias);
+  EXPECT_NEAR(s.last.bias, s.p.line_shift, 1e-9);   // 왼쪽(노란 선) 으로
+  // 붙은 선을 모르면 (선이 안 보임) 화면 위치로 바꾸지 않는다
+  s.line_side = 0;
+  s.x_ratio = 0.7;
+  s.run(1.0);
+  EXPECT_NEAR(s.last.bias, s.p.line_shift, 1e-9);
+}
+
+// line 방식에서 차선을 놓치면 직진 대신 경로 계획 방향 (011237_side: 직진으로 트랙 밖)
+TEST(ConstructionZone, LineModeLaneLostFollowsPlanner)
+{
+  Sim s;
+  s.p.offset_alpha = 1.0;   // yaml 값 (필터 끔)
+  s.arm();
+  s.bottom = 0.35;
+  s.line_side = 'R';
+  s.run(0.5);
+  ASSERT_EQ(s.z.phase(), Phase::AVOID);
+  s.lane_ok = false;
+  s.free_offset = -1.0;   // 경로가 왼쪽
+  s.run(0.3);
+  EXPECT_FALSE(s.last.lane_bias);
+  EXPECT_NEAR(s.last.v, s.p.linear * s.p.line_lost_ratio, 1e-9);
+  EXPECT_NEAR(s.last.w, s.p.max_angular, 1e-9);   // 왼쪽 = +
+  s.p.line_lost_steer = false;
+  s.run(0.1);
+  EXPECT_EQ(s.last.w, 0.0);
 }

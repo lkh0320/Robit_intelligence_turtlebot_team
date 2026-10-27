@@ -17,9 +17,10 @@
 //      직전 프레임 곡선이 있으면 그 곡선 근처만 탐색
 //   4. 차선 픽셀에 2차 곡선 x = a*y^2 + b*y + c 를 맞춘다
 //   5. 검사: 두 차선 폭이 lane_width_px 와 크게 다르면 픽셀이 적은 쪽을 버린다
-//      한쪽만 있으면 차선 폭의 절반만큼 옮겨 차선 중심을 추정한다
+//      한쪽만 있으면 차선 폭의 절반만큼 옆으로 옮겨 차선 중심을 추정한다 (single_line_normal_shift: 곡선의 수직 방향으로)
 //   6. 곡선 계수를 직전 값과 섞어(smooth_alpha) 흔들림을 줄이고, 놓치면 hold_frames 동안 유지
 //   7. 로봇 위치(BEV 아래, bev_center_x)에서 차선 중심까지 offset, 중심 곡선의 방향 angle
+//      선 픽셀이 있는 가장 아래 줄보다 아래는 곡선 대신 접선으로 늘린다 (linear_below_pixels)
 //   +. 가로 선: 노란 | 흰 마스크에서 HoughLinesP 로 cross_min_length_px 넘는 직선 중 로봇 진행 방향과 거의
 //      직각(가로에서 cross_max_angle_deg 안)인 것. lane_follower 가 교차로 회전을 시작하는 조건으로 쓴다
 //      (test_052007: 진입 곡선에서 이미 돈 뒤 차선을 잠깐 놓친 것을 교차로로 보고 또 돌던 문제)
@@ -99,6 +100,22 @@ std::optional<Poly> fitPoly(const std::vector<cv::Point> & pts, int min_points, 
   return Poly{0.0, coef.at<double>(0), coef.at<double>(1)};
 }
 
+// 곡선을 진행 방향의 수직(법선)으로 d 만큼 옮긴 곡선 (d > 0 = 진행 방향 왼쪽, 위로 갈 때 기준)
+// 가로로만 옮기면(shifted) 곡선이 많이 누운 곳에서 실제 간격이 d*cos(기울기) 로 줄어든다.
+//   2026-10-26 022124_uturn: U자 직전 흰 선만 보일 때 중심을 흰 선에 너무 붙여 offset +1.0 -> 오른쪽으로 틀다 놓침
+std::optional<Poly> normalShifted(const Poly & p, double d, int h)
+{
+  std::vector<cv::Point> pts;
+  for (int y = 0; y < h; y += 4) {
+    const double k = p.dxdy(y);
+    const double n = std::sqrt(1 + k * k);
+    // 위로 가는 진행 방향 (-k, -1) / n 의 왼쪽 = (-1, k) / n
+    pts.emplace_back(static_cast<int>(std::lround(p.x(y) - d / n)),
+      static_cast<int>(std::lround(y + d * k / n)));
+  }
+  return fitPoly(pts, 3, h / 2);
+}
+
 // mask 의 [x0, x1) 열 중 아래 절반에서 픽셀이 가장 많은 열 (min_count 미만이면 -1)
 int histogramPeak(const cv::Mat & mask, int x0, int x1, int min_count)
 {
@@ -141,6 +158,8 @@ public:
     // offset / angle 을 재는 높이: BEV 맨 아래에서 이만큼 더 아래(로봇 쪽)로 차선 곡선을 늘려서 잰다 [px]
     // 재는 곳이 멀수록 그 점을 차선 가운데 두려고 일찍 꺾어 코너 안쪽을 파고든다 (반지름 R 커브에서 약 d^2 / 2R)
     declare_parameter("eval_below_px", 0.0);
+    // 이번 프레임 선 픽셀의 가장 아래 줄보다 아래는 2차 곡선 대신 그 줄의 접선(직선)으로 늘려서 잰다
+    declare_parameter("linear_below_pixels", true);
     declare_parameter("base_min_pixels", 30);      // 시작점 열에 필요한 최소 픽셀 수
     declare_parameter("n_windows", 10);
     declare_parameter("window_margin", 30);        // 윈도우 반폭 / 직전 곡선 주변 탐색 폭 [px]
@@ -148,6 +167,7 @@ public:
     declare_parameter("min_lane_pixels", 150);     // 곡선 맞춤에 필요한 최소 픽셀 수
     declare_parameter("min_curve_span", 0.4);      // 픽셀 세로 범위가 이 비율보다 짧으면 직선으로 맞춤
     declare_parameter("width_tolerance", 0.35);    // 차선 폭이 lane_width_px 에서 이 비율 넘게 다르면 이상
+    declare_parameter("single_line_normal_shift", false);   // 한쪽 선만 있을 때 곡선의 수직 방향으로 옮겨 중심 추정
     // 6. 시간 필터
     declare_parameter("smooth_alpha", 0.5);        // 새 곡선 비중 (1 = 필터 없음)
     declare_parameter("hold_frames", 5);
@@ -382,6 +402,7 @@ private:
 
     // 7. 차선 중심 -> offset, angle
     std::optional<Poly> center;
+    const bool normal_shift = get_parameter("single_line_normal_shift").as_bool();
     interfaces::msg::LaneInfo lane;
     lane.header = msg->header;
     //   두 차선 다 있음 -> 두 곡선의 평균이 중심
@@ -391,24 +412,55 @@ private:
       center = left_.fit->blend(*right_.fit, 0.5);
       lane.confidence = (left_.miss == 0 && right_.miss == 0) ? 0.9f : 0.6f;
     } else if (left_.fit) {
-      center = left_.fit->shifted(lane_w / 2);
+      if (normal_shift) {
+        center = normalShifted(*left_.fit, -lane_w / 2, h);
+      }
+      if (!center) {
+        center = left_.fit->shifted(lane_w / 2);
+      }
       lane.confidence = left_.miss == 0 ? 0.6f : 0.3f;
     } else if (right_.fit) {
-      center = right_.fit->shifted(-lane_w / 2);
+      if (normal_shift) {
+        center = normalShifted(*right_.fit, lane_w / 2, h);
+      }
+      if (!center) {
+        center = right_.fit->shifted(-lane_w / 2);
+      }
       lane.confidence = right_.miss == 0 ? 0.6f : 0.3f;
     }
     // 로봇은 BEV 맨 아래(+ eval_below_px)에 있다고 본다
     const double y_bot = h - 1 + dblParam("eval_below_px");
+    // 곡선은 선 픽셀이 있는 곳까지만 믿고, 그보다 아래(로봇 쪽)는 접선으로 늘린다 (linear_below_pixels)
+    //   2026-10-27 012701_corner (공사 구간 입구 왼쪽 코너): 섬 끝 U자 노란 선의 2차 곡선을 38px 더 아래로 늘리면 꼭짓점을
+    //   넘어 왼쪽으로 가는 선이 angle +0.82 (오른쪽) 로 나옴. 위쪽에만 조금 보이는 흰 선 조각은 offset 이 -0.54 / +1.0 으로 튐
+    double y_ref = y_bot;
+    if (get_parameter("linear_below_pixels").as_bool()) {
+      int low = -1;   // 이번 프레임 선 픽셀 중 가장 아래 줄 (이전 값으로 버티는 선은 맨 아래까지 있다고 봄)
+      for (const Track * t : {&left_, &right_}) {
+        if (!t->fit) {
+          continue;
+        }
+        if (t->miss > 0) {
+          low = h - 1;
+        }
+        for (const auto & p : t->pixels) {
+          low = std::max(low, p.y);
+        }
+      }
+      if (low >= 0) {
+        y_ref = std::min(y_bot, static_cast<double>(low));
+      }
+    }
     lane.detected = center.has_value();
     // 왼쪽(노란) / 오른쪽(흰) 선을 이번 프레임에서 직접 찾았는지 (이전 값으로 버티는 중이면 false)
     lane.left_detected = left_.fit.has_value() && left_.miss == 0;
     lane.right_detected = right_.fit.has_value() && right_.miss == 0;
     if (center) {
       // 로봇 바로 앞(맨 아래 줄)에서 차선 중심이 로봇보다 얼마나 옆에 있는지, 반 차선 폭 = 1 로 정규화
-      lane.offset = static_cast<float>(
-        std::clamp((center->x(y_bot) - robot_x) / (lane_w / 2), -1.0, 1.0));
+      const double x_bot = center->x(y_ref) + center->dxdy(y_ref) * (y_bot - y_ref);
+      lane.offset = static_cast<float>(std::clamp((x_bot - robot_x) / (lane_w / 2), -1.0, 1.0));
       // 위로(y 감소) 갈 때 x 가 늘면 오른쪽: dx/d(-y) = -dx/dy
-      lane.angle = static_cast<float>(std::atan(-center->dxdy(y_bot)));
+      lane.angle = static_cast<float>(std::atan(-center->dxdy(y_ref)));
     }
     lane_pub_->publish(lane);
 

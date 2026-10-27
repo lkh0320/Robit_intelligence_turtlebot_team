@@ -10,6 +10,7 @@
 // autostart: true 면 control_mode 를 받기 전에도 LANE 으로 시작 (task_planner 없이 주행 시험).
 //   GUI STOP 버튼(control_mode STOP)을 누르면 그대로 멈춘다.
 // 안전: lane_info 가 lane_timeout 동안 안 오거나 detected = false 면 정지,
+//       단 커브에서 돌던 중 detected = false 가 되면 lost_hold_time 동안 돌던 쪽으로 계속 돌며 차선을 찾는다,
 //       정면 PSD 가 front_stop_distance 보다 가까우면 정지
 // 제어 법칙은 include/lane_follower/controller.hpp (2026-10-14 path_planner / map_planner / hybrid 는 지움)
 //
@@ -23,6 +24,7 @@
 //   추가 구독: wall_obstacle (interfaces/WallObstacle, obstacle_detection wall_detection_node)
 //   추가 발행: lane_follower/construction (std_msgs/String, 공사 구간 상태가 바뀔 때)
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -61,6 +63,11 @@ public:
     declare_parameter("slow_down_angle", 0.8);
     declare_parameter("wheel_separation", 0.190);   // stm_bridge 와 같게 [m] (바퀴 속도 -> 이동 거리 / 회전)
     declare_parameter("lane_timeout", 0.7);
+    // 급커브(U자)에서 차선이 화면 밖으로 나가 놓치면 바로 서지 않고 돌던 쪽으로 계속 돈다
+    declare_parameter("lost_hold_time", 1.5);       // [s] 0 이하면 끔 (바로 정지)
+    declare_parameter("lost_linear_speed", 0.03);   // [m/s] 그동안 전진 속도 상한
+    declare_parameter("lost_min_angular", 0.8);     // [rad/s] 돌던 중이면 최소 이만큼
+    declare_parameter("lost_turn_threshold", 0.15); // [rad/s] 직전 조향이 이보다 작으면 (직선) 그냥 정지
     declare_parameter("front_stop_distance", 0.10);   // 0 이하면 끔
     declare_parameter("psd_timeout", 0.5);
     const bool autostart = declare_parameter("autostart", false);
@@ -93,7 +100,10 @@ public:
     wall_sub_ = create_subscription<interfaces::msg::WallObstacle>(
       "wall_obstacle", qos, [this](interfaces::msg::WallObstacle::ConstSharedPtr m) {
         zone_.onWall(m->detected, m->bottom_ratio, m->free_offset, m->confidence, now().seconds(),
-        readConstructionParams());
+        readConstructionParams(), m->x_ratio,
+          m->side == interfaces::msg::WallObstacle::LEFT ? 'L' :
+          m->side == interfaces::msg::WallObstacle::RIGHT ? 'R' : 0);
+        logZoneState();
       });
     // 상태가 바뀔 때만 발행 -> 늦게 켠 GUI 도 마지막 상태를 받게 transient_local
     zone_pub_ = create_publisher<std_msgs::msg::String>(
@@ -150,6 +160,7 @@ private:
     declare_parameter("intersection.sign_instant_confidence", d.sign_instant_confidence);
     declare_parameter("intersection.arm_max_dist", d.arm_max_dist);
     declare_parameter("intersection.require_cross_line", d.require_cross_line);
+    declare_parameter("intersection.require_cross_line_grace", d.require_cross_line_grace);
     declare_parameter("intersection.cross_recent_time", d.cross_recent_time);
     declare_parameter("intersection.approach_align", d.approach_align);
     declare_parameter("intersection.approach_align_kp", d.approach_align_kp);
@@ -185,6 +196,7 @@ private:
     declare_parameter("intersection.after_max_yaw", d.after_max_yaw);
     declare_parameter("intersection.after_max_retries", d.after_max_retries);
     declare_parameter("intersection.out_enabled", d.out_enabled);
+    declare_parameter("intersection.out_right_enabled", d.out_right_enabled);
     declare_parameter("intersection.out_trigger_yaw", d.out_trigger_yaw);
     declare_parameter("intersection.out_island_offset", d.out_island_offset);
     declare_parameter("intersection.out_island_min_yaw", d.out_island_min_yaw);
@@ -206,6 +218,20 @@ private:
   {
     const lane_follower::ConstructionParams d;
     declare_parameter("construction.enabled", d.enabled);
+    declare_parameter("construction.method", std::string(d.line_mode ? "line" : "planner"));   // line | planner
+    declare_parameter("construction.line_shift", d.line_shift);
+    declare_parameter("construction.shift_rate", d.shift_rate);
+    declare_parameter("construction.side_votes", d.side_votes);
+    declare_parameter("construction.side_dead", d.side_dead);
+    declare_parameter("construction.side_by_line", d.side_by_line);
+    declare_parameter("construction.line_lost_ratio", d.line_lost_ratio);
+    declare_parameter("construction.line_lost_steer", d.line_lost_steer);
+    declare_parameter("construction.side_bottom", d.side_bottom);
+    declare_parameter("construction.side_bottom_max", d.side_bottom_max);
+    declare_parameter("construction.side_angle_gain", d.side_angle_gain);
+    declare_parameter("construction.lane_kp", d.lane_kp);
+    declare_parameter("construction.lane_ka", d.lane_ka);
+    declare_parameter("construction.yellow_only_angle_max", 0.3);   // [rad] line 방식에서 노란 선만 보일 때 angle 을 ± 이만큼으로
     declare_parameter("construction.sign_min_confidence", d.sign_min_confidence);
     declare_parameter("construction.sign_min_area", d.sign_min_area);
     declare_parameter("construction.sign_confirm_count", d.sign_confirm_count);
@@ -220,6 +246,13 @@ private:
     declare_parameter("construction.max_angular", d.max_angular);
     declare_parameter("construction.low_confidence", d.low_confidence);
     declare_parameter("construction.slow_ratio", d.slow_ratio);
+    declare_parameter("construction.heading_gain", d.heading_gain);
+    declare_parameter("construction.turn_slow_angle", d.turn_slow_angle);
+    declare_parameter("construction.offset_alpha", d.offset_alpha);
+    declare_parameter("construction.stuck_confidence", d.stuck_confidence);
+    declare_parameter("construction.stuck_reverse_speed", d.stuck_reverse_speed);
+    declare_parameter("construction.stuck_reverse_time", d.stuck_reverse_time);
+    declare_parameter("construction.stuck_turn_time", d.stuck_turn_time);
     declare_parameter("construction.boxes", d.boxes);
     declare_parameter("construction.pass_low", d.pass_low);
     declare_parameter("construction.pass_high", d.pass_high);
@@ -237,6 +270,19 @@ private:
   {
     lane_follower::ConstructionParams p;
     p.enabled = get_parameter("construction.enabled").as_bool();
+    p.line_mode = get_parameter("construction.method").as_string() != "planner";
+    p.line_shift = dbl("construction.line_shift");
+    p.shift_rate = dbl("construction.shift_rate");
+    p.side_votes = integer("construction.side_votes");
+    p.side_dead = dbl("construction.side_dead");
+    p.side_by_line = get_parameter("construction.side_by_line").as_bool();
+    p.line_lost_ratio = dbl("construction.line_lost_ratio");
+    p.line_lost_steer = get_parameter("construction.line_lost_steer").as_bool();
+    p.side_bottom = dbl("construction.side_bottom");
+    p.side_bottom_max = dbl("construction.side_bottom_max");
+    p.side_angle_gain = dbl("construction.side_angle_gain");
+    p.lane_kp = dbl("construction.lane_kp");
+    p.lane_ka = dbl("construction.lane_ka");
     p.sign_min_confidence = dbl("construction.sign_min_confidence");
     p.sign_min_area = dbl("construction.sign_min_area");
     p.sign_confirm_count = integer("construction.sign_confirm_count");
@@ -251,6 +297,13 @@ private:
     p.max_angular = dbl("construction.max_angular");
     p.low_confidence = dbl("construction.low_confidence");
     p.slow_ratio = dbl("construction.slow_ratio");
+    p.heading_gain = dbl("construction.heading_gain");
+    p.turn_slow_angle = dbl("construction.turn_slow_angle");
+    p.offset_alpha = dbl("construction.offset_alpha");
+    p.stuck_confidence = dbl("construction.stuck_confidence");
+    p.stuck_reverse_speed = dbl("construction.stuck_reverse_speed");
+    p.stuck_reverse_time = dbl("construction.stuck_reverse_time");
+    p.stuck_turn_time = dbl("construction.stuck_turn_time");
     p.boxes = integer("construction.boxes");
     p.pass_low = dbl("construction.pass_low");
     p.pass_high = dbl("construction.pass_high");
@@ -286,6 +339,7 @@ private:
     p.sign_instant_confidence = dbl("intersection.sign_instant_confidence");
     p.arm_max_dist = dbl("intersection.arm_max_dist");
     p.require_cross_line = get_parameter("intersection.require_cross_line").as_bool();
+    p.require_cross_line_grace = dbl("intersection.require_cross_line_grace");
     p.cross_recent_time = dbl("intersection.cross_recent_time");
     p.approach_align = get_parameter("intersection.approach_align").as_bool();
     p.approach_align_kp = dbl("intersection.approach_align_kp");
@@ -322,6 +376,7 @@ private:
     p.after_max_yaw = dbl("intersection.after_max_yaw");
     p.after_max_retries = integer("intersection.after_max_retries");
     p.out_enabled = get_parameter("intersection.out_enabled").as_bool();
+    p.out_right_enabled = get_parameter("intersection.out_right_enabled").as_bool();
     p.out_trigger_yaw = dbl("intersection.out_trigger_yaw");
     p.out_island_offset = dbl("intersection.out_island_offset");
     p.out_island_min_yaw = dbl("intersection.out_island_min_yaw");
@@ -366,6 +421,25 @@ private:
   bool fresh(const Lane & l, const rclcpp::Time & t)
   {
     return l.received && l.msg.detected && (t - l.stamp).seconds() <= dbl("lane_timeout");
+  }
+
+  // 커브에서 돌던 중 차선을 놓쳤으면 (lane_detection 은 살아 있고 detected = false) 잠깐 같은 쪽으로 계속 돈다
+  bool lostHold(const Lane & l, const rclcpp::Time & t, bool front_blocked, geometry_msgs::msg::Twist & cmd)
+  {
+    const double hold = dbl("lost_hold_time");
+    if (hold <= 0 || front_blocked || !have_follow_cmd_ || !l.received || l.msg.detected ||
+      (t - l.stamp).seconds() > dbl("lane_timeout") || (t - last_lane_ok_).seconds() > hold)
+    {
+      return false;
+    }
+    const double w = last_follow_cmd_.angular.z;
+    if (std::abs(w) < dbl("lost_turn_threshold")) {
+      return false;   // 직선에서 놓친 건 회전 방향을 모르니 그대로 정지
+    }
+    const double max_w = dbl("max_angular");
+    cmd.linear.x = std::min(last_follow_cmd_.linear.x, dbl("lost_linear_speed"));
+    cmd.angular.z = std::copysign(std::min(max_w, std::max(std::abs(w), dbl("lost_min_angular"))), w);
+    return true;
   }
 
   // 파라미터는 매 tick 다시 읽는다 (GUI 슬라이더 / ros2 param set 으로 주행 중 튜닝 가능)
@@ -438,11 +512,31 @@ private:
       }
     }
 
-    // 공사 구간: 박스를 피하는 동안은 교차로 회전 / 차선 추종 대신 wall_detection 이 고른 경로로 조향
-    const auto zone_cmd = zone_.update(lane_ok, t.seconds(), readConstructionParams());
+    // 공사 구간: 박스를 피하는 동안은 교차로 회전 대신 line 방식(차선 추종을 옆으로 옮김) / planner 방식(wall_detection 경로) 으로 조향
+    auto zone_cmd = zone_.update(lane_ok, t.seconds(), readConstructionParams(), lane_ok ? lane.msg.angle : 0.0);
+    if (zone_cmd.active && front_blocked && zone_cmd.v > 0) {
+      zone_cmd.v = 0;   // 정면이 막히면 전진만 빼고 제자리에서 고른 쪽으로
+    }
     logZoneState();
 
-    if (zone_cmd.active && !front_blocked) {
+    if (zone_cmd.active && zone_cmd.lane_bias) {
+      // 공사 구간 line 방식: 평소 차선 추종을 박스 반대쪽으로 옮긴 중심에 (offset - bias)
+      const double dt = last_tick_ok_ ? (t - last_tick_).seconds() : 0.0;
+      auto g = readGains();
+      g.kp = dbl("construction.lane_kp");
+      g.ka = dbl("construction.lane_ka");
+      // 노란 선만 보이면 각도를 줄여 쓴다 (2026-10-27 011237_side: 구간 입구 섬 끝의 꺾인 노란 선만 잡혀 angle -0.7 ~ -1.05
+      //   -> 섬 쪽으로 크게 돌아 노란 선 위 박스 앞까지 감. 그동안 offset +0.5 ~ +0.9 는 길이 오른쪽이라고 맞게 말함)
+      double angle = lane.msg.angle;
+      if (lane.msg.left_detected && !lane.msg.right_detected) {
+        const double m = dbl("construction.yellow_only_angle_max");
+        angle = std::clamp(angle, -m, m);
+      }
+      const auto c = controller_.step(lane.msg.offset - zone_cmd.bias, angle, lane.msg.confidence, dt, g);
+      cmd.linear.x = front_blocked ? 0.0 : std::min(c.v, zone_cmd.v);
+      cmd.angular.z = c.w;
+      last_tick_ok_ = true;
+    } else if (zone_cmd.active) {
       controller_.reset();
       last_tick_ok_ = false;
       cmd.linear.x = zone_cmd.v;
@@ -464,6 +558,7 @@ private:
       last_tick_ok_ = true;
       last_follow_cmd_ = cmd;
       have_follow_cmd_ = true;
+      last_lane_ok_ = t;
       // 교차로 표지판을 본 뒤 T자 가로 선이 보이면 다가가면서 가로 선에 수평이 되게 조향을 더한다
       double w_add = 0, v_max = 0;
       const bool assist = turn_.crossAssist(readTurnParams(), w_add, v_max);
@@ -479,6 +574,11 @@ private:
         }
       }
       cross_assist_ = assist;
+    } else if (lostHold(lane, t, front_blocked, cmd)) {
+      controller_.reset();
+      last_tick_ok_ = false;
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "차선 놓침 -> 돌던 쪽으로 계속 회전 (v %.2f, w %+.2f)",
+        cmd.linear.x, cmd.angular.z);
     } else {
       controller_.reset();
       last_tick_ok_ = false;
@@ -501,6 +601,7 @@ private:
   bool cross_assist_ = false;   // 다가가며 정렬 중 (로그 한 번만)
   geometry_msgs::msg::Twist last_follow_cmd_;   // 마지막 차선 추종 명령 (고리 출구에서 차선 놓쳤을 때 유지)
   bool have_follow_cmd_ = false;
+  rclcpp::Time last_lane_ok_{0, 0, RCL_ROS_TIME};   // 마지막으로 차선을 따라 주행한 시각 (놓쳤을 때 계속 회전)
   rclcpp::Time last_turn_lane_{0, 0, RCL_ROS_TIME};   // 교차로 회전에 마지막으로 넘긴 lane_info
   interfaces::msg::DxlState last_dxl_;
   rclcpp::Time dxl_stamp_;

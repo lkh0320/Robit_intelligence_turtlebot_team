@@ -13,7 +13,7 @@ lane_follower:
     #   (2026-10-14 path_planner / map_planner / hybrid 를 지우면서 sliding.* 묶음을 맨 위로 올림)
     kp: 0.674
     kd: 0.0042
-    ka: 0.253
+    ka: 0.253       #0.253
     # |angle| 이 이 값 [rad] 이면 min_linear_speed 까지 감속
     #   2026-10-13 0.5 -> 0.8: test_024032 주행 중 |angle| > 0.5 가 24% (커브 대부분 최저속도 0.04).
     #   커브 offset 은 대개 0.3 이하라 여유 있음. 커브 바깥으로 밀리면 0.6 으로 되돌린다
@@ -35,6 +35,7 @@ lane_follower:
       #   (test_052007: 진입 곡선에서 이미 58° 돈 뒤 차선을 한 프레임 놓친 걸 교차로로 보고 66° 더 돎. 그땐 가로 선 없음)
       #   로그 "[교차로] 차선 놓쳤지만 가로 선 없음 -> 회전 안 함" 이 나오면 이 조건 때문에 안 돈 것
       require_cross_line: true
+      require_cross_line_grace: 0.4   # [s] 가로 선 없어도 이만큼 계속 차선을 놓치면 그냥 교차로로 보고 돎 (헤어핀 커브용)
       cross_recent_time: 1.0      # [s] 이 안에 본 가로 선만 인정 (녹화: 차선 놓치기 0.3초 전 ~ 직후에 보임)
       # 다가가며 정렬 (2026-10-13 사용자: "교차로 들어가면서 자연스럽게 정렬"): 표지판을 본 뒤 가로 선이 보이면
       #   차선 추종 조향에 -approach_align_kp * 기울기를 더하고 속도를 줄인다. 로그 "[교차로] 가로 선 보며 다가가며 정렬"
@@ -80,7 +81,8 @@ lane_follower:
       #   로그 "[교차로] LOOP LEFT ..m ..°" 의 각도 보고 튜닝: 출구를 지나쳐 돌면 줄이고, 출구 전에 돌면 늘린다
       #   test_044608: 고리 위쪽을 따라 오른쪽으로 60~70° (0.45m) 꺾인 곳에서 노란 선이 왼쪽으로 휘어 사라지고
       #   섬 끝 노란 선을 왼쪽 선으로 잡아 (offset +1) 섬 쪽으로 꺾임 -> 그 전에 왼쪽으로 돈다
-      # 돈 뒤 확인 (오른쪽처럼 고리로 안 가는 회전): after_dist 안에서 차선을 놓치면 같은 쪽으로 더 돌며 찾음
+      # 돈 뒤 확인 (고리로 안 가는 회전 = out_right_enabled false 인 오른쪽): after_dist 안에서 차선을 놓치면 같은 쪽으로 더 돌며 찾음
+      #   고리(LOOP) 처음 out_min_dist 안에서 놓쳐도 같은 값으로 더 돈 뒤 고리로 돌아감
       #   07:37 오른쪽 5번 중 1번: 30° 에서 회전 끝낸 뒤 (exit_lead_angle) 차선 추종 중 놓쳐 멈춤
       #   로그 "[교차로] 돈 뒤 ..m 에서 차선 놓침 -> 같은 쪽으로 더 돎"
       after_enabled: true
@@ -88,6 +90,10 @@ lane_follower:
       after_max_yaw: 1.0          # [rad] (57°) 더 도는 최대
       after_max_retries: 2
       out_enabled: true
+      # 오른쪽으로 돈 뒤에도 고리 출구 (10-27 182547_run 2회차: 오른쪽 길 고리를 왼쪽으로 62~66° 돈 출구의 노란 S자에서
+      #   차선 놓쳐 정지). 왼쪽의 거울: 왼쪽으로 out_trigger_yaw 꺾이거나 차선 놓치면 EXIT (섬 쪽 = 왼쪽 차선 무시, 오른쪽 호).
+      #   섬 끝 노란 선 조건(out_island_*)은 왼쪽 길만. false = 예전처럼 돈 뒤 AFTER 만
+      out_right_enabled: true
       out_trigger_yaw: 1.05       # [rad] (약 60°)
       out_island_offset: 0.9      # 노란 선만 보이는데 offset 이 이 이상 (노란 선이 로봇 오른쪽 = 섬 끝) 이면 출구
       out_island_min_yaw: 0.6     # [rad] 섬 끝 판단은 고리를 이만큼 돈 뒤부터 (test_044608 1번: 노란 선을 넘어 밖으로 나가도 offset +1)
@@ -116,6 +122,24 @@ lane_follower:
     #   값은 2026-10-13 수동 주행 녹화 (~/construction_test_20261013/110713_manual, RLR) 기준
     construction:
       enabled: true
+      # line: 평소 차선 추종 + 가장 가까운 박스의 반대쪽 선으로 옮겨 붙기 (10-26 사용자 "빈 공간 방식 별로")
+      # planner: wall_detection 빈 공간 경로 조향 (아래 kp ~ stuck_* 는 이 방식에서만)
+      method: line
+      # 시뮬 (sim2.cpp, 차선 45cm / 박스 15cm 침범 / 간격 38·45cm / 코너·직선 / 배치 8개 = 32, 바퀴 지연 0.2s 포함) 32/32, 옆면이 선 12mm 안
+      #   같은 시뮬에서 planner 방식은 14/32. 차선 폭 / 박스 침범 실측이 아니라 실주행에서 맞춰야 함
+      line_shift: 0.35            # 박스 반대쪽으로 옮기는 차선 중심 [반 차선 폭 = 1]. 선 밟으면 실격 -> 박스에 닿으면 늘리고 선에 닿으면 줄인다 (시뮬 0.45 는 선 넘음)
+      shift_rate: 1.5             # [1/s] 옮기는 속도 (바꿀 때 0.7 이동에 약 0.5초)
+      lane_kp: 1.2                # 공사 구간 차선 추종 kp (평소 0.674 는 옆으로 늦게 옮겨 박스에 닿음)
+      lane_ka: 0.6                # 공사 구간 ka (평소 0.253 은 옮길 때 45° 넘게 틀어져 차선을 놓침)
+      yellow_only_angle_max: 0.3  # [rad] 노란 선만 보이면 angle 을 ± 이만큼으로 (011237_side: 섬 끝 꺾인 노란 선 angle -1.0 -> 섬 쪽으로 돎)
+      side_votes: 3               # 박스 쪽을 바꾸려면 반대쪽이 연속 이만큼 (10Hz)
+      side_by_line: true          # 박스 쪽 = 바닥 지도에서 붙은 선 (흰 R / 노란 L). false = 화면 가로 위치 (아래 side_dead / side_angle_gain)
+      side_dead: 0.1              # 보정한 가로 위치 |x| 가 이보다 작으면 (가운데) 판단 보류
+      side_bottom: 0.1            # 박스 아래 끝이 이 이상일 때만 판단 (너무 먼 박스 빼기)
+      side_bottom_max: 0.85       # 이보다 아래(화면 맨 아래에 걸린, 지금 옆을 지나는 박스)는 판단에서 뺌
+      side_angle_gain: 1.8        # x -= 이 값 x 차선 방향 [rad]: 커브에서 길이 휜 쪽으로 박스가 보이는 것 보정 (시뮬 0 = 오른쪽 박스를 왼쪽으로, 3.0 = 반대로 틀림)
+      line_lost_ratio: 0.5        # 차선을 놓치면 linear 에 곱해 천천히
+      line_lost_steer: true       # 차선을 놓치면 wall_detection 경로 방향으로 (w = -kp x free_offset, ±max_angular). false = 직진
       sign_min_confidence: 0.6
       sign_min_area: 0.005        # 녹화: 처음 볼 때 0.009
       sign_confirm_count: 4       # 표지판 10Hz 기준 (5Hz 때 2/6)
@@ -126,12 +150,19 @@ lane_follower:
                                   #   사람이 피하기 시작할 때 0.34. 너무 늦게 피하면 줄이고, 커브에서 일찍 꺾이면 늘린다
       enter_count: 2
       wall_timeout: 0.5           # [s] wall_obstacle (10Hz) 끊기면 정지
-      linear: 0.06                # [m/s] 녹화 수동 속도
-      kp: 1.0                     # w = -kp * free_offset [rad/s]. wall_detection planner 모드에서 free_offset 은
+      linear: 0.10                # [m/s] (10-15 사용자 "더 빠르게", 시뮬 32/32 값)
+      kp: 1.5                     # (10-15 시뮬: 1.0 은 박스 사이를 못 빠져나감) w = -kp * free_offset [rad/s]. wall_detection planner 모드에서 free_offset 은
                                   #   경로 위 목표점 방향 [rad]. 박스 쪽으로 붙으면 늘리고, 좌우로 흔들리면 줄인다
-      max_angular: 0.6
+      max_angular: 0.6            # (10-26 23시 0.8 -> 0.6: 230743_run 마지막 박스 뒤 -0.8 로 0.6s 넘게 돌아 바깥 벽 쪽으로. 시뮬(지연 0.2s, 회전 0.8배) 0.8 = 28/32, 0.6 = 30/32)
       low_confidence: 0.5         # wall_obstacle confidence 가 이보다 낮으면 (지나갈 경로 없음) 천천히
-      slow_ratio: 0.5             # 그때 linear 에 곱함
+      slow_ratio: 0.6             # 그때 linear 에 곱함
+      heading_gain: 0.5           # 차선이 보이면 w += -heading_gain * lane angle (길 방향 맞추기)
+      offset_alpha: 1.0           # free_offset 새 값 비중 (1 = 필터 없음). 10-26 0.4 로 켜 봤더니 224525_box_only 에서 늦게 꺾여 크게 돌아감 (w 포화 36 -> 45%) -> 끔
+      turn_slow_angle: 1.0        # [rad] 목표 방향이 이만큼 틀어지면 제자리 꺾기 (v = 0)
+      stuck_confidence: 0.15      # wall_obstacle confidence 가 이 이하 = 박스에 붙음 (wall_detection stuck_confidence 0.1)
+      stuck_reverse_speed: 0.05
+      stuck_reverse_time: 1.0     # [s] 후진 -> stuck_turn_time 동안 제자리에서 고른 쪽 -> 정지
+      stuck_turn_time: 2.0
       boxes: 3
       pass_low: 0.25              # [m] 옆 PSD: 평소 0.80(최대), 박스 옆 0.10~0.13
       pass_high: 0.6
@@ -145,6 +176,11 @@ lane_follower:
       rearm_time: 5.0             # [s] 끝난 뒤 공사 표지판 무시
     # 안전
     lane_timeout: 0.7           # [s] lane_info 가 이보다 오래 안 오면 정지 (지운 map_planner ~7Hz 때 정한 값)
+    # 급커브(U자)에서 차선이 화면 밖으로 나가 놓치면 바로 서지 않고 돌던 쪽으로 계속 돌며 찾는다 (로그 "차선 놓침 -> ...")
+    lost_hold_time: 0.0         # [s] 이 시간 안에 못 찾으면 정지. 0 이면 끔 (10-26 사용자 지시로 끔, 켤 때 1.5)
+    lost_linear_speed: 0.03     # [m/s] 그동안 전진 속도 상한 (제자리에 가깝게 돌아야 안쪽 차선이 다시 보임)
+    lost_min_angular: 0.8       # [rad/s] 돌던 중이면 최소 이만큼
+    lost_turn_threshold: 0.15   # [rad/s] 직전 조향이 이보다 작으면 (직선) 그냥 정지
     front_stop_distance: 0.10   # [m] 정면 PSD 가 이보다 가까우면 정지 (0 이하 = 끔)
     psd_timeout: 0.5
     autostart: false            # true: control_mode 없이 바로 주행 (autonomous.launch.py 가 정함)

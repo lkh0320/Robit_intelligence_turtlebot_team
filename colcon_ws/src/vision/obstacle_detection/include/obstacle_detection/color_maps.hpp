@@ -2,11 +2,15 @@
 //   (2026-10-14 지운 path_planner 의 buildMaps 를 옮겨 온 것)
 //   - LAB 색 마스크로 노란 선 / 흰 선 / 박스(어두운 적갈색)를 찾는다
 //     박스는 어둡고 a 가 높다 (L ≈ 23, a ≈ 145, b ≈ 138). 빨간 정지선은 더 밝고 더 붉어서 a / b - a 로 빠진다
-//   - 박스는 바닥 접점(덩어리의 열마다 가장 아래 픽셀)부터 위쪽 전부를 막힘으로 칠한다
-//     (바닥 지도에서 박스가 위로 늘어나 보이는데, 박스 뒤는 어차피 안 보이는 곳이라 막힘이 맞다)
+//   - 박스는 바닥 접점(열마다 아래부터 처음 만난 박스 픽셀)부터 위로 box_depth_px 만큼만 막힘으로 칠한다 (바닥 네모)
+//     바닥 지도는 바닥 높이로 편 것이라 키 큰 박스의 앞면 / 윗면이 뒤로 길게 늘어져 보인다.
+//     2026-10-26 사용자: 늘어진 빨간 마스크가 박스 뒤 경로까지 가린다 -> 보이는 덩어리 대신 바닥 접점 + 박스 두께로 추론
+//     (box_depth_px <= 0 이면 예전처럼 접점부터 위쪽 전부)
 //   - 선 마스크는 line_gap_close_px > 1 이면 세로로 불려(dilate) 점선의 빈틈을 메운다
 //   - 거리 변환으로 칸마다 "가장 가까운 선 / 박스까지 거리" 를 구한다
 #pragma once
+
+#include <algorithm>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -28,13 +32,15 @@ struct ColorParams
   int box_b_min = 128, box_b_max = 152;
   int box_min_b_minus_a = -15;  // 박스 b-a ≈ -7, 빨간 정지선 b-a ≈ -23
   int box_min_area = 300;      // 이보다 작은 갈색 덩어리는 잡음 [px]
+  int box_depth_px = 0;        // 바닥 접점에서 위로 막는 길이 [px] (0 이하 = 위쪽 전부)
+  int box_gap_px = 8;          // 같은 열에서 접점 위로 바닥이 이보다 길게 보여야 새 박스 (짧으면 같은 박스의 늘어진 부분)
   int line_gap_close_px = 1;   // 선 마스크를 세로로 불리는 높이 (1 = 안 불림, 공사 구간 선은 실선)
 };
 
 struct ColorMaps
 {
   cv::Mat yellow, white, box;  // 색 마스크 (0/255)
-  cv::Mat box_blocked;         // 박스 바닥 접점부터 위쪽 전부 (0/255)
+  cv::Mat box_blocked;         // 박스 바닥 네모: 접점부터 위로 box_depth_px (0/255)
   cv::Mat line_wall;           // 선 마스크 (line_gap_close_px > 1 이면 빈틈을 메움, 0/255)
   cv::Mat dist_line, dist_box; // 가장 가까운 선 / 박스까지 거리 [px] (CV_32F)
   int yellow_pixels = 0, white_pixels = 0, box_pixels = 0;
@@ -77,28 +83,43 @@ inline ColorMaps buildColorMaps(const cv::Mat & bgr, const ColorParams & p)
   cv::dilate(m.box, box_grown, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(7, 7)));
   m.yellow.setTo(0, box_grown);
 
-  // 박스: 큰 덩어리만, 열마다 가장 아래 픽셀(바닥 접점)부터 위쪽 전부 막힘
+  // 박스: 큰 덩어리만 남긴 뒤, 열마다 아래(로봇 쪽)부터 훑어 처음 만난 박스 픽셀(바닥 접점)부터 위로 box_depth_px 막힘
   m.box_blocked = cv::Mat::zeros(bgr.size(), CV_8U);
   cv::Mat labels, stats, centroids;
   const int n = cv::connectedComponentsWithStats(m.box, labels, stats, centroids, 8, CV_32S);
+  cv::Mat big = cv::Mat::zeros(bgr.size(), CV_8U);
   for (int i = 1; i < n; ++i) {
     if (stats.at<int>(i, cv::CC_STAT_AREA) < p.box_min_area) {
       continue;
     }
     const int x0 = stats.at<int>(i, cv::CC_STAT_LEFT), y0 = stats.at<int>(i, cv::CC_STAT_TOP);
     const int bw = stats.at<int>(i, cv::CC_STAT_WIDTH), bh = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-    for (int x = x0; x < x0 + bw; ++x) {
-      for (int y = y0 + bh - 1; y >= y0; --y) {
-        if (labels.at<int>(y, x) == i) {
-          m.box_blocked(cv::Rect(x, 0, 1, y + 1)).setTo(255);
-          break;
-        }
-      }
-    }
+    big.setTo(255, labels == i);
     m.box_pixels += stats.at<int>(i, cv::CC_STAT_AREA);
     if (m.near_box_area == 0 || y0 + bh > m.near_box.y + m.near_box.height) {
       m.near_box = cv::Rect(x0, y0, bw, bh);
       m.near_box_area = stats.at<int>(i, cv::CC_STAT_AREA);
+    }
+  }
+  // 2026-10-26 215056_box_test: 늘어진 박스가 앞면 / 윗면 모서리에서 여러 덩어리로 쪼개져 덩어리마다 접점으로 보고
+  //   네모를 쌓아 결국 위쪽 전부가 막혔다 -> 덩어리 대신 열마다 한 번: 접점 위로 박스 픽셀이 이어지는 동안(바닥이
+  //   box_gap_px 칸 넘게 다시 보이기 전까지)은 같은 박스의 늘어진 부분으로 보고 막지 않는다.
+  //   접점이 시야 아래 / 옆 끝에 잘려도 진짜 접점은 그보다 로봇 쪽이라 보이는 맨 아래부터 box_depth_px 면 박스를 다 덮는다
+  for (int x = 0; x < big.cols; ++x) {
+    int y = big.rows - 1;
+    while (y >= 0) {
+      if (!big.at<uint8_t>(y, x)) {
+        --y;
+        continue;
+      }
+      const int top = p.box_depth_px > 0 ? std::max(0, y - p.box_depth_px + 1) : 0;
+      m.box_blocked(cv::Rect(x, top, 1, y - top + 1)).setTo(255);
+      // 이 박스의 늘어진 부분을 건너뛴다: 박스가 아닌 칸이 box_gap_px 넘게 이어지는 곳까지
+      int gap = 0;
+      while (y >= 0 && gap <= p.box_gap_px) {
+        gap = big.at<uint8_t>(y, x) ? 0 : gap + 1;
+        --y;
+      }
     }
   }
 
