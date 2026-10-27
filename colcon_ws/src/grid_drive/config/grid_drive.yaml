@@ -1,30 +1,49 @@
 grid_drive:
   ros__parameters:
-    image_topic: image_raw
-    # 도로 (내 차선) YOLO26n-seg 엔진 (젯슨에서 만든 것, 2026-10-28 road_r2 320 FP16 2.96ms). 없으면 색 방식만
-    engine_path: ~/yolo26_check/road_r2_320_fp16.engine
-    use_road: true
-    road_conf: 0.5
-    road_mask_thr: 0.5
-    # true 면 control_mode 없이 바로 주행 (task_planner 없이 시험). GUI STOP 이면 멈춤
-    autostart: false
-    # 실제 속도 = cmd_vel x 2.45 (펌웨어 WHEEL_RADIUS_M 0.05, 벨트 비) -> 계획기 v/w (실제) 에 0.05/0.1225 를 곱해 보냄
-    cmd_scale: 0.408
-    process_rate: 15.0      # [Hz] 0 이하 = 매 프레임
-    image_timeout: 0.5      # [s]
-    turn_hold_sec: 6.0      # LEFT/RIGHT 표지판을 본 뒤 그쪽 목표 가점 유지
-    sign_min_conf: 0.6
-    debug_jpeg_quality: 70
+    # ===== 입력 =====
+    image_topic: image_raw          # 카메라 영상 토픽
+
+    # ===== 도로 인식 (YOLO 도로 분할) =====
+    engine_path: ~/yolo26_check/road_r2_320_fp16.engine   # 도로 분할 모델 파일. 없으면 색으로만 선을 찾음
+    use_road: true                  # true = 모델로 "내 차선" 영역도 같이 씀
+    road_conf: 0.5                  # 도로라고 믿는 최소 확신도 (0~1). 도로를 놓치면 낮추기
+    road_mask_thr: 0.5              # 도로 칸을 칠하는 기준 (0~1). 선 밖까지 칠해지면 올리기
+
+    # ===== 시작 / 속도 변환 =====
+    autostart: false                # true = task_planner 없이 바로 주행. GUI STOP 이면 멈춤
+    cmd_scale: 0.408                # 실제 속도 = cmd_vel x 2.45 (벨트 비). 건드리지 말기
+
+    # ===== 처리 주기 / 안전 =====
+    process_rate: 15.0              # [Hz] 1초에 몇 번 계산할지. 0 이하 = 매 프레임
+    image_timeout: 0.5              # [s] 영상이 이 시간 넘게 안 오면 멈춤
+
+    # ===== 갈림길 표지판 =====
+    turn_hold_sec: 15.0              # [s] 왼쪽/오른쪽 표지판을 본 뒤 그쪽 길을 우선하는 시간
+    sign_min_conf: 0.6              # 표지판을 믿는 최소 확신도
+
+    debug_jpeg_quality: 70          # 디버그 화면 화질 (0~100)
+    cmd_smooth: 0.3                 # 명령 부드럽게 (1 = 끔). 아직 출렁이면 0.2, 반응이 늦어 선 밟으면 0.5
+    corner_delay_sec: 0.0           # 코너 발견 후 직진 시간 [s]. 안쪽 밟으면 ↑, 바깥 밟으면 ↓, 0 = 끔
+    corner_k_min: 2.0               # 이보다 급한 곡선을 코너로 봄 [1/m] (2.0 = 반지름 50cm)
+    corner_rearm_sec: 0.5           # 곡선이 이만큼 안 보이면 다음 코너 준비 [s]
+
     planner:
-      linear: 0.10          # [m/s 실제] (cmd_scale 로 나눠 보냄)
-      min_linear: 0.04
-      max_angular: 1.5
-      pivot_angular: 0.6
-      soft_speed_ratio: 0.5
-      follow_mm: 250.0
-      robot_half_width_mm: 100.0
-      line_margin_mm: 10.0
-      box_margin_mm: 30.0
-      map_y_scale: 1.0
-      road_min_ratio: 0.05
-      memory: false
+      # ----- 속도 -----
+      linear: 0.30                  # [m/s 실제] 직선 최고 속도. 흔들리면 낮추기
+      min_linear: 0.05              # [m/s] 급한 곡선에서 이만큼까지 줄임. 코너에서 선 밟으면 낮추기
+      max_angular: 2.0              # [rad/s 실제] 최대 회전 속도
+      pivot_angular: 0.6            # [rad/s] 갈 곡선이 없을 때 제자리 회전 속도
+      soft_speed_ratio: 0.5         # 선에 닿아 있을 때 속도 배율
+
+      # ----- 곡선 따라가기 -----
+      follow_mm: 250.0              # [mm] 이만큼 앞까지 한 곡선으로 따라감. 흔들리면 올리기
+
+      # ----- 선과의 거리 -----
+      robot_half_width_mm: 100.0    # [mm] 로봇 폭의 절반. 그대로
+      line_margin_mm: 15.0          # [mm] 선과 로봇 옆면 사이 여유. 코너 안쪽 선 밟으면 올리기
+      box_margin_mm: 30.0           # [mm] 박스와 로봇 옆면 사이 여유
+
+      # ----- 지도 / 기타 -----
+      map_y_scale: 1.0              # 카메라 거리 보정. 그대로
+      road_min_ratio: 0.05          # 도로 마스크가 이 비율보다 작으면 색만 씀
+      memory: false                 # true = 이전 지도를 기억해서 같이 씀

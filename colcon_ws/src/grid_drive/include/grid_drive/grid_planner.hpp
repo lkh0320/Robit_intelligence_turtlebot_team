@@ -64,9 +64,9 @@ struct Params : FloorParams
   double hard_line_mm = 30.0;
   double near_line_cost = 6.0;
   double box_margin_mm = 30.0;         // 박스와 로봇 옆면 사이 최소 여유
-  double clear_k_mm = 40.0;            // 비용 = 1 + clear_k / d (d = 진입 금지 경계까지 [mm])
+  double clear_k_mm = 120.0;            // 비용 = 1 + clear_k / d (d = 진입 금지 경계까지 [mm])
   double clear_min_mm = 6.0;           // d 가 이보다 작으면 이 값으로 (비용 상한)
-  double clear_cap_mm = 150.0;         // d 가 이보다 크면 비용 1
+  double clear_cap_mm = 200.0;         // d 가 이보다 크면 비용 1
   double unknown_cost = 2.0;           // 안 보이는 칸 (기억도 없음) 에 더함
   // 안 보이는 띠 (바퀴 축 ~ bev_near) 는 로봇이 원호로 갈 수 있는 곳 (+ blind_half_mm) 만 지나감.
   // 2026-10-27 녹화 재생: 이 띠가 비어 있어 경로가 띠를 따라 옆으로 빠져 선 바깥으로 돌아감
@@ -93,7 +93,7 @@ struct Params : FloorParams
   int smooth_half = 3;                 // 이동 평균 반창 [점]
   // 6. 따라가기 (실제 축척)
   int arc_count = 41;
-  double max_curvature = 1.0 / 120.0;  // [1/mm 실제]
+  double max_curvature = 1.0 / 220.0;  // [1/mm 실제]
   double follow_mm = 250.0;            // 원호 길이 [실제 mm]
   double check_mm = 200.0;             // 이 안에서 진입 금지에 닿으면 탈락 [실제 mm]
   double arc_step_mm = 10.0;
@@ -102,7 +102,7 @@ struct Params : FloorParams
   // 출력
   double linear = 0.10;                // [m/s]
   double min_linear = 0.04;
-  double slow_curvature = 0.6;         // v = linear x (1 - 이 값 x |k| / max_curvature)
+  double slow_curvature = 0.5;         // v = linear x (1 - 이 값 x |k| / max_curvature)
   double max_angular = 1.5;            // [rad/s]
   double pivot_angular = 0.6;          // 원호가 전부 막히면 경로 방향으로 제자리 회전 [rad/s]
   double pivot_lookahead_mm = 150.0;   // 그 방향을 보는 경로 위 거리 [실제 mm]

@@ -79,6 +79,12 @@ public:
     turn_hold_ = declare_parameter("turn_hold_sec", 6.0);
     sign_conf_ = declare_parameter("sign_min_conf", 0.6);
     jpeg_quality_ = static_cast<int>(declare_parameter("debug_jpeg_quality", 70));
+    // 명령 부드럽게: 매번 새 값 쪽으로 이 비율만큼만 다가감 (1 = 필터 없음, 작을수록 부드럽지만 늦음)
+    smooth_ = declare_parameter("cmd_smooth", 0.3);
+    // 코너 진입: 곡선이 처음 보이면 corner_delay_sec 동안 직진한 뒤 계획대로 회전
+    corner_delay_ = declare_parameter("corner_delay_sec", 1.5);
+    corner_k_ = declare_parameter("corner_k_min", 2.0);          // [1/m] 이보다 급한 곡선 = 코너 (2.0 = 반지름 50cm)
+    corner_rearm_ = declare_parameter("corner_rearm_sec", 0.5);  // 곡선이 이만큼 안 보이면 다음 코너 준비
 
     // 계획기 파라미터 (나머지는 grid_planner.hpp 기본값)
     const std::vector<std::pair<const char *, double *>> dparams = {
@@ -155,6 +161,29 @@ private:
 #endif
   }
 
+  // 코너 진입 지연: 곡선을 처음 보면 corner_delay_ 초 동안 회전을 0 으로 (직진), 그 뒤 계획대로
+  void cornerDelay(const grid_drive::Result & r, double & w)
+  {
+    if (corner_delay_ <= 0) {
+      return;
+    }
+    const double t = now().seconds();
+    const bool curve = r.follow_ok && !r.pivot && std::abs(r.curvature) * 1000.0 > corner_k_;
+    if (curve) {
+      last_curve_t_ = t;
+      if (corner_armed_) {
+        corner_armed_ = false;
+        corner_until_ = t + corner_delay_;
+        RCLCPP_INFO(get_logger(), "코너 발견 -> %.1f초 직진 후 회전", corner_delay_);
+      }
+    } else if (t - last_curve_t_ > corner_rearm_) {
+      corner_armed_ = true;
+    }
+    if (t < corner_until_) {
+      w = 0.0;
+    }
+  }
+
   void publishCmd(double v, double w)
   {
     geometry_msgs::msg::Twist t;
@@ -209,6 +238,8 @@ private:
     // 주행 시작할 때 이전 경로 / 기억을 버린다
     if (driving() && !was_driving_) {
       planner_.reset();
+      corner_armed_ = true;
+      corner_until_ = 0;
     }
     was_driving_ = driving();
 
@@ -244,11 +275,19 @@ private:
       std::chrono::steady_clock::now() - t0).count();
 
     if (driving()) {
-      publishCmd(r.v, r.w);
+      double v = r.v, w = r.w;
+      cornerDelay(r, w);
+      v_f_ += smooth_ * (v - v_f_);
+      w_f_ += smooth_ * (w - w_f_);
+      publishCmd(v_f_, w_f_);
       stop_sent_ = false;
-    } else if (!stop_sent_) {
-      publishCmd(0, 0);
-      stop_sent_ = true;
+    } else {
+      v_f_ = 0;
+      w_f_ = 0;
+      if (!stop_sent_) {
+        publishCmd(0, 0);
+        stop_sent_ = true;
+      }
     }
     if (!r.path_ok || r.pivot) {
       RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "%s: %s",
@@ -302,6 +341,10 @@ private:
   uint8_t mode_ = ControlMode::STOP;
   double cmd_scale_ = 1.0, process_rate_ = 0, image_timeout_ = 0.5, turn_hold_ = 6.0, sign_conf_ = 0.6;
   int jpeg_quality_ = 70;
+  double smooth_ = 0.3, v_f_ = 0, w_f_ = 0;   // 명령 필터 (cmd_smooth)
+  double corner_delay_ = 1.5, corner_k_ = 2.0, corner_rearm_ = 0.5;   // 코너 진입 지연
+  bool corner_armed_ = true;
+  double corner_until_ = 0, last_curve_t_ = 0;
   grid_drive::Turn turn_ = grid_drive::Turn::NONE;
   rclcpp::Time turn_until_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_stamp_, last_image_{0, 0, RCL_ROS_TIME};
