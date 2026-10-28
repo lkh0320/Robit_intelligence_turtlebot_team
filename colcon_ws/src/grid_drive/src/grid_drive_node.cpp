@@ -285,6 +285,8 @@ private:
       planner_.reset();
       corner_armed_ = true;
       corner_until_ = 0;
+      // 주차 노드 등에서 넘겨받을 때 이미 달리는 중이면 그 속도에서 이어감 (0 부터 가속하면 한 번 멈칫함)
+      v_f_ = have_odom_ ? std::max(0.0, odom_.twist.twist.linear.x) : 0.0;
     }
     was_driving_ = driving();
 
