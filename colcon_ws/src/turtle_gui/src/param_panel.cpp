@@ -12,6 +12,9 @@
 #include <QDoubleSpinBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPainter>
@@ -44,7 +47,7 @@ bool hidden(const std::string & name)
 // 탭으로 안 만들 노드 (GUI 자신 / ros2 cli 데몬 등)
 bool skipNode(const std::string & name)
 {
-  for (const char * p : {"turtle_gui", "_ros2cli", "launch_ros", "transform_listener_impl"}) {
+  for (const char * p : {"turtle_gui", "param_saver", "_ros2cli", "launch_ros", "transform_listener_impl"}) {
     if (name.rfind(p, 0) == 0) {
       return true;
     }
@@ -204,6 +207,10 @@ ParamPanel::ParamPanel(rclcpp::Node::SharedPtr node, QWidget * parent)
     "/parameter_events", rclcpp::ParameterEventsQoS(),
     [this](rcl_interfaces::msg::ParameterEvent::ConstSharedPtr ev) {onEvent(*ev);});
 
+  save_pub_ = node_->create_publisher<std_msgs::msg::String>("param_saver/save", 10);
+  save_sub_ = node_->create_subscription<std_msgs::msg::String>(
+    "param_saver/result", 10, [this](std_msgs::msg::String::ConstSharedPtr m) {onSaveResult(m->data);});
+
   scan_timer_ = new QTimer(this);
   connect(scan_timer_, &QTimer::timeout, this, &ParamPanel::scanNodes);
   scan_timer_->start(2000);
@@ -308,6 +315,9 @@ ParamPanel::Tab & ParamPanel::addTab(const std::string & node)
     };
   auto * yaml = make_btn("YAML 복사", "처음 값과 다른 파라미터만 yaml 형식으로 클립보드에 복사 (config yaml 에 붙여 넣어 저장)");
   connect(yaml, &QPushButton::clicked, this, [this, &t] {copyYaml(t);});
+  auto * save = make_btn("YAML 저장", "바뀐 값을 로봇(Jetson) 의 config yaml 에 저장 (주석 유지, 다음 실행부터 그 값으로 시작)");
+  save->setStyleSheet(save->styleSheet().replace("#f9fafb", "#e8f5e9"));
+  connect(save, &QPushButton::clicked, this, [this, &t] {saveYaml(t);});
   auto * reset = make_btn("원래대로", "바꾼 파라미터를 모두 처음 읽은 값으로 되돌림");
   connect(reset, &QPushButton::clicked, this, [this, &t] {resetAll(t);});
   v->addLayout(bottom);
@@ -721,7 +731,7 @@ void ParamPanel::refreshTab(Tab & tab)
 }
 
 // 처음 값과 다른 것만 노드 yaml 형식으로 (점 이름은 들여쓰기로 풀어서)
-void ParamPanel::copyYaml(Tab & tab)
+QString ParamPanel::yamlText(Tab & tab, int & count)
 {
   std::vector<const Row *> rows;
   for (auto & [name, row] : tab.rows) {
@@ -729,9 +739,9 @@ void ParamPanel::copyYaml(Tab & tab)
       rows.push_back(&row);
     }
   }
+  count = static_cast<int>(rows.size());
   if (rows.empty()) {
-    emit message(QString("%1: 바뀐 값 없음").arg(QString::fromStdString(baseName(tab.node))));
-    return;
+    return "";
   }
   QString out = QString::fromStdString(baseName(tab.node)) + ":\n  ros__parameters:\n";
   QStringList prev;   // 직전 줄의 묶음 경로
@@ -746,9 +756,62 @@ void ParamPanel::copyYaml(Tab & tab)
     out += QString(4 + 2 * parts.size(), ' ') + leaf + ": " + yamlValue(row->current) + "\n";
     prev = parts;
   }
+  return out;
+}
+
+void ParamPanel::copyYaml(Tab & tab)
+{
+  int n = 0;
+  const QString out = yamlText(tab, n);
+  if (n == 0) {
+    emit message(QString("%1: 바뀐 값 없음").arg(QString::fromStdString(baseName(tab.node))));
+    return;
+  }
   QApplication::clipboard()->setText(out);
   emit message(QString("%1: 바뀐 값 %2개 YAML 클립보드에 복사\n%3")
-    .arg(QString::fromStdString(baseName(tab.node))).arg(rows.size()).arg(out.trimmed()));
+    .arg(QString::fromStdString(baseName(tab.node))).arg(n).arg(out.trimmed()));
+}
+
+void ParamPanel::saveYaml(Tab & tab)
+{
+  const QString name = QString::fromStdString(baseName(tab.node));
+  int n = 0;
+  const QString out = yamlText(tab, n);
+  if (n == 0) {
+    emit message(name + ": 저장할 바뀐 값 없음");
+    return;
+  }
+  if (save_pub_->get_subscription_count() == 0) {
+    emit message(name + ": param_saver 가 안 떠 있어 저장 못 함 (Jetson grid_drive_bringup 에서 켜짐). "
+      "YAML 복사로 직접 붙여 넣기");
+    return;
+  }
+  std_msgs::msg::String msg;
+  msg.data = out.toStdString();
+  save_pub_->publish(msg);
+  emit message(QString("%1: 바뀐 값 %2개 저장 요청").arg(name).arg(n));
+}
+
+// param_saver 응답 {"node", "ok", "names", "msg"}: 저장된 값은 새 기준으로 (주황 해제)
+void ParamPanel::onSaveResult(const std::string & json)
+{
+  const QJsonObject r = QJsonDocument::fromJson(QByteArray::fromStdString(json)).object();
+  const QString node = r.value("node").toString();
+  if (!r.value("ok").toBool()) {
+    emit message(QString("%1: YAML 저장 실패 - %2").arg(node, r.value("msg").toString()));
+    return;
+  }
+  for (auto & t : tab_list_) {
+    if (QString::fromStdString(baseName(t->node)) != node) {continue;}
+    for (const auto & v : r.value("names").toArray()) {
+      auto row = t->rows.find(v.toString().toStdString());
+      if (row != t->rows.end()) {
+        row->second.initial = row->second.current;
+      }
+    }
+    refreshTab(*t);
+  }
+  emit message(QString("%1: YAML 저장 완료 - %2").arg(node, r.value("msg").toString()));
 }
 
 void ParamPanel::resetAll(Tab & tab)

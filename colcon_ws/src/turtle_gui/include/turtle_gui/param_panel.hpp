@@ -4,6 +4,8 @@
 //   - 노드 목록은 2초마다 다시 찾는다. 꺼진 노드 탭은 회색 점, 다시 켜지면 값을 새로 읽는다
 //   - 다른 곳(ros2 param set, 다른 GUI)에서 바꾼 값도 /parameter_events 로 받아 바로 반영
 //   - 처음 읽은 값과 다른 파라미터는 주황색. "YAML 복사" 로 바뀐 값만 yaml 형식으로 클립보드에 복사
+//   - "YAML 저장": 바뀐 값을 param_saver/save 로 보내면 Jetson 의 param_saver (task_planner 패키지) 가
+//     src/*/config/<노드>.yaml 에 써 넣는다. 저장되면 그 값이 새 기준 (주황 해제)
 //   탭 앞 점 색: 초록 = 노드가 바뀐 값을 바로 씀 (live_params 파라미터가 true),
 //                회색 = 노드가 시작할 때만 읽음 (바꿔도 노드를 다시 켜야 반영), 빨강 = 노드 꺼짐
 // 서비스 응답 콜백도 MainWindow 의 spin_some 안(GUI 스레드)에서 불리므로 위젯을 바로 건드려도 된다.
@@ -20,6 +22,7 @@
 #include "rcl_interfaces/msg/parameter_descriptor.hpp"
 #include "rcl_interfaces/msg/parameter_event.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
 
 class QLabel;
 class QLineEdit;
@@ -79,7 +82,10 @@ private:
   void onEvent(const rcl_interfaces::msg::ParameterEvent & ev);
   void applyFilter(Tab & tab);
   void refreshTab(Tab & tab);       // 탭 점 색 / 안내 / 바뀐 개수 / 줄 색
+  QString yamlText(Tab & tab, int & count);   // 바뀐 값만 노드 yaml 형식으로
   void copyYaml(Tab & tab);
+  void saveYaml(Tab & tab);         // param_saver (Jetson) 에 보내 config yaml 에 저장
+  void onSaveResult(const std::string & json);
   void resetAll(Tab & tab);
   Tab * find(const std::string & node);
 
@@ -89,6 +95,8 @@ private:
   bool user_picked_ = false;   // 사용자가 탭을 직접 고른 적 있음 (그 전에는 늘 맨 앞 탭을 보여줌)
   std::vector<std::unique_ptr<Tab>> tab_list_;   // 탭 순서와 무관한 소유 목록 (주소 고정)
   rclcpp::Subscription<rcl_interfaces::msg::ParameterEvent>::SharedPtr event_sub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr save_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr save_sub_;
 };
 
 #endif  // TURTLE_GUI__PARAM_PANEL_HPP_

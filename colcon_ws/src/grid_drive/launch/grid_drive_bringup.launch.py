@@ -2,8 +2,9 @@
 #   ros2 launch grid_drive grid_drive_bringup.launch.py
 # LANE/AVOID 주행은 grid_drive, PARKING 은 parking_node 가 cmd_vel 을 보냄
 # 노트북 turtle_gui (같은 ROS_DOMAIN_ID) 의 "자율주행 시작" = task_planner 미션 (신호등 -> 장애물 -> 주차 -> 차단바).
-#   모드 LANE 버튼만 누르면 미션 없이 grid_drive 주행만, STOP 이면 정지.
-#   GUI 왼쪽 아래 칸 = grid_drive 디버그 화면 (grid_drive/debug/compressed)
+#   STOP 버튼이면 정지.
+#   GUI 위쪽 큰 칸 = grid_drive 디버그 화면 (grid_drive/debug/compressed)
+#   GUI 파라미터 탭에서 바꾼 값은 "YAML 저장" 으로 param_saver 가 이 Jetson 의 src/*/config yaml 에 저장
 # 옵션 예:
 #   autostart:=true      GUI 없이 바로 주행
 #   use_road:=false      도로 모델 없이 색 방식만
@@ -58,6 +59,13 @@ def generate_launch_description():
             parameters=[os.path.join(get_package_share_directory('parking'), 'config',
                                      'parking.yaml')],
             condition=IfCondition(LaunchConfiguration('mission')),
+            output='screen',
+        ),
+        # turtle_gui 파라미터 탭 "YAML 저장" -> 이 Jetson 의 config yaml 에 씀
+        Node(
+            package='task_planner',
+            executable='param_saver.py',
+            name='param_saver',
             output='screen',
         ),
         # 미션 상태머신: GUI "자율주행 시작" (mission_start) 을 받을 때까지 대기
