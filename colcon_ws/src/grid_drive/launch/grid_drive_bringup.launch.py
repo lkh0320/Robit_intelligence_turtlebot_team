@@ -1,7 +1,8 @@
-# 격자 계획 주행 시험 (Jetson): 카메라 + 표지판 인식 + STM 브릿지 + grid_drive
+# 격자 계획 주행 (Jetson): 카메라 + 표지판 인식 + STM 브릿지 + grid_drive + 주차 노드 + task_planner
 #   ros2 launch grid_drive grid_drive_bringup.launch.py
-# lane_follower / task_planner 는 안 띄운다 (cmd_vel 을 grid_drive 혼자 보냄)
-# 노트북에서 turtle_gui 를 띄우고 (같은 ROS_DOMAIN_ID) 모드 LANE 을 누르면 출발, STOP 이면 정지.
+# lane_follower 는 안 띄운다: LANE/AVOID 주행은 grid_drive, PARKING 은 parking_node 가 cmd_vel 을 보냄
+# 노트북 turtle_gui (같은 ROS_DOMAIN_ID) 의 "자율주행 시작" = task_planner 미션 (신호등 -> 장애물 -> 주차 -> 차단바).
+#   모드 LANE 버튼만 누르면 미션 없이 grid_drive 주행만, STOP 이면 정지.
 #   GUI 는 grid_drive 가 떠 있으면 "선 · 벡터 검출" 칸에 grid_drive 화면을 띄운다
 # 옵션 예:
 #   autostart:=true      GUI 없이 바로 주행
@@ -9,6 +10,8 @@
 #   lane:=true           lane_detection 도 띄움 (GUI BEV / 선 검출 화면 비교용, CPU 더 씀)
 #   obstacle:=true       wall_detection 등 장애물 노드
 #   stm:=false           STM 없이 (cmd_vel 만 확인)
+#   mission:=false       task_planner / 주차 노드 없이 grid_drive 만 (예전 시험 방식)
+#   start_state:=TO_PARKING   "자율주행 시작" 때 이 구간부터 (기본 WAIT_LIGHT)
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -17,6 +20,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetE
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 
 def launch_file(package, name):
@@ -35,6 +39,8 @@ def generate_launch_description():
         DeclareLaunchArgument('sign', default_value='true'),
         DeclareLaunchArgument('obstacle', default_value='false'),
         DeclareLaunchArgument('stm', default_value='true'),
+        DeclareLaunchArgument('mission', default_value='true'),
+        DeclareLaunchArgument('start_state', default_value='WAIT_LIGHT'),
 
         IncludeLaunchDescription(
             launch_file('vision_bringup', 'camera_vision.launch.py'),
@@ -51,4 +57,24 @@ def generate_launch_description():
                 'autostart': LaunchConfiguration('autostart'),
                 'use_road': LaunchConfiguration('use_road'),
             }.items()),
+
+        # 주차: parking_node 가 표지판을 보고 칸에 들어갔다 나옴 (그동안 control_mode PARKING -> grid_drive 멈춤)
+        Node(
+            package='lane_follower',
+            executable='parking_node',
+            name='parking',
+            parameters=[os.path.join(get_package_share_directory('lane_follower'), 'config',
+                                     'parking.yaml'),
+                        {'use_task_planner': True}],
+            condition=IfCondition(LaunchConfiguration('mission')),
+            output='screen',
+        ),
+        # 미션 상태머신: GUI "자율주행 시작" (mission_start) 을 받을 때까지 대기
+        IncludeLaunchDescription(
+            launch_file('task_planner', 'task_planner.launch.py'),
+            launch_arguments={
+                'wait_start': 'true',
+                'start_state': LaunchConfiguration('start_state'),
+            }.items(),
+            condition=IfCondition(LaunchConfiguration('mission'))),
     ])

@@ -8,42 +8,72 @@ grid_drive:
     use_road: true                  # true = 모델로 "내 차선" 영역도 같이 씀
     road_conf: 0.5                  # 도로라고 믿는 최소 확신도 (0~1). 도로를 놓치면 낮추기
     road_mask_thr: 0.5              # 도로 칸을 칠하는 기준 (0~1). 선 밖까지 칠해지면 올리기
+    barrier_hold_sec: 1.5           # [s] 비전이 닫힌 차단바를 이 시간 안에 봤으면 막다른 길을 차단바로 (dead_end_stop_mm, 직진 없음). 차단바 앞에서 서면 이만큼 안 보여야 (올라가야) 출발
+    dead_end_creep_linear: 0.05     # [m/s] 차단바 / 코스 끝이 화면 아래로 빠진 뒤 정지 거리까지 남은 만큼 직진하는 속도 (0 = 안 함)
+    road_hold_sec: 0.15             # [s] 도로 / 경로를 이 시간 이하로 놓치면 직전 명령 유지 (30fps 로 약 4 프레임). 0 = 바로 정지
+    road_only: true                 # 경로는 주행 가능 구역 (초록) 안에서만. 초록이 없으면 계획 안 하고 정지
 
     # ===== 시작 / 속도 변환 =====
     autostart: false                # true = task_planner 없이 바로 주행. GUI STOP 이면 멈춤
     cmd_scale: 0.408                # 실제 속도 = cmd_vel x 2.45 (벨트 비). 건드리지 말기
 
     # ===== 처리 주기 / 안전 =====
-    process_rate: 15.0              # [Hz] 1초에 몇 번 계산할지. 0 이하 = 매 프레임
+    process_rate: 0.0              # [Hz] 1초에 몇 번 계산할지. 0 이하 = 매 프레임
     image_timeout: 0.5              # [s] 영상이 이 시간 넘게 안 오면 멈춤
 
     # ===== 갈림길 표지판 =====
-    turn_hold_sec: 15.0              # [s] 왼쪽/오른쪽 표지판을 본 뒤 그쪽 길을 우선하는 시간
+    turn_hold_sec: 8.0              # [s] 왼쪽/오른쪽 표지판을 본 뒤 그쪽 길을 우선하는 시간
+    turn_linear: 0.20               # [m/s] 좌/우 기억 중 속도 (0 = 감속 안 함, 직선은 planner.linear)
+    turn_memory: true               # 좌/우 기억 중 odom 기억 켬 (안쪽 선이 화면 밖으로 빠져도 안 넘게)
     sign_min_conf: 0.6              # 표지판을 믿는 최소 확신도
 
+    # ===== 공사 구간 =====
+    construction_hold_sec: 8.0      # [s] 공사 표지판을 본 뒤 공사 모드 (박스가 보이면 construction_box_hold_sec 씩 연장. 20 이면 공사 뒤 길까지 이어졌음) (odom 기억 켬, 차선 폭 지키기 끔)
+    construction_box_hold_sec: 3.0  # [s] 공사 모드 중 박스가 보이면 최소 이만큼 연장
+    construction_box_min_ratio: 0.002  # 박스로 보는 최소 넓이 비율 (지도 칸)
+    construction_memory: true       # 공사 모드에서 odom 기억 (화면 밖으로 빠진 박스 옆면 기억). false = 보이는 것만
+    construction_memory_lines: false   # 공사 모드 기억에 선도 넣을지 (false = 박스만. 어긋난 선 기억이 경로를 뒤집었음)
+
     debug_jpeg_quality: 70          # 디버그 화면 화질 (0~100)
-    cmd_smooth: 0.3                 # 명령 부드럽게 (1 = 끔). 아직 출렁이면 0.2, 반응이 늦어 선 밟으면 0.5
+    w_median: 3                     # 한 프레임만 튀는 회전 거르기 (최근 몇 프레임의 가운데 값, 1 = 끔)
+    accel_limit: 0.3                # [m/s^2 실제] 출발 / 가속을 이만큼만 (정지 -> 0.30 까지 1초). 출발 때 앞이 들리면 낮추기, 0 = 끔
+    cmd_smooth: 0.5                 # 명령 부드럽게 (1 = 끔). 아직 출렁이면 0.2, 반응이 늦어 선 밟으면 0.5
     corner_delay_sec: 0.0           # 코너 발견 후 직진 시간 [s]. 안쪽 밟으면 ↑, 바깥 밟으면 ↓, 0 = 끔
     corner_k_min: 2.0               # 이보다 급한 곡선을 코너로 봄 [1/m] (2.0 = 반지름 50cm)
     corner_rearm_sec: 0.5           # 곡선이 이만큼 안 보이면 다음 코너 준비 [s]
 
     planner:
       # ----- 속도 -----
-      linear: 0.30                  # [m/s 실제] 직선 최고 속도. 흔들리면 낮추기
+      linear: 0.33                  # [m/s 실제] 직선 최고 속도. 흔들리면 낮추기 (예전 0.24)
+      slow_curvature: 0.2           # 곡선 감속: 속도 = linear x (1 - 이 값 x 곡률 / 최대 곡률). 0.2 면 가장 급한 곡선 0.24. 0 = 곡선도 linear
       min_linear: 0.05              # [m/s] 급한 곡선에서 이만큼까지 줄임. 코너에서 선 밟으면 낮추기
       max_angular: 2.0              # [rad/s 실제] 최대 회전 속도
       pivot_angular: 0.6            # [rad/s] 갈 곡선이 없을 때 제자리 회전 속도
-      soft_speed_ratio: 0.5         # 선에 닿아 있을 때 속도 배율
+      soft_speed_ratio: 1.0         # 선에 닿아 있을 때 속도 배율
 
       # ----- 곡선 따라가기 -----
       follow_mm: 250.0              # [mm] 이만큼 앞까지 한 곡선으로 따라감. 흔들리면 올리기
 
       # ----- 선과의 거리 -----
       robot_half_width_mm: 100.0    # [mm] 로봇 폭의 절반. 그대로
-      line_margin_mm: 15.0          # [mm] 선과 로봇 옆면 사이 여유. 코너 안쪽 선 밟으면 올리기
-      box_margin_mm: 30.0           # [mm] 박스와 로봇 옆면 사이 여유
+      line_margin_mm: 10.0          # [mm] 선과 로봇 옆면 사이 여유. 코너 안쪽 선 밟으면 올리기
+                                    #   선 둘레 빨간 띠 폭 = robot_half_width_mm + line_margin_mm (지금 115mm). 띠를 줄이려면 이걸 낮추기 (음수 = 바퀴가 선에 걸쳐도 됨)
+      recover_mm: 100.0             # [mm] 로봇 바로 앞 이 거리까지는 빨간 띠 대신 선에서 hard_line_mm 만 떨어지면 됨 (선 가까이 있어도 출발 / 복귀)
+      hard_line_mm: 30.0            # [mm] 위 구간에서 경로 중심과 선 사이 최소 거리
+      near_line_cost: 6.0           # 위 구간에서 빨간 띠 안을 지날 때 벌점 (클수록 빨리 가운데로 복귀)
+      lane_half_mm: 150.0           # [mm] 차선 반폭 (선 중심 간격 297 / 2)
+      far_line_cost: 25.0           # 선에서 차선 반폭보다 멀면 비용. 코너 안쪽 붙기 막음 (0 = 끔)
+      box_depth_mm: 100.0           # [mm] 박스 바닥 접점에서 뒤로 막는 길이 (박스 두께). 박스가 너무 크게 막히면 낮추기
+      box_gap_mm: 130.0             # [mm] 박스 뒤로 바닥이 이만큼 보여야 다른 박스로 봄 (작으면 박스가 겹겹이 커짐)
+      memory_max_frames: 15         # 기억은 화면 밖에서 이 프레임 수 (30fps 15 = 0.5초) 지나면 잊음. 오래될수록 odom 이 어긋나 두 겹 선이 생김. 0 = 제한 없음
+      memory_back_mm: 250.0         # [mm] 기억한 선이 바퀴 축 뒤로 이만큼 지나면 잊음
+      box_memory_back_mm: 40.0      # [mm] 기억한 박스가 바퀴 축 뒤로 이만큼 지나면 잊음. 지나간 박스 영향 크면 낮추기 (음수 = 축 앞에서 잊음)
+      box_margin_mm: 20.0           # [mm] 박스와 로봇 옆면 사이 여유
 
       # ----- 지도 / 기타 -----
       map_y_scale: 1.0              # 카메라 거리 보정. 그대로
-      road_min_ratio: 0.05          # 도로 마스크가 이 비율보다 작으면 색만 씀
+      dead_end_stop_mm: 220.0       # [mm] 차단바 / 박스가 길을 다 막으면 갈 수 있는 끝 칸까지 가서 멈춤. 그 칸이 이 거리보다 가까우면 정지 (예전 방식)
+      dead_end_line_mm: 50.0       # [mm] 코스 끝 (선 / 도로 끝이 길을 막음): 바퀴 축에서 이 거리가 되면 정지
+      dead_end_slow_mm: 300.0       # [mm] 정지 거리보다 이만큼 멀 때부터 감속 (최저 30%)
+      road_min_ratio: 0.0           # 0 = 도로가 조금만 보여도 도로 기준 (색만 쓰는 대체 없음)
       memory: false                 # true = 이전 지도를 기억해서 같이 씀

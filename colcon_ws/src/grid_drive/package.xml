@@ -18,6 +18,8 @@
   <depend>cv_bridge</depend>
   <depend>interfaces</depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>lane_follower</exec_depend>
+  <exec_depend>task_planner</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
 

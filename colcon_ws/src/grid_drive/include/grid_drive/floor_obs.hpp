@@ -16,6 +16,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -36,7 +37,11 @@ struct FloorParams
   double far_mm = 1200.0;
   double raw_scale = 0.5;              // 색 방식: 원본을 이 배율로 줄여서 편다 (속도)
   double box_depth_mm = 200.0;         // 박스 앞면에서 뒤로 막힘 길이 (지도 단위)
-  double box_gap_mm = 40.0;
+  double box_gap_mm = 150.0;           // 2026-10-28: 40 이면 가까운 박스의 층 사이 검은 줄이 늘어져 바닥으로 보여 박스가 겹겹이 쌓임
+  // 박스 바닥 네모를 카메라 발에서 나가는 광선마다 구함 (키 큰 박스의 옆면 / 윗면은 광선 방향으로 늘어짐).
+  // false = 예전 방식 (지도 세로 열마다) -> 가까이 / 옆에서 본 박스가 늘어진 대각선마다 막혀 U 자로 커짐
+  bool box_radial = true;
+  double camera_foot_mm = 85.0;        // 카메라 바로 아래 바닥 = 바퀴 축 앞 [지도 mm] (2026-10-28 보정)
   double road_min_ratio = 0.05;        // 보인 곳 중 road 가 이보다 적으면 (내 차선 안 보임, 회전 중 등) 주행 불가를 모름으로
 };
 
@@ -92,6 +97,56 @@ inline cv::Mat visibleMask(const FloorParams & p, cv::Size raw_size)
   return v;
 }
 
+// 박스 색 마스크 (지도 칸) -> 바닥 네모: 카메라 발에서 광선마다 처음 만난 박스 칸 (바닥 접점) 부터 box_depth_mm 만 막음.
+//   접점 뒤로 박스 칸이 이어지는 동안 (바닥이 box_gap_mm 넘게 다시 보이기 전) 은 같은 박스의 늘어진 부분으로 보고 건너뜀
+inline cv::Mat boxFootprintRadial(const cv::Mat & box, const FloorParams & p, int min_area)
+{
+  cv::Mat big = cv::Mat::zeros(box.size(), CV_8U), labels, stats, cents;
+  const int n = cv::connectedComponentsWithStats(box, labels, stats, cents, 8, CV_32S);
+  for (int i = 1; i < n; ++i) {
+    if (stats.at<int>(i, cv::CC_STAT_AREA) >= min_area) {
+      big.setTo(255, labels == i);
+    }
+  }
+  cv::Mat out = cv::Mat::zeros(box.size(), CV_8U);
+  if (n <= 1) {
+    return out;
+  }
+  const double c = p.cell_mm;
+  const double ox = p.half_width_mm / c, oy = (p.far_mm - p.camera_foot_mm) / c;
+  const double depth = p.box_depth_mm / c, gap = p.box_gap_mm / c, step = 0.5;
+  const double rmax = std::hypot(box.cols, box.rows) + 1;
+  const double dth = step / rmax;
+  for (double th = -M_PI / 2; th <= M_PI / 2; th += dth) {
+    const double sx = std::sin(th), sy = -std::cos(th);
+    bool streak = false;
+    double mark_until = -1, gap_run = 0;
+    for (double t = 0; t <= rmax; t += step) {
+      const int u = static_cast<int>(ox + t * sx), v = static_cast<int>(oy + t * sy);
+      if (u < 0 || u >= box.cols || v < 0) {
+        break;
+      }
+      if (v >= box.rows) {
+        continue;
+      }
+      const bool b = big.at<uint8_t>(v, u) != 0;
+      if (streak) {
+        gap_run = b ? 0 : gap_run + step;
+        streak = gap_run <= gap;
+      } else if (b) {
+        streak = true;
+        gap_run = 0;
+        mark_until = t + depth;
+      }
+      if (t <= mark_until) {
+        out.at<uint8_t>(v, u) = 255;
+      }
+    }
+  }
+  cv::morphologyEx(out, out, cv::MORPH_CLOSE, cv::Mat::ones(3, 3, CV_8U));
+  return out;
+}
+
 inline FloorObs observeColor(
   const cv::Mat & raw, const FloorParams & p, const obstacle_detection::ColorParams & colors)
 {
@@ -108,7 +163,7 @@ inline FloorObs observeColor(
   const auto m = obstacle_detection::buildColorMaps(o.ground, c);
   const cv::Mat hidden = ~o.valid;
   o.line = m.line_wall.clone();
-  o.box = m.box_blocked.clone();
+  o.box = p.box_radial ? boxFootprintRadial(m.box, p, c.box_min_area) : m.box_blocked.clone();
   o.yellow = m.yellow.clone();
   o.white = m.white.clone();
   for (cv::Mat * k : {&o.line, &o.box, &o.yellow, &o.white}) {
