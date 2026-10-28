@@ -7,7 +7,7 @@
 # 옵션 예:
 #   autostart:=true      GUI 없이 바로 주행
 #   use_road:=false      도로 모델 없이 색 방식만
-#   lane:=true           lane_detection 도 띄움 (GUI BEV / 선 검출 화면 비교용, CPU 더 씀)
+#   lane:=false          lane_detection 안 띄움 (기본 true: grid_drive intersection_lane 이 lane_info / cross_line 을 씀)
 #   obstacle:=true       wall_detection 등 장애물 노드
 #   stm:=false           STM 없이 (cmd_vel 만 확인)
 #   mission:=false       task_planner / 주차 노드 없이 grid_drive 만 (예전 시험 방식)

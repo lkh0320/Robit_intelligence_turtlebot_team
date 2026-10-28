@@ -22,7 +22,8 @@ find_package(interfaces REQUIRED)
 
 # 주행 노드: 카메라 -> 색 + 도로 세그멘테이션 관측 -> grid_planner -> cmd_vel
 add_executable(grid_drive_node src/grid_drive_node.cpp)
-target_include_directories(grid_drive_node PRIVATE include)
+target_include_directories(grid_drive_node PRIVATE include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../lane_follower/include)   # 교차로 상태 기계 / 차선 추종 (헤더만)
 target_link_libraries(grid_drive_node ${OpenCV_LIBS})
 ament_target_dependencies(grid_drive_node rclcpp sensor_msgs geometry_msgs nav_msgs cv_bridge
   interfaces obstacle_detection)

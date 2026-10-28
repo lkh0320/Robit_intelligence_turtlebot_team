@@ -58,6 +58,9 @@ struct Params : FloorParams
   int memory_max_frames = 15;
   bool memory_lines = true;            // false = 박스만 기억 (공사 구간)
   double box_memory_back_mm = 250.0;   // 박스 기억만 따로: 바퀴 축 뒤로 이만큼 지나면 잊음 (음수 = 축 앞에서 잊음)
+  // 박스 기억만 따로 프레임 수 제한 (음수 = memory_max_frames 와 같게). 박스는 화면 아래로 빠진 뒤에도 바퀴 옆에
+  //   남아 있어서 0.5초 만에 잊으면 지나간 박스 쪽으로 다시 꺾어 바퀴가 걸렸다 (2026-10-28)
+  int box_memory_max_frames = -1;
   // 3. 비용 지도
   double plan_cell_mm = 12.0;          // 탐색 칸 [실제 mm] (색 마스크보다 거칠게, 속도. 지도 세로로는 x map_y_scale)
   double robot_half_width_mm = 100.0;  // 바퀴 바깥 끝 폭 20cm (2026-10-28 사용자)
@@ -72,6 +75,10 @@ struct Params : FloorParams
   // 코너에서 안쪽 선이 화면 밖이면 "안쪽이 비었다" 고 보고 안쪽으로 붙는 것을 막음 (바깥 선에서 차선 반폭 근처 유지)
   double lane_half_mm = 150.0;
   double far_line_cost = 0.0;
+  // 가운데 따라가기: 선 / 주행 불가까지 거리가 주변 (center_radius_mm 안) 최댓값 (= 두 선 사이 가운데) 보다
+  //   작을수록 비용. 최단 경로가 코너 안쪽을 파고드는 것 막음. 0 = 끔 (교차로 U턴용, 2026-10-28)
+  double center_cost = 0.0;
+  double center_radius_mm = 250.0;
   // 주행 가능 구역 (도로 모델) 이 있으면 그 안에서만 계획: 주행 불가 칸과 화면 밖 칸은 soft 에서도 못 감
   // (보이는 칸이 없는 줄 = 로봇 바로 앞 안 보이는 띠, 와 출발 탈출 반경은 예외)
   bool road_only = false;
@@ -401,13 +408,13 @@ private:
       line_age_.clear();
     }
     const cv::Size gs = gridSize(p);
-    auto keepUnseen = [&](std::vector<cv::Point2d> & pts, std::vector<int> & age) {
+    auto keepUnseen = [&](std::vector<cv::Point2d> & pts, std::vector<int> & age, int max_frames) {
         std::vector<cv::Point2d> out;
         std::vector<int> out_age;
         out.reserve(pts.size());
         for (size_t i = 0; i < pts.size(); ++i) {
           const cv::Point2d q = pts[i];
-          if (p.memory_max_frames > 0 && age[i] + 1 > p.memory_max_frames) {
+          if (max_frames > 0 && age[i] + 1 > max_frames) {
             continue;
           }
           const cv::Point c = toCell(q, p);
@@ -424,8 +431,8 @@ private:
         pts = std::move(out);
         age = std::move(out_age);
       };
-    keepUnseen(line_mem_, line_age_);
-    keepUnseen(box_mem_, box_age_);
+    keepUnseen(line_mem_, line_age_, p.memory_max_frames);
+    keepUnseen(box_mem_, box_age_, p.box_memory_max_frames < 0 ? p.memory_max_frames : p.box_memory_max_frames);
     for (int y = 0; y < gs.height; ++y) {
       for (int x = 0; x < gs.width; ++x) {
         if (p.memory_lines && line_g_.at<uint8_t>(y, x)) {
@@ -465,6 +472,11 @@ private:
     cv::distanceTransform(inv, db, cv::DIST_L2, 3);
     const double g = p.plan_cell_mm;
     const double line_lim = p.robot_half_width_mm + p.line_margin_mm;
+    cv::Mat dmax;   // 주변 최대 선 거리 (가운데 능선 높이)
+    if (p.center_cost > 0) {
+      const int r = std::max(1, static_cast<int>(std::lround(p.center_radius_mm / g)));
+      cv::dilate(dl, dmax, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(2 * r + 1, 2 * r + 1)));
+    }
     const double box_lim = p.robot_half_width_mm + p.box_margin_mm;
     box_near_ = db * g < box_lim;
 
@@ -531,6 +543,12 @@ private:
           }
           if (p.far_line_cost > 0 && dline > p.lane_half_mm) {   // 보이는 선에서 차선 반폭보다 먼 칸
             c += static_cast<float>(p.far_line_cost * std::min(1.0, (dline - p.lane_half_mm) / 100.0));
+          }
+          if (p.center_cost > 0) {   // 가운데 능선에서 벗어난 만큼 (0 ~ 1)
+            const float m = dmax.at<float>(y, x);
+            if (m > 0) {
+              c += static_cast<float>(p.center_cost * (m - dl.at<float>(y, x)) / m);
+            }
           }
           if (dline < line_lim) {   // 복귀 구간에서 여유를 못 지키는 칸
             c += static_cast<float>(p.near_line_cost * (line_lim - dline) / (line_lim - p.hard_line_mm));
