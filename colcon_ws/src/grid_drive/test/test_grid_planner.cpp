@@ -269,3 +269,43 @@ TEST(GridPlanner, MemoryMovesWithOdom)
   ASSERT_TRUE(r.path_ok);
   EXPECT_LT(std::abs(xAt(p, r.path, 60)), 40.0);
 }
+
+// 여유 띠보다 좁게 왼쪽으로 휘는 차선 (soft): soft_depth_cost 가 있으면 두 선 가운데 (안쪽 선에서 140mm) 로
+TEST(GridPlanner, SoftDepthKeepsLaneCenter)
+{
+  Params p = params();
+  p.line_margin_mm = 80.0;   // 띠 2 x 182.5 > 차선 폭 280 -> 여유를 지키는 경로 없음
+  FloorObs o = empty(p);
+  const cv::Point2d c(-450, 150);   // 반지름 450 으로 왼쪽으로 휨, 폭 280
+  for (double rad : {450.0 - 140, 450.0 + 140}) {
+    line(p, o, c.x + rad, 0, c.x + rad, c.y);
+    for (double a = 0; a < 1.2; a += 0.05) {
+      line(p, o, c.x + rad * std::cos(a), c.y + rad * std::sin(a),
+        c.x + rad * std::cos(a + 0.05), c.y + rad * std::sin(a + 0.05));
+    }
+  }
+  // 경로 점들이 차선 가운데 (반지름 450) 에서 벗어난 평균 [mm]
+  auto off_center = [&](const grid_drive::Result & r) {
+      double sum = 0;
+      int n = 0;
+      for (const auto & q : r.raw_path) {
+        const double y = q.y / p.map_y_scale;
+        if (y < c.y) {continue;}
+        sum += std::abs(std::hypot(q.x - c.x, y - c.y) - 450.0);
+        ++n;
+      }
+      return n ? sum / n : 0.0;
+    };
+  GridPlanner g0;
+  const auto r0 = g0.plan(o, p);
+  ASSERT_TRUE(r0.path_ok);
+  ASSERT_TRUE(r0.soft);
+  p.soft_depth_cost = 30.0;
+  GridPlanner g1;
+  const auto r1 = g1.plan(o, p);
+  ASSERT_TRUE(r1.path_ok);
+  ASSERT_TRUE(r1.soft);
+  std::printf("off center: depth 0 -> %.0f mm, depth 30 -> %.0f mm\n", off_center(r0), off_center(r1));
+  EXPECT_LT(off_center(r1), 25.0);
+  EXPECT_LT(off_center(r1), off_center(r0) - 20.0);
+}

@@ -97,6 +97,9 @@ struct Params : FloorParams
   double soft_forbid_cost = 15.0;      // soft: 진입 금지 칸 비용
   double soft_cross_cost = 60.0;       // soft: 선 / 박스 칸 자체에 더함
   double soft_arc_weight = 300.0;      // soft: 원호가 진입 금지 칸을 지나는 비율 x 이 값 [mm]
+  // soft: 띠 안으로 들어간 깊이 (0 = 띠 가장자리 ~ 1 = 선 위) x 이 값을 더함. 0 이면 띠 안은 다 같은 값이라
+  //   최단 경로 = 안쪽 선에 붙음 (2026-10-29 left1: 교차로 진입 / U턴 내내 soft 로 안쪽 선 밟음)
+  double soft_depth_cost = 0.0;
   double soft_speed_ratio = 0.5;
   // 4. 목표
   double goal_band_mm = 36.0;          // 위쪽 / 옆쪽 끝에서 이만큼 안 칸이 목표 후보
@@ -532,6 +535,9 @@ private:
           const double ds = std::hypot(x - start.x, y - start.y);
           c = ds <= esc ? static_cast<float>(p.escape_cost) : -1.0f;   // -1 = 못 감
           float sc = static_cast<float>(p.soft_forbid_cost);
+          if (p.soft_depth_cost > 0) {
+            sc += static_cast<float>(p.soft_depth_cost * std::clamp(-d / line_lim, 0.0, 1.0));
+          }
           if (lines.at<uint8_t>(y, x) || boxes.at<uint8_t>(y, x) || off_g_.at<uint8_t>(y, x)) {
             sc += static_cast<float>(p.soft_cross_cost);
           }

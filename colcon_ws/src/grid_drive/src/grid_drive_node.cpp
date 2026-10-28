@@ -134,6 +134,7 @@ public:
       {"dead_end_stop_mm", &p_.dead_end_stop_mm}, {"dead_end_line_mm", &p_.dead_end_line_mm},
       {"dead_end_slow_mm", &p_.dead_end_slow_mm},
       {"curvature_weight", &p_.curvature_weight}, {"change_weight", &p_.change_weight},
+      {"soft_depth_cost", &p_.soft_depth_cost},
     };
     for (const auto & [name, ptr] : dparams) {
       *ptr = declare_parameter(std::string("planner.") + name, *ptr);
@@ -218,9 +219,15 @@ public:
               m->confidence);
             return;
           }
+          if (turn_ != dir) {
+            RCLCPP_INFO(get_logger(), "%s 표지판 (%.2f) -> 그쪽 우선 %.1fs, 선 여유 %.0fmm %.1fs",
+              dir == grid_drive::Turn::LEFT ? "왼쪽" : "오른쪽", m->confidence, turn_hold_,
+              dir == grid_drive::Turn::LEFT ? turn_line_margin_left_ : turn_line_margin_, turn_line_margin_sec_);
+          }
           turn_ = dir;
           turn_until_ = now() + rclcpp::Duration::from_seconds(turn_hold_);
           turn_sign_t_ = now();
+          turn_sign_dir_ = dir;
           // 출구 기다림: 처음 보거나 방향이 바뀌면 회전량을 새로 셈 (계속 보이는 / 섬 안에서 다시 본 같은 표지판은 이어 셈)
           if (turn_exit_yaw_ > 0 && (!exit_armed_ || exit_dir_ != turn_)) {
             exit_armed_ = true;
@@ -417,10 +424,17 @@ private:
     if (in_turn || in_construction) {
       pp.far_line_cost = 0.0;   // 교차로 / 공사 구간은 넓은 바닥을 가로지름
     }
+    // 표지판 진입 여유: 표지판을 마지막으로 본 뒤 turn_line_margin_sec 동안 (turn_hold_sec 보다 길어도 유지)
+    const bool sign_margin = turn_line_margin_sec_ > 0 &&
+      (now() - turn_sign_t_).seconds() < turn_line_margin_sec_;
+    if (sign_margin || (in_turn && turn_line_margin_sec_ <= 0)) {
+      const auto dir = sign_margin ? turn_sign_dir_ : turn_;
+      pp.line_margin_mm = dir == grid_drive::Turn::LEFT ? turn_line_margin_left_ : turn_line_margin_;
+    } else if (in_turn) {
+      pp.line_margin_mm = turn_after_margin_;
+    }
+    margin_used_ = pp.line_margin_mm;
     if (in_turn) {
-      const bool entry = turn_line_margin_sec_ <= 0 || (now() - turn_sign_t_).seconds() < turn_line_margin_sec_;
-      pp.line_margin_mm = !entry ? turn_after_margin_ :
-        turn_ == grid_drive::Turn::LEFT ? turn_line_margin_left_ : turn_line_margin_;
       if (turn_memory_frames_ > 0) {
         pp.memory_max_frames = turn_memory_frames_;
       }
@@ -588,9 +602,9 @@ private:
     const char * turn = turn_ == grid_drive::Turn::LEFT ? "L" : turn_ == grid_drive::Turn::RIGHT ? "R" :
       now() < construction_until_ ? "C" : "-";
     char text[160];
-    std::snprintf(text, sizeof(text), "%s v%.2f w%.2f %s%s turn %s road %d %.2f  %.0f/%.0fms",
+    std::snprintf(text, sizeof(text), "%s v%.2f w%.2f %s%s turn %s m%.0f road %d %.2f  %.0f/%.0fms",
       !driving() ? "STOP" : bar_stopped_ ? "BAR WAIT" : no_road ? "NO ROAD" : "RUN", r.v, r.w, r.dead_end ? "END " : r.soft ? "SOFT " : "", r.pivot ? "PIVOT " : "", turn,
-      rs.detections, rs.best_conf, ms_road, ms);
+      margin_used_, rs.detections, rs.best_conf, ms_road, ms);
     cv::putText(left, text, {6, 20}, cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 2);
 
     cv::Mat right, out;
@@ -643,6 +657,8 @@ private:
   rclcpp::Time exit_deadline_{0, 0, RCL_ROS_TIME};
   double turn_min_radius_ = 0, turn_change_weight_ = 0, turn_center_cost_ = 0;
   rclcpp::Time turn_sign_t_{0, 0, RCL_ROS_TIME};
+  grid_drive::Turn turn_sign_dir_ = grid_drive::Turn::NONE;   // 마지막으로 본 좌/우 표지판 (진입 선 여유용)
+  double margin_used_ = 0;   // 이번 프레임 선 여유 [mm] (디버그 화면)
   double road_hold_sec_ = 0.15;
   double creep_linear_ = 0.05;
   bool end_seen_ = false;
