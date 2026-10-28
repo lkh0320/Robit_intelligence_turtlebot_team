@@ -69,105 +69,27 @@ public:
   GridDriveNode()
   : Node("grid_drive")
   {
-    const auto image_topic = declare_parameter("image_topic", std::string("image_raw"));
+    // 시작할 때만 읽는 파라미터 (구독 / 엔진 / 첫 모드). 설명의 "재시작" 을 보고 turtle_gui 가 ↻ 표시
+    rcl_interfaces::msg::ParameterDescriptor restart;
+    restart.description = "재시작해야 반영 (시작할 때만 읽음)";
+    const auto image_topic = declare_parameter("image_topic", std::string("image_raw"), restart);
     const auto engine_path = expandHome(
-      declare_parameter("engine_path", std::string("~/yolo26_check/road_r2_320_fp16.engine")));
-    use_road_ = declare_parameter("use_road", true);
-    seg_.conf = static_cast<float>(declare_parameter("road_conf", 0.5));
-    seg_.mask_thr = static_cast<float>(declare_parameter("road_mask_thr", 0.5));
-    mode_ = declare_parameter("autostart", false) ? ControlMode::LANE : ControlMode::STOP;
-    cmd_scale_ = declare_parameter("cmd_scale", 0.408);
-    process_rate_ = declare_parameter("process_rate", 15.0);
-    image_timeout_ = declare_parameter("image_timeout", 0.5);
-    turn_hold_ = declare_parameter("turn_hold_sec", 6.0);
-    sign_conf_ = declare_parameter("sign_min_conf", 0.6);
-    jpeg_quality_ = static_cast<int>(declare_parameter("debug_jpeg_quality", 70));
-    // 명령 부드럽게: 매번 새 값 쪽으로 이 비율만큼만 다가감 (1 = 필터 없음, 작을수록 부드럽지만 늦음)
-    smooth_ = declare_parameter("cmd_smooth", 0.3);
-    // 코너 진입: 곡선이 처음 보이면 corner_delay_sec 동안 직진한 뒤 계획대로 회전
-    corner_delay_ = declare_parameter("corner_delay_sec", 1.5);
-    corner_k_ = declare_parameter("corner_k_min", 2.0);          // [1/m] 이보다 급한 곡선 = 코너 (2.0 = 반지름 50cm)
-    corner_rearm_ = declare_parameter("corner_rearm_sec", 0.5);  // 곡선이 이만큼 안 보이면 다음 코너 준비
-    // 좌/우 기억 중 곡선 방향이 바뀌면 (진입 좌회전 -> U턴 우회전 등) 이 시간 [s] 직진한 뒤 회전 (0 = 끔).
-    //   U턴을 너무 일찍 시작해 안쪽 고리 선을 밟았다 (2026-10-28 drive21)
-    turn_flip_delay_ = declare_parameter("turn_flip_delay_sec", 0.0);
-    // 교차로: 좌/우 표지판 기억 중에는 turn_linear 까지 감속 (0 = 감속 안 함)
-    // 도로 모델이 있으면 주행 가능 구역 안에서만 계획 (구역이 안 보이면 계획 안 하고 정지)
-    p_.road_only = declare_parameter("road_only", true);
-    road_hold_sec_ = declare_parameter("road_hold_sec", 0.15);
-    // 막다른 길: 막는 것이 화면 아래로 빠져 안 보여도, 마지막으로 잰 거리에서 정지 거리까지 남은 만큼 odom 으로 천천히 직진
-    creep_linear_ = declare_parameter("dead_end_creep_linear", 0.05);
-    turn_linear_ = declare_parameter("turn_linear", 0.12);
-    // 교차로에서 꺾을 때: 안쪽 선이 화면 아래로 빠지면 지도에서 사라져 안쪽으로 파고듦 -> odom 기억 켬
-    turn_memory_ = declare_parameter("turn_memory", true);
-    // 공사 구간: 표지판을 본 뒤 construction_hold_sec 동안 (박스가 보이면 계속 연장)
-    //   차선 폭 지키기 끔,
-    //   odom 기억 켬 (벽 옆면이 화면 밖으로 빠져도 기억해서 덜 돌고 박는 것 막음)
-    construction_hold_ = declare_parameter("construction_hold_sec", 20.0);
-    construction_box_hold_ = declare_parameter("construction_box_hold_sec", 3.0);
-    construction_box_min_ = declare_parameter("construction_box_min_ratio", 0.002);
-    construction_memory_ = declare_parameter("construction_memory", true);
-    construction_memory_lines_ = declare_parameter("construction_memory_lines", false);
-    // 공사 모드 회전: 최대 회전 속도 (0 = planner.max_angular 그대로), 곡률 바꿈 벌점 (0 = planner.change_weight 그대로)
-    //   박스 사이에서 크게 꺾고 되꺾는 지그재그 줄이기. 속도는 그대로
-    construction_max_angular_ = declare_parameter("construction_max_angular", 0.0);
-    construction_change_weight_ = declare_parameter("construction_change_weight", 0.0);
-    p_.memory_max_frames = static_cast<int>(declare_parameter("planner.memory_max_frames", 15));
-    p_.box_memory_max_frames = static_cast<int>(declare_parameter("planner.box_memory_max_frames", -1));
-    // 한 프레임만 튀는 회전 명령 거르기: 최근 w_median 프레임의 가운데 값 (1 = 끔)
-    w_median_ = std::max<int64_t>(1, declare_parameter("w_median", 3));
-    // 출발 / 가속 제한 [m/s^2 실제]: 정지에서 급출발하면 앞이 들림. 감속은 제한 안 함
-    accel_limit_ = declare_parameter("accel_limit", 0.3);
-
-    // 계획기 파라미터 (나머지는 grid_planner.hpp 기본값)
-    const std::vector<std::pair<const char *, double *>> dparams = {
-      {"linear", &p_.linear}, {"min_linear", &p_.min_linear}, {"slow_curvature", &p_.slow_curvature},
-      {"max_angular", &p_.max_angular}, {"pivot_angular", &p_.pivot_angular},
-      {"soft_speed_ratio", &p_.soft_speed_ratio}, {"follow_mm", &p_.follow_mm},
-      {"robot_half_width_mm", &p_.robot_half_width_mm}, {"line_margin_mm", &p_.line_margin_mm},
-      {"recover_mm", &p_.recover_mm}, {"hard_line_mm", &p_.hard_line_mm}, {"near_line_cost", &p_.near_line_cost},
-      {"box_margin_mm", &p_.box_margin_mm}, {"map_y_scale", &p_.map_y_scale},
-      {"road_min_ratio", &p_.road_min_ratio},
-      {"lane_half_mm", &p_.lane_half_mm}, {"far_line_cost", &p_.far_line_cost},
-      {"box_depth_mm", &p_.box_depth_mm}, {"box_gap_mm", &p_.box_gap_mm},
-      {"memory_back_mm", &p_.memory_back_mm}, {"box_memory_back_mm", &p_.box_memory_back_mm},
-      {"dead_end_stop_mm", &p_.dead_end_stop_mm}, {"dead_end_line_mm", &p_.dead_end_line_mm},
-      {"dead_end_slow_mm", &p_.dead_end_slow_mm},
-      {"curvature_weight", &p_.curvature_weight}, {"change_weight", &p_.change_weight},
-      {"soft_depth_cost", &p_.soft_depth_cost},
-    };
-    for (const auto & [name, ptr] : dparams) {
-      *ptr = declare_parameter(std::string("planner.") + name, *ptr);
-    }
-    p_.memory = declare_parameter("planner.memory", p_.memory);
-    // 좌/우 기억 중 선 여유 [mm] (planner.line_margin_mm 대신). 교차로 진입 때 고리 선과 바깥 선의 빨간 띠가
-    // 붙어 표지판 쪽 길이 막히면 낮추기
-    turn_line_margin_ = declare_parameter("turn_line_margin_mm", p_.line_margin_mm);
-    // 왼쪽 표지판 진입만 따로 (오른쪽은 띠가 길을 막아 0 이 필요했고, 왼쪽은 0 이면 왼쪽 코너 안쪽 선을 밟음)
-    turn_line_margin_left_ = declare_parameter("turn_line_margin_left_mm", turn_line_margin_);
-    // 위 여유는 좌/우 표지판을 마지막으로 본 뒤 이 시간 [s] 동안만 (진입). 그 뒤 (U턴 등) 는 planner.line_margin_mm
-    //   (안쪽 선 밟음 막음). 0 = 좌/우 기억 내내
-    turn_line_margin_sec_ = declare_parameter("turn_line_margin_sec", 0.0);
-    // 진입 뒤 (위 시간 지난 뒤) 좌/우 기억 중 선 여유 [mm]. 크면 U턴을 크게 돌아 안쪽 선에서 멀어짐
-    turn_after_margin_ = declare_parameter("turn_after_margin_mm", p_.line_margin_mm);
-    // 교차로 출구: 길은 표지판 쪽으로 들어가 고리를 반대쪽으로 U턴한 뒤 다시 표지판 쪽으로 나감 (drive24 odom:
-    //   오른쪽 -70도 -> 고리 왼쪽 +155도 -> 출구 오른쪽). 표지판을 본 뒤 (가장 표지판 쪽으로 꺾인 곳부터) 반대쪽으로
-    //   turn_exit_yaw_deg [odom 도] 돌면 U턴 끝 = 출구 앞으로 보고 좌/우 기억을 turn_exit_hold_sec 동안 다시 켬. 0 = 끔.
-    //   출구를 기다리는 동안 반대 방향 표지판은 무시 (drive24: 출구에서 섬 안 표지판을 LEFT 0.61 로 한 번 보고 밖으로 나감)
-    //   turn_hold_sec 를 짧게 (진입만) 하자 출구에서 직진해 오른쪽 출구를 지나쳤다 (2026-10-28)
-    turn_exit_yaw_ = declare_parameter("turn_exit_yaw_deg", 0.0) * M_PI / 180.0;
-    turn_exit_hold_ = declare_parameter("turn_exit_hold_sec", 3.0);
-    turn_exit_max_ = declare_parameter("turn_exit_max_sec", 20.0);   // 표지판 뒤 이 시간 안에 출구가 없으면 잊음
-    // 좌/우 기억 중 선 기억 프레임 수 (0 이하 = planner.memory_max_frames). U턴 중 안쪽 고리 선이 화면 오른쪽 아래로
-    //   빠진 뒤 0.5초 만에 잊어서 그 위로 경로를 냈다 (2026-10-28 drive19)
-    turn_memory_frames_ = static_cast<int>(declare_parameter("turn_memory_max_frames", 0));
-    // 좌/우 기억 중 가장 급한 원호 반지름 [mm 실제] (0 = 기본 150). 교차로 U턴이 150 으로 못 돌아 바깥 선을 넘었다
-    turn_min_radius_ = declare_parameter("turn_min_radius_mm", 0.0);
-    // 좌/우 기억 중 곡률 바꿈 벌점 (0 = planner.change_weight). 진입 좌회전 -> U턴 우회전으로 빨리 바꾸게 낮춤
-    turn_change_weight_ = declare_parameter("turn_change_weight", 0.0);
-    // 좌/우 기억 중 가운데 따라가기 비용 (planner.center_cost, 0 = 끔) 과 가운데를 찾는 반경 [mm]
-    turn_center_cost_ = declare_parameter("turn_center_cost", 0.0);
-    p_.center_radius_mm = declare_parameter("turn_center_radius_mm", p_.center_radius_mm);
+      declare_parameter("engine_path", std::string("~/yolo26_check/road_r2_320_fp16.engine"), restart));
+    use_road_ = declare_parameter("use_road", true, restart);
+    mode_ = declare_parameter("autostart", false, restart) ? ControlMode::LANE : ControlMode::STOP;
+    loadParams();
+    // 나머지 파라미터는 실행 중에 바꾸면 (turtle_gui 파라미터 탭, ros2 param set) loadParams 로 다시 읽어 바로 반영.
+    //   spin 이 한 스레드라 영상 처리 도중에 값이 바뀌지는 않는다
+    rcl_interfaces::msg::ParameterDescriptor ro;
+    ro.read_only = true;
+    ro.description = "turtle_gui 표시용: 파라미터를 바꾸면 바로 반영되는 노드";
+    declare_parameter("live_params", true, ro);
+    param_cb_ = add_post_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {
+        loadParams();
+        for (const auto & q : ps) {
+          RCLCPP_INFO(get_logger(), "파라미터 %s = %s", q.get_name().c_str(), q.value_to_string().c_str());
+        }
+      });
 
 #ifdef GRID_DRIVE_TENSORRT
     if (use_road_) {
@@ -196,8 +118,7 @@ public:
           mode_ = m->mode;
         }
       });
-    // 비전 차단바 인식 (sign_detection): 닫힌 차단바를 본 시각
-    barrier_hold_ = declare_parameter("barrier_hold_sec", 1.5);
+    // 비전 차단바 인식 (sign_detection): 닫힌 차단바를 본 시각 (barrier_hold_sec 동안 기억)
     barrier_sub_ = create_subscription<Barrier>(
       "barrier", rclcpp::SensorDataQoS(), [this](Barrier::ConstSharedPtr m) {
         if (m->detected && m->state != Barrier::OPEN && m->confidence >= 0.5) {
@@ -255,6 +176,116 @@ public:
   }
 
 private:
+  // 처음이면 선언, 이미 있으면 지금 값 (실행 중 바뀐 값) 을 읽는다
+  template<typename T>
+  T param(const std::string & name, const T & def)
+  {
+    if (!has_parameter(name)) {
+      return declare_parameter(name, def);
+    }
+    return get_parameter(name).get_value<T>();
+  }
+
+  // 실행 중에 바꿀 수 있는 파라미터 전부. 생성자에서 한 번, 파라미터가 바뀔 때마다 다시
+  void loadParams()
+  {
+    seg_.conf = static_cast<float>(param("road_conf", 0.5));
+    seg_.mask_thr = static_cast<float>(param("road_mask_thr", 0.5));
+    cmd_scale_ = param("cmd_scale", 0.408);
+    process_rate_ = param("process_rate", 15.0);
+    image_timeout_ = param("image_timeout", 0.5);
+    turn_hold_ = param("turn_hold_sec", 6.0);
+    sign_conf_ = param("sign_min_conf", 0.6);
+    jpeg_quality_ = static_cast<int>(param("debug_jpeg_quality", 70));
+    // 명령 부드럽게: 매번 새 값 쪽으로 이 비율만큼만 다가감 (1 = 필터 없음, 작을수록 부드럽지만 늦음)
+    smooth_ = param("cmd_smooth", 0.3);
+    // 코너 진입: 곡선이 처음 보이면 corner_delay_sec 동안 직진한 뒤 계획대로 회전
+    corner_delay_ = param("corner_delay_sec", 1.5);
+    corner_k_ = param("corner_k_min", 2.0);          // [1/m] 이보다 급한 곡선 = 코너 (2.0 = 반지름 50cm)
+    corner_rearm_ = param("corner_rearm_sec", 0.5);  // 곡선이 이만큼 안 보이면 다음 코너 준비
+    // 좌/우 기억 중 곡선 방향이 바뀌면 (진입 좌회전 -> U턴 우회전 등) 이 시간 [s] 직진한 뒤 회전 (0 = 끔).
+    //   U턴을 너무 일찍 시작해 안쪽 고리 선을 밟았다 (2026-10-28 drive21)
+    turn_flip_delay_ = param("turn_flip_delay_sec", 0.0);
+    // 교차로: 좌/우 표지판 기억 중에는 turn_linear 까지 감속 (0 = 감속 안 함)
+    // 도로 모델이 있으면 주행 가능 구역 안에서만 계획 (구역이 안 보이면 계획 안 하고 정지)
+    p_.road_only = param("road_only", true);
+    road_hold_sec_ = param("road_hold_sec", 0.15);
+    // 막다른 길: 막는 것이 화면 아래로 빠져 안 보여도, 마지막으로 잰 거리에서 정지 거리까지 남은 만큼 odom 으로 천천히 직진
+    creep_linear_ = param("dead_end_creep_linear", 0.05);
+    turn_linear_ = param("turn_linear", 0.12);
+    // 교차로에서 꺾을 때: 안쪽 선이 화면 아래로 빠지면 지도에서 사라져 안쪽으로 파고듦 -> odom 기억 켬
+    turn_memory_ = param("turn_memory", true);
+    // 공사 구간: 표지판을 본 뒤 construction_hold_sec 동안 (박스가 보이면 계속 연장)
+    //   차선 폭 지키기 끔,
+    //   odom 기억 켬 (벽 옆면이 화면 밖으로 빠져도 기억해서 덜 돌고 박는 것 막음)
+    construction_hold_ = param("construction_hold_sec", 20.0);
+    construction_box_hold_ = param("construction_box_hold_sec", 3.0);
+    construction_box_min_ = param("construction_box_min_ratio", 0.002);
+    construction_memory_ = param("construction_memory", true);
+    construction_memory_lines_ = param("construction_memory_lines", false);
+    // 공사 모드 회전: 최대 회전 속도 (0 = planner.max_angular 그대로), 곡률 바꿈 벌점 (0 = planner.change_weight 그대로)
+    //   박스 사이에서 크게 꺾고 되꺾는 지그재그 줄이기. 속도는 그대로
+    construction_max_angular_ = param("construction_max_angular", 0.0);
+    construction_change_weight_ = param("construction_change_weight", 0.0);
+    p_.memory_max_frames = static_cast<int>(param("planner.memory_max_frames", 15));
+    p_.box_memory_max_frames = static_cast<int>(param("planner.box_memory_max_frames", -1));
+    // 한 프레임만 튀는 회전 명령 거르기: 최근 w_median 프레임의 가운데 값 (1 = 끔)
+    w_median_ = std::max<int64_t>(1, param("w_median", 3));
+    // 출발 / 가속 제한 [m/s^2 실제]: 정지에서 급출발하면 앞이 들림. 감속은 제한 안 함
+    accel_limit_ = param("accel_limit", 0.3);
+
+    // 계획기 파라미터 (나머지는 grid_planner.hpp 기본값)
+    const std::vector<std::pair<const char *, double *>> dparams = {
+      {"linear", &p_.linear}, {"min_linear", &p_.min_linear}, {"slow_curvature", &p_.slow_curvature},
+      {"max_angular", &p_.max_angular}, {"pivot_angular", &p_.pivot_angular},
+      {"soft_speed_ratio", &p_.soft_speed_ratio}, {"follow_mm", &p_.follow_mm},
+      {"robot_half_width_mm", &p_.robot_half_width_mm}, {"line_margin_mm", &p_.line_margin_mm},
+      {"recover_mm", &p_.recover_mm}, {"hard_line_mm", &p_.hard_line_mm}, {"near_line_cost", &p_.near_line_cost},
+      {"box_margin_mm", &p_.box_margin_mm}, {"map_y_scale", &p_.map_y_scale},
+      {"road_min_ratio", &p_.road_min_ratio},
+      {"lane_half_mm", &p_.lane_half_mm}, {"far_line_cost", &p_.far_line_cost},
+      {"box_depth_mm", &p_.box_depth_mm}, {"box_gap_mm", &p_.box_gap_mm},
+      {"memory_back_mm", &p_.memory_back_mm}, {"box_memory_back_mm", &p_.box_memory_back_mm},
+      {"dead_end_stop_mm", &p_.dead_end_stop_mm}, {"dead_end_line_mm", &p_.dead_end_line_mm},
+      {"dead_end_slow_mm", &p_.dead_end_slow_mm},
+      {"curvature_weight", &p_.curvature_weight}, {"change_weight", &p_.change_weight},
+      {"soft_depth_cost", &p_.soft_depth_cost},
+    };
+    for (const auto & [name, ptr] : dparams) {
+      *ptr = param(std::string("planner.") + name, *ptr);
+    }
+    p_.memory = param("planner.memory", p_.memory);
+    // 좌/우 기억 중 선 여유 [mm] (planner.line_margin_mm 대신). 교차로 진입 때 고리 선과 바깥 선의 빨간 띠가
+    // 붙어 표지판 쪽 길이 막히면 낮추기
+    turn_line_margin_ = param("turn_line_margin_mm", p_.line_margin_mm);
+    // 왼쪽 표지판 진입만 따로 (오른쪽은 띠가 길을 막아 0 이 필요했고, 왼쪽은 0 이면 왼쪽 코너 안쪽 선을 밟음)
+    turn_line_margin_left_ = param("turn_line_margin_left_mm", turn_line_margin_);
+    // 위 여유는 좌/우 표지판을 마지막으로 본 뒤 이 시간 [s] 동안만 (진입). 그 뒤 (U턴 등) 는 planner.line_margin_mm
+    //   (안쪽 선 밟음 막음). 0 = 좌/우 기억 내내
+    turn_line_margin_sec_ = param("turn_line_margin_sec", 0.0);
+    // 진입 뒤 (위 시간 지난 뒤) 좌/우 기억 중 선 여유 [mm]. 크면 U턴을 크게 돌아 안쪽 선에서 멀어짐
+    turn_after_margin_ = param("turn_after_margin_mm", p_.line_margin_mm);
+    // 교차로 출구: 길은 표지판 쪽으로 들어가 고리를 반대쪽으로 U턴한 뒤 다시 표지판 쪽으로 나감 (drive24 odom:
+    //   오른쪽 -70도 -> 고리 왼쪽 +155도 -> 출구 오른쪽). 표지판을 본 뒤 (가장 표지판 쪽으로 꺾인 곳부터) 반대쪽으로
+    //   turn_exit_yaw_deg [odom 도] 돌면 U턴 끝 = 출구 앞으로 보고 좌/우 기억을 turn_exit_hold_sec 동안 다시 켬. 0 = 끔.
+    //   출구를 기다리는 동안 반대 방향 표지판은 무시 (drive24: 출구에서 섬 안 표지판을 LEFT 0.61 로 한 번 보고 밖으로 나감)
+    //   turn_hold_sec 를 짧게 (진입만) 하자 출구에서 직진해 오른쪽 출구를 지나쳤다 (2026-10-28)
+    turn_exit_yaw_ = param("turn_exit_yaw_deg", 0.0) * M_PI / 180.0;
+    turn_exit_hold_ = param("turn_exit_hold_sec", 3.0);
+    turn_exit_max_ = param("turn_exit_max_sec", 20.0);   // 표지판 뒤 이 시간 안에 출구가 없으면 잊음
+    // 좌/우 기억 중 선 기억 프레임 수 (0 이하 = planner.memory_max_frames). U턴 중 안쪽 고리 선이 화면 오른쪽 아래로
+    //   빠진 뒤 0.5초 만에 잊어서 그 위로 경로를 냈다 (2026-10-28 drive19)
+    turn_memory_frames_ = static_cast<int>(param("turn_memory_max_frames", 0));
+    // 좌/우 기억 중 가장 급한 원호 반지름 [mm 실제] (0 = 기본 150). 교차로 U턴이 150 으로 못 돌아 바깥 선을 넘었다
+    turn_min_radius_ = param("turn_min_radius_mm", 0.0);
+    // 좌/우 기억 중 곡률 바꿈 벌점 (0 = planner.change_weight). 진입 좌회전 -> U턴 우회전으로 빨리 바꾸게 낮춤
+    turn_change_weight_ = param("turn_change_weight", 0.0);
+    // 좌/우 기억 중 가운데 따라가기 비용 (planner.center_cost, 0 = 끔) 과 가운데를 찾는 반경 [mm]
+    turn_center_cost_ = param("turn_center_cost", 0.0);
+    p_.center_radius_mm = param("turn_center_radius_mm", p_.center_radius_mm);
+    barrier_hold_ = param("barrier_hold_sec", 1.5);
+  }
+
   bool driving() const {return mode_ == ControlMode::LANE || mode_ == ControlMode::AVOID;}
 
   bool haveRoad() const
@@ -689,6 +720,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr debug_pub_;
   rclcpp::TimerBase::SharedPtr watchdog_;
+  rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr param_cb_;
 };
 
 int main(int argc, char ** argv)

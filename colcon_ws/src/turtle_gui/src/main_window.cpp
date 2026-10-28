@@ -2,89 +2,81 @@
 #include "turtle_gui/main_window.hpp"
 
 #include <algorithm>
-#include <chrono>
-#include <cmath>
-#include <cstring>
 #include <utility>
 
+#include <QAbstractSpinBox>
 #include <QApplication>
 #include <QCheckBox>
 #include <QDateTime>
 #include <QDoubleSpinBox>
-#include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
-#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPixmap>
 #include <QPlainTextEdit>
-#include <QProgressBar>
-#include <QScreen>
-#include <QScrollArea>
-#include <QSignalBlocker>
-#include <QSlider>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QScreen>
 #include <QSplitter>
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "turtle_gui/param_panel.hpp"
 
 namespace
 {
-constexpr int kStaleMs = 1000;   // 이 시간 이상 수신이 없으면 빨간 램프
+constexpr int kStaleMs = 1000;   // 이 시간 이상 수신이 없으면 빨간 램프 / 인식 결과 "-"
 
-// 아래 함수들은 메시지 값을 라벨에 보여줄 글자(HTML 색 포함)로 바꾼다
-QString onOff(bool v)
+// 작은 둥근 꼬리표 (색 배경 + 흰 글씨). 값이 없으면 회색
+QString chip(const QString & text, const QString & color)
 {
-  return v ? "<b style='color:#2e7d32'>검출</b>" : "<span style='color:gray'>없음</span>";
+  return QString("<span style='background:%1; color:white; font-weight:bold;'>&nbsp;%2&nbsp;</span>")
+         .arg(color, text);
 }
 
-QString lightName(uint8_t s)
+QString grayChip()
+{
+  return "<span style='color:#9e9e9e;'>-</span>";
+}
+
+QString lightChip(uint8_t s)
 {
   using M = interfaces::msg::TrafficLight;
   switch (s) {
-    case M::RED: return "<b style='color:#d32f2f'>RED</b>";
-    case M::YELLOW: return "<b style='color:#f9a825'>YELLOW</b>";
-    case M::GREEN: return "<b style='color:#2e7d32'>GREEN</b>";
-    default: return "UNKNOWN";
+    case M::RED: return chip("RED", "#d32f2f");
+    case M::YELLOW: return chip("YELLOW", "#f9a825");
+    case M::GREEN: return chip("GREEN", "#2e7d32");
+    default: return grayChip();
   }
 }
 
-QString signName(uint8_t s)
+QString signText(uint8_t s)
 {
   using M = interfaces::msg::Sign;
   switch (s) {
     case M::LEFT: return "LEFT";
     case M::RIGHT: return "RIGHT";
-    case M::CONSTRUCTION: return "CONSTRUCTION";
-    case M::PARKING: return "PARKING";
-    default: return "NONE";
+    case M::CONSTRUCTION: return "공사";
+    case M::PARKING: return "주차";
+    default: return "";
   }
 }
 
-QString barrierName(uint8_t s)
-{
-  using M = interfaces::msg::Barrier;
-  switch (s) {
-    case M::CLOSED: return "<b style='color:#d32f2f'>CLOSED</b>";
-    case M::OPEN: return "<b style='color:#2e7d32'>OPEN</b>";
-    default: return "UNKNOWN";
-  }
-}
-
-// STM32 상태 (DxlState::state)
-QString stmStateName(uint8_t st)
+// STM32 상태 (DxlState::state). 정상 주행이면 초록
+QString stmState(uint8_t st)
 {
   using M = interfaces::msg::DxlState;
   switch (st) {
-    case M::STATE_STOP_SW: return "<b style='color:#f9a825'>정지 (S1 꺼짐)</b>";
-    case M::STATE_ROS: return "<b style='color:#2e7d32'>ROS 명령 주행</b>";
+    case M::STATE_STOP_SW: return "<span style='color:#f9a825'>S1 꺼짐</span>";
+    case M::STATE_ROS: return "<span style='color:#2e7d32'>ROS 주행</span>";
     case M::STATE_ESTOP: return "<b style='color:#d32f2f'>비상 정지 (S2)</b>";
-    case M::STATE_NO_CMD: return "<b style='color:#f9a825'>명령 없음 (정지)</b>";
+    case M::STATE_NO_CMD: return "<span style='color:#757575'>명령 없음</span>";
     case M::STATE_NOT_READY: return "<b style='color:#d32f2f'>모터 준비 안 됨</b>";
-    case M::STATE_MANUAL: return "<b style='color:#1565c0'>스위치 테스트</b>";
+    case M::STATE_MANUAL: return "<span style='color:#1565c0'>스위치 테스트</span>";
     default: return QString("? (%1)").arg(st);
   }
 }
@@ -101,36 +93,61 @@ QString modeName(uint8_t m)
     default: return QString("? (%1)").arg(m);
   }
 }
+
+QString modeColor(uint8_t m)
+{
+  using M = interfaces::msg::ControlMode;
+  switch (m) {
+    case M::STOP: return "#d32f2f";
+    case M::LANE: return "#2e7d32";
+    case M::AVOID: return "#ef6c00";
+    case M::PARKING: return "#1565c0";
+    default: return "#616161";
+  }
+}
+
+// 흰 바탕 카드 (제목 + 내용). 상자 테두리 대신 옅은 배경으로 구역을 나눈다
+QFrame * card(const QString & title, QLayout * body)
+{
+  auto * frame = new QFrame;
+  frame->setObjectName("card");
+  frame->setStyleSheet("#card { background:#ffffff; border:1px solid #dde1e6; border-radius:8px; }");
+  auto * v = new QVBoxLayout(frame);
+  v->setContentsMargins(10, 8, 10, 10);
+  v->setSpacing(6);
+  if (!title.isEmpty()) {
+    auto * t = new QLabel(title);
+    t->setStyleSheet("color:#6b7280; font-size:11px; font-weight:bold;");
+    v->addWidget(t);
+  }
+  v->addLayout(body);
+  return frame;
+}
 }  // namespace
 
 MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
 : QMainWindow(parent), node_(std::move(node))
 {
   // 파라미터 (ros2 run turtle_gui turtle_gui --ros-args -p image_topic:=... 로 바꿀 수 있다)
-  wheel_separation_ = node_->declare_parameter("wheel_separation", 0.190);
-  psd_max_range_ = node_->declare_parameter("psd_max_range", 0.80);
-  // 수동 주행 속도: 시작값과 슬라이더 상한 (GUI 에서 바로 바꿀 수 있고, 여기서는 처음 값만 정한다)
+  psd_warn_ = node_->declare_parameter("psd_warn", 0.25);   // task_planner psd_obstacle_threshold 와 같게
+  // 키보드 수동 주행 속도 시작값 (GUI 에서 바로 바꿀 수 있다)
   lin_speed_init_ = node_->declare_parameter("linear_speed", 0.10);
   ang_speed_init_ = node_->declare_parameter("angular_speed", 1.5);
-  lin_speed_max_ = node_->declare_parameter("max_linear_speed", 1.0);   // 실제 상한은 stm_bridge max_wheel_speed / 펌웨어 MAX_WHEEL_MPS
-  ang_speed_max_ = node_->declare_parameter("max_angular_speed", 10.0);
 
-  // 카메라 화면 4개가 볼 토픽
-  cams_[0].key = "cam_raw";
+  // 카메라 화면 3개가 볼 토픽
+  // grid_drive (격자 계획 주행): 원본 + 도로 마스크 | 계획 지도 + 경로 -> 가로로 긴 영상이라 위에 크게
+  cams_[0].key = "cam_grid";
   cams_[0].topic = QString::fromStdString(
-    node_->declare_parameter("image_topic", std::string("image_raw/compressed")));
-  cams_[1].key = "cam_bev";
-  cams_[1].topic = QString::fromStdString(
-    node_->declare_parameter("bev_image_topic", std::string("image_bev/compressed")));
-  // grid_drive (격자 계획 주행): 원본 + 도로 마스크 | 계획 지도 + 경로
-  cams_[2].key = "cam_grid";
-  cams_[2].topic = QString::fromStdString(
     node_->declare_parameter("grid_image_topic", std::string("grid_drive/debug/compressed")));
-  cams_[3].key = "cam_object";
-  cams_[3].topic = QString::fromStdString(
+  cams_[1].key = "cam_raw";
+  cams_[1].topic = QString::fromStdString(
+    node_->declare_parameter("image_topic", std::string("image_raw/compressed")));
+  cams_[2].key = "cam_object";
+  cams_[2].topic = QString::fromStdString(
     node_->declare_parameter("object_image_topic", std::string("vision/object_debug/compressed")));
 
-  setWindowTitle("TurtleBot Test GUI");
+  setWindowTitle("TurtleBot GUI");
+  setStyleSheet("QMainWindow { background:#f3f4f6; }");
   // 기본 1600x1000 (16:10), 화면이 더 작으면 비율을 유지한 채 화면에 맞춤
   const QSize avail = QGuiApplication::primaryScreen()->availableGeometry().size();
   QSize size(1600, 1000);
@@ -139,45 +156,46 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   }
   resize(size);
 
-  // 왼쪽: 카메라 4개 (2x2) + 로그 / 오른쪽: 상태 + 조종
-  //   원본               | Bird's Eye View
-  //   격자 계획 주행     | 객체 인식
+  // 왼쪽: 카메라 + 로그
+  //   격자 계획 주행 (grid_drive)
+  //   원본 | 객체 인식
   // (카메라 밝기/노출은 GUI 가 아니라 Jetson 에서 v4l2-ctl 로 설정: vision_bringup/camera/README.md)
   auto * left = new QWidget;
   auto * left_layout = new QVBoxLayout(left);
+  left_layout->setContentsMargins(8, 8, 4, 8);
   auto * cam_grid = new QGridLayout;
-  cam_grid->addWidget(buildCameraView(cams_[0], "원본"), 0, 0);
-  cam_grid->addWidget(buildCameraView(cams_[1], "Bird's Eye View"), 0, 1);
-  cam_grid->addWidget(buildCameraView(cams_[2], "격자 계획 주행 (grid_drive): 원본 + 도로 | 지도 + 경로"), 1, 0);
-  cam_grid->addWidget(buildCameraView(cams_[3], "객체 인식"), 1, 1);
-  for (int i = 0; i < 2; ++i) {
-    cam_grid->setRowStretch(i, 1);
-    cam_grid->setColumnStretch(i, 1);
-  }
+  cam_grid->setSpacing(8);
+  cam_grid->addWidget(buildCameraView(cams_[0], "격자 계획 주행"), 0, 0, 1, 2);
+  cam_grid->addWidget(buildCameraView(cams_[1], "원본"), 1, 0);
+  cam_grid->addWidget(buildCameraView(cams_[2], "객체 인식"), 1, 1);
+  cam_grid->setRowStretch(0, 3);
+  cam_grid->setRowStretch(1, 2);
   // 아래쪽 로그창 (최대 500줄, 오래된 줄부터 지워짐)
   log_view_ = new QPlainTextEdit;
   log_view_->setReadOnly(true);
   log_view_->setMaximumBlockCount(500);
-  log_view_->setMaximumHeight(120);
+  log_view_->setMaximumHeight(90);
+  log_view_->setStyleSheet("QPlainTextEdit { background:#ffffff; border:1px solid #dde1e6; "
+    "border-radius:6px; font-family:monospace; font-size:11px; }");
   left_layout->addLayout(cam_grid, 1);
   left_layout->addWidget(log_view_);
 
+  // 오른쪽: 상태 + 조종 (위, 고정 높이) / 노드 파라미터 탭 (아래, 남는 높이 전부)
   auto * right = new QWidget;
   auto * right_layout = new QVBoxLayout(right);
-  right_layout->addWidget(buildStatusPanel(), 1);
+  right_layout->setContentsMargins(4, 8, 8, 8);
+  right_layout->setSpacing(8);
+  right_layout->addWidget(buildStatusPanel());
   right_layout->addWidget(buildControlPanel());
+  params_ = new ParamPanel(node_);
+  connect(params_, &ParamPanel::message, this, &MainWindow::log);
+  right_layout->addWidget(params_, 1);
 
-  // 화면이 좁아 오른쪽 패널이 다 안 들어가도(X11 forwarding 등) 스크롤로 전부 접근 가능하게
-  auto * right_scroll = new QScrollArea;
-  right_scroll->setWidget(right);
-  right_scroll->setWidgetResizable(true);
-  right_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-
-  // 좌우 경계를 마우스로 끌어 크기 조절 가능. 처음 비율은 5 : 2
+  // 좌우 경계를 마우스로 끌어 크기 조절 가능. 처음 비율은 3 : 2
   auto * splitter = new QSplitter;
   splitter->addWidget(left);
-  splitter->addWidget(right_scroll);
-  splitter->setStretchFactor(0, 5);
+  splitter->addWidget(right);
+  splitter->setStretchFactor(0, 3);
   splitter->setStretchFactor(1, 2);
   setCentralWidget(splitter);
 
@@ -215,186 +233,144 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
 
 QWidget * MainWindow::buildStatusPanel()
 {
-  auto * panel = new QWidget;
-  auto * layout = new QVBoxLayout(panel);
-  layout->setContentsMargins(0, 0, 0, 0);
+  auto * body = new QVBoxLayout;
+  body->setSpacing(8);
 
-  // 토픽 연결 상태
-  auto * topic_box = new QGroupBox("토픽 수신 상태");
-  auto * grid = new QGridLayout(topic_box);
-  int row = 0;
-  // 왼쪽 열: 카메라/하드웨어, 오른쪽 열: 비전 인식 결과
-  addTopicRow(grid, row++, "cam_raw", "카메라 원본");
-  addTopicRow(grid, row++, "cam_bev", "BEV 화면");
-  addTopicRow(grid, row++, "cam_grid", "grid_drive 화면");
-  addTopicRow(grid, row++, "cam_object", "객체 인식 화면");
-  addTopicRow(grid, row++, "psd", "psd");
-  addTopicRow(grid, row++, "dxl", "dxl_state");
-  addTopicRow(grid, row++, "cmd", "cmd_vel");
-  addTopicRow(grid, row++, "mode", "control_mode");
-  row = 0;
-  auto * grid2 = new QGridLayout;
-  addTopicRow(grid2, row++, "light", "traffic_light");
-  addTopicRow(grid2, row++, "sign", "sign");
-  addTopicRow(grid2, row++, "barrier", "barrier");
-  grid->addLayout(grid2, 0, 2, row, 1);
-  layout->addWidget(topic_box);
+  // 1) 제어 모드 (크게) + 토픽 수신 점들
+  auto * top = new QHBoxLayout;
+  mode_label_ = new QLabel("<span style='color:#9e9e9e; font-size:20px; font-weight:bold;'>-</span>");
+  top->addWidget(mode_label_, 1);
+  auto * lamps = new QHBoxLayout;
+  lamps->setSpacing(6);
+  addLamp(lamps, "cam_raw", "카메라", cams_[1].topic);
+  addLamp(lamps, "cam_grid", "grid", cams_[0].topic);
+  addLamp(lamps, "psd", "PSD", "psd");
+  addLamp(lamps, "dxl", "STM", "dxl_state");
+  addLamp(lamps, "mode", "모드", "control_mode");
+  top->addLayout(lamps);
+  body->addLayout(top);
 
-  // PSD
-  auto * psd_box = new QGroupBox("PSD [m]");
-  auto * psd_grid = new QGridLayout(psd_box);
+  // 2) 로봇: 배터리 / STM 상태 / 모터 이상
+  robot_label_ = new QLabel("<span style='color:#9e9e9e'>STM 수신 대기</span>");
+  body->addWidget(robot_label_);
+
+  // 3) PSD 세 칸 (가까우면 빨강) + 바퀴 속도 / cmd_vel
+  auto * psd_row = new QHBoxLayout;
+  psd_row->setSpacing(6);
   const char * names[3] = {"왼쪽", "앞", "오른쪽"};
   for (int i = 0; i < 3; ++i) {
-    psd_bar_[i] = new QProgressBar;
-    psd_bar_[i]->setRange(0, static_cast<int>(psd_max_range_ * 1000));   // 정수만 받으므로 mm 단위
-    psd_bar_[i]->setTextVisible(false);
-    psd_text_[i] = new QLabel("-");
-    psd_text_[i]->setMinimumWidth(60);
-    psd_grid->addWidget(new QLabel(names[i]), i, 0);
-    psd_grid->addWidget(psd_bar_[i], i, 1);
-    psd_grid->addWidget(psd_text_[i], i, 2);
+    auto * cell = new QVBoxLayout;
+    cell->setSpacing(0);
+    auto * name = new QLabel(QString("PSD %1").arg(names[i]));
+    name->setAlignment(Qt::AlignCenter);
+    name->setStyleSheet("color:#6b7280; font-size:10px;");
+    psd_value_[i] = new QLabel("-");
+    psd_value_[i]->setAlignment(Qt::AlignCenter);
+    psd_value_[i]->setStyleSheet("font-size:16px; font-weight:bold; color:#9e9e9e;");
+    cell->addWidget(name);
+    cell->addWidget(psd_value_[i]);
+    auto * box = new QFrame;
+    box->setStyleSheet("QFrame { background:#f3f4f6; border-radius:6px; }");
+    box->setLayout(cell);
+    psd_row->addWidget(box, 1);
   }
-  layout->addWidget(psd_box);
+  body->addLayout(psd_row);
+  motor_label_ = new QLabel("<span style='color:#9e9e9e'>모터 -</span>");
+  body->addWidget(motor_label_);
 
-  // 모터
-  auto * motor_box = new QGroupBox("모터");
-  auto * motor_form = new QFormLayout(motor_box);
-  dxl_label_ = new QLabel("-");
-  stm_label_ = new QLabel("-");
-  motor_label_ = new QLabel("-");
-  cmd_label_ = new QLabel("-");
-  mode_label_ = new QLabel("-");
-  motor_form->addRow("STM32", stm_label_);
-  motor_form->addRow("DXL 모터", motor_label_);
-  motor_form->addRow("DXL 속도", dxl_label_);
-  motor_form->addRow("cmd_vel", cmd_label_);
-  motor_form->addRow("제어 모드", mode_label_);
-  layout->addWidget(motor_box);
+  // 4) 비전 인식: 신호등 / 표지판 / 차단바 꼬리표 한 줄 (1초 동안 안 오면 "-")
+  auto * vision = new QHBoxLayout;
+  auto add_chip = [vision](const QString & name) {
+      auto * n = new QLabel(name);
+      n->setStyleSheet("color:#6b7280;");
+      auto * v = new QLabel(grayChip());
+      vision->addWidget(n);
+      vision->addWidget(v);
+      vision->addSpacing(10);
+      return v;
+    };
+  light_chip_ = add_chip("신호등");
+  sign_chip_ = add_chip("표지판");
+  barrier_chip_ = add_chip("차단바");
+  vision->addStretch();
+  body->addLayout(vision);
 
-  // 비전
-  auto * vision_box = new QGroupBox("비전 인식");
-  auto * vision_form = new QFormLayout(vision_box);
-  light_label_ = new QLabel("-");
-  sign_label_ = new QLabel("-");
-  barrier_label_ = new QLabel("-");
-  vision_form->addRow("신호등", light_label_);
-  vision_form->addRow("표지판", sign_label_);
-  vision_form->addRow("차단바", barrier_label_);
-  layout->addWidget(vision_box);
-
-  layout->addStretch();
-  return panel;
+  return card("상태", body);
 }
 
-// 토픽 이름 + 램프 한 줄을 추가하고, 램프를 key 로 stats_ 에 등록
-void MainWindow::addTopicRow(QGridLayout * grid, int row, const QString & key, const QString & topic)
+// 수신 점 하나 ("● 카메라"). 툴팁에 토픽 이름과 Hz
+void MainWindow::addLamp(QHBoxLayout * row, const QString & key, const QString & text, const QString & topic)
 {
-  auto * lamp = new QLabel("●  -");
-  lamp->setStyleSheet("color:gray;");
-  lamp->setMinimumWidth(80);
-  grid->addWidget(new QLabel(topic), row, 0);
-  grid->addWidget(lamp, row, 1);
+  auto * lamp = new QLabel(QString("<span style='color:#bdbdbd'>●</span> %1").arg(text));
+  lamp->setStyleSheet("color:#6b7280; font-size:11px;");
+  lamp->setToolTip(topic + ": 수신 없음");
+  row->addWidget(lamp);
   stats_[key].lamp = lamp;
+  stats_[key].topic = topic;
 }
 
 QWidget * MainWindow::buildControlPanel()
 {
-  auto * box = new QGroupBox("조종 (송신)");
-  auto * layout = new QVBoxLayout(box);
+  auto * body = new QVBoxLayout;
+  body->setSpacing(8);
 
-  // 모드 강제 변경 (버튼을 누르면 control_mode 를 한 번 발행)
-  auto * mode_row = new QHBoxLayout;
-  mode_row->addWidget(new QLabel("control_mode:"));
-  using M = interfaces::msg::ControlMode;
-  for (uint8_t m : {M::STOP, M::LANE, M::AVOID, M::PARKING}) {
-    auto * btn = new QPushButton(modeName(m));
-    btn->setFocusPolicy(Qt::NoFocus);   // 버튼이 포커스를 가져가 Space 로 눌리는 일이 없도록
-    connect(btn, &QPushButton::clicked, this, [this, m] {sendControlMode(m);});
-    mode_row->addWidget(btn);
-  }
-  // 자율주행 시작: task_planner 가 신호등 대기(WAIT_LIGHT)부터 미션을 진행한다. 멈추려면 STOP
-  auto * start_btn = new QPushButton("자율주행 시작");
-  start_btn->setFocusPolicy(Qt::NoFocus);
-  start_btn->setStyleSheet("font-weight:bold; color:#2e7d32;");
+  // 버튼 두 개만: 정지 / 자율주행 시작
+  auto * buttons = new QHBoxLayout;
+  buttons->setSpacing(8);
+  auto make_button = [buttons](const QString & text, const QString & color, const QString & hover) {
+      auto * b = new QPushButton(text);
+      b->setFocusPolicy(Qt::NoFocus);   // 버튼이 포커스를 가져가 Space 로 눌리는 일이 없도록
+      b->setMinimumHeight(48);
+      b->setCursor(Qt::PointingHandCursor);
+      b->setStyleSheet(QString(
+        "QPushButton { background:%1; color:white; font-size:16px; font-weight:bold; border:none; "
+        "border-radius:8px; } QPushButton:hover { background:%2; } QPushButton:pressed { padding-top:2px; }")
+        .arg(color, hover));
+      buttons->addWidget(b, 1);
+      return b;
+    };
+  // 정지: control_mode STOP (task_planner / grid_drive 멈춤) + cmd_vel 0
+  auto * stop_btn = make_button("■  STOP", "#d32f2f", "#b71c1c");
+  stop_btn->setToolTip("control_mode STOP + cmd_vel 0  (Space 는 cmd_vel 0 만)");
+  connect(stop_btn, &QPushButton::clicked, this, &MainWindow::sendStop);
+  // 자율주행 시작: task_planner 가 신호등 대기(WAIT_LIGHT)부터 미션을 진행한다
+  auto * start_btn = make_button("▶  자율주행 시작", "#2e7d32", "#1b5e20");
+  start_btn->setToolTip("mission_start 발행: 신호등 대기부터 미션 시작");
   connect(start_btn, &QPushButton::clicked, this, &MainWindow::sendMissionStart);
-  mode_row->addWidget(start_btn);
-  layout->addLayout(mode_row);
+  body->addLayout(buttons);
 
-  // 수동 주행
-  manual_enable_ = new QCheckBox("수동 주행 (cmd_vel 발행)  — W/A/S/D, Space=정지");
+  // 키보드 수동 주행 (W/A/S/D, Space = 정지). 체크해야 cmd_vel 을 보낸다
+  auto * manual = new QHBoxLayout;
+  manual_enable_ = new QCheckBox("키보드 주행 (WASD)");
   manual_enable_->setFocusPolicy(Qt::NoFocus);
   // 체크를 끄면 바로 정지 명령을 한 번 보낸다
   connect(manual_enable_, &QCheckBox::toggled, this, [this](bool on) {
     pressed_keys_.clear();
-    log(on ? "수동 주행 ON: cmd_vel 발행 시작" : "수동 주행 OFF");
+    log(on ? "키보드 주행 ON: cmd_vel 발행 시작" : "키보드 주행 OFF");
     if (!on) {
       cmd_pub_->publish(geometry_msgs::msg::Twist());
       was_moving_ = false;
     }
   });
-  layout->addWidget(manual_enable_);
-
-  // 속도 조절: 슬라이더와 숫자칸이 서로 연동된다. 주행 중에 바꿔도 다음 송신(0.1초)부터 바로 반영
-  auto * speed_grid = new QGridLayout;
-  auto make_speed = [this, speed_grid](int row, const QString & name, const QString & unit,
-      double init, double max, double step) {
+  manual->addWidget(manual_enable_);
+  manual->addStretch();
+  auto make_speed = [manual](double init, double max, double step, const QString & unit) {
       auto * spin = new QDoubleSpinBox;
       spin->setRange(0.0, max);
       spin->setDecimals(2);
       spin->setSingleStep(step);
       spin->setValue(std::min(init, max));
       spin->setSuffix(" " + unit);
-      // 슬라이더는 정수만 다루므로 step 단위 칸 수로 바꿔서 쓴다 (0.01 m/s -> 1칸)
-      auto * slider = new QSlider(Qt::Horizontal);
-      slider->setRange(0, static_cast<int>(std::lround(max / step)));
-      slider->setValue(static_cast<int>(std::lround(spin->value() / step)));
-      connect(slider, &QSlider::valueChanged, spin, [spin, step](int v) {spin->setValue(v * step);});
-      connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), slider,
-        [slider, step](double v) {
-          const QSignalBlocker block(slider);   // 슬라이더 -> 숫자칸 -> 슬라이더 되먹임 방지
-          slider->setValue(static_cast<int>(std::lround(v / step)));
-        });
-      connect(spin, &QDoubleSpinBox::editingFinished, this, [this, name, spin] {
-        log(QString("%1 = %2").arg(name).arg(spin->value(), 0, 'f', 2));
-      });
-      speed_grid->addWidget(new QLabel(name), row, 0);
-      speed_grid->addWidget(slider, row, 1);
-      speed_grid->addWidget(spin, row, 2);
+      spin->setFocusPolicy(Qt::ClickFocus);
+      manual->addWidget(spin);
       return spin;
     };
-  lin_speed_ = make_speed(0, "선속도 (W/S)", "m/s", lin_speed_init_, lin_speed_max_, 0.01);
-  ang_speed_ = make_speed(1, "각속도 (A/D)", "rad/s", ang_speed_init_, ang_speed_max_, 0.1);
-  speed_grid->setColumnStretch(1, 1);
-  layout->addLayout(speed_grid);
+  // 상한은 stm_bridge max_wheel_speed / 펌웨어 MAX_WHEEL_MPS 가 따로 막는다
+  lin_speed_ = make_speed(lin_speed_init_, 1.0, 0.01, "m/s");
+  ang_speed_ = make_speed(ang_speed_init_, 10.0, 0.1, "rad/s");
+  body->addLayout(manual);
 
-  // 화면 버튼 (누르고 있는 동안 이동)
-  // 버튼을 누르면 키보드로 그 키를 누른 것과 똑같이 pressed_keys_ 에 넣는다
-  auto * pad = new QGridLayout;
-  auto make_key = [this, pad](const QString & text, int key, int r, int c) {
-      auto * btn = new QPushButton(text);
-      btn->setFocusPolicy(Qt::NoFocus);
-      btn->setMinimumHeight(36);
-      connect(btn, &QPushButton::pressed, this, [this, key] {pressed_keys_.insert(key);});
-      connect(btn, &QPushButton::released, this, [this, key] {pressed_keys_.erase(key);});
-      pad->addWidget(btn, r, c);
-    };
-  make_key("W ▲", Qt::Key_W, 0, 1);
-  make_key("A ◀", Qt::Key_A, 1, 0);
-  make_key("S ▼", Qt::Key_S, 1, 1);
-  make_key("D ▶", Qt::Key_D, 1, 2);
-  auto * stop_btn = new QPushButton("정지 (Space)");
-  stop_btn->setFocusPolicy(Qt::NoFocus);
-  stop_btn->setStyleSheet("background:#d32f2f; color:white; font-weight:bold;");
-  stop_btn->setMinimumHeight(36);
-  connect(stop_btn, &QPushButton::clicked, this, [this] {
-    pressed_keys_.clear();
-    cmd_pub_->publish(geometry_msgs::msg::Twist());
-    was_moving_ = false;
-  });
-  pad->addWidget(stop_btn, 0, 2);
-  layout->addLayout(pad);
-
-  return box;
+  return card("조종", body);
 }
 
 // 모든 구독/발행 생성. 구독 콜백은 받은 값을 해당 라벨에 표시하고 touch() 로 수신 기록만 남긴다
@@ -414,93 +390,92 @@ void MainWindow::setupRos()
   psd_sub_ = node_->create_subscription<interfaces::msg::PsdArray>(
     "psd", qos, [this](interfaces::msg::PsdArray::ConstSharedPtr msg) {
       touch("psd");
-      const float v[3] = {msg->left, msg->front, msg->right};   // [m], 막대는 mm 단위
+      const float v[3] = {msg->left, msg->front, msg->right};   // [m]
       for (int i = 0; i < 3; ++i) {
-        psd_bar_[i]->setValue(std::clamp(static_cast<int>(v[i] * 1000), 0, psd_bar_[i]->maximum()));
-        psd_text_[i]->setText(QString::number(v[i], 'f', 3));
+        psd_value_[i]->setText(QString::number(v[i], 'f', 2));
+        psd_value_[i]->setStyleSheet(QString("font-size:16px; font-weight:bold; color:%1;")
+          .arg(v[i] < psd_warn_ ? "#d32f2f" : "#111827"));
       }
     });
 
   dxl_sub_ = node_->create_subscription<interfaces::msg::DxlState>(
     "dxl_state", qos, [this](interfaces::msg::DxlState::ConstSharedPtr msg) {
       touch("dxl");
-      QString text = QString("L %1  R %2 m/s").arg(msg->left_velocity, 6, 'f', 3)
-        .arg(msg->right_velocity, 6, 'f', 3);
-      // 다이나믹셀 하드웨어 에러가 있으면 빨간 글씨로 에러 코드(16진수) 표시
+      // 배터리 · STM 상태 · 모터 (정상이면 "모터 OK" 만, 이상이면 무엇이 문제인지)
+      QString motor;
+      if (msg->motor_count != 2 || !msg->left_torque || !msg->right_torque) {
+        motor = QString("<b style='color:#d32f2f'>모터 %1개 (L%2 R%3)</b>").arg(msg->motor_count)
+          .arg(msg->left_torque ? "" : " 토크OFF").arg(msg->right_torque ? "" : " 토크OFF");
+      } else {
+        motor = "<span style='color:#2e7d32'>모터 OK</span>";
+      }
       if (msg->left_error || msg->right_error) {
-        text += QString("   <b style='color:#d32f2f'>ERR L=0x%1 R=0x%2</b>")
+        motor += QString("  <b style='color:#d32f2f'>ERR L=0x%1 R=0x%2</b>")
           .arg(msg->left_error, 2, 16, QChar('0')).arg(msg->right_error, 2, 16, QChar('0'));
       }
-      dxl_label_->setText(text);
-
-      // STM32 상태 + 스위치(S1~S4 중 켜진 것)
-      QString sw;
-      for (int i = 0; i < 4; ++i) {
-        if (msg->switches & (1 << i)) {
-          sw += QString(" S%1").arg(i + 1);
-        }
-      }
-      stm_label_->setText(QString("%1   스위치:%2   %3 V").arg(stmStateName(msg->state))
-        .arg(sw.isEmpty() ? " 없음" : sw).arg(msg->voltage, 0, 'f', 1));
-
-      // 찾은 모터 수 / ID / 토크. 2개가 아니면 빨간 글씨
-      auto motor = [](uint8_t id, bool torque) {
-          return id == 0 ? QString("<span style='color:#d32f2f'>없음</span>") :
-                 QString("ID %1 %2").arg(id).arg(torque ? "토크 ON" :
-                 "<b style='color:#d32f2f'>토크 OFF</b>");
-        };
-      const QString count = msg->motor_count == 2 ? QString("%1개").arg(msg->motor_count) :
-        QString("<b style='color:#d32f2f'>%1개</b>").arg(msg->motor_count);
-      motor_label_->setText(QString("%1   L: %2   R: %3").arg(count)
-        .arg(motor(msg->left_id, msg->left_torque)).arg(motor(msg->right_id, msg->right_torque)));
+      robot_label_->setText(QString("<b style='font-size:14px'>%1 V</b> &nbsp;·&nbsp; %2 &nbsp;·&nbsp; %3")
+        .arg(msg->voltage, 0, 'f', 1).arg(stmState(msg->state)).arg(motor));
+      wheel_text_ = QString("바퀴 L %1  R %2 m/s").arg(msg->left_velocity, 0, 'f', 2)
+        .arg(msg->right_velocity, 0, 'f', 2);
+      refreshMotor();
     });
 
-  // 실제로 로봇에 들어가는 cmd_vel (GUI가 보낸 것 포함) + stm과 같은 식으로 바퀴 목표속도 계산
+  // 실제로 로봇에 들어가는 cmd_vel (GUI가 보낸 것 포함)
   cmd_sub_ = node_->create_subscription<geometry_msgs::msg::Twist>(
     cmd_topic, 10, [this](geometry_msgs::msg::Twist::ConstSharedPtr msg) {
       touch("cmd");
-      const double v = msg->linear.x, w = msg->angular.z;
-      cmd_label_->setText(QString("v %1 m/s  w %2 rad/s  →  목표 L %3  R %4")
-        .arg(v, 0, 'f', 2).arg(w, 0, 'f', 2)
-        .arg(v - w * wheel_separation_ / 2.0, 0, 'f', 3)
-        .arg(v + w * wheel_separation_ / 2.0, 0, 'f', 3));
+      cmd_text_ = QString("명령 v %1  w %2").arg(msg->linear.x, 0, 'f', 2).arg(msg->angular.z, 0, 'f', 2);
+      refreshMotor();
     });
 
   mode_sub_ = node_->create_subscription<interfaces::msg::ControlMode>(
     "control_mode", 10, [this](interfaces::msg::ControlMode::ConstSharedPtr msg) {
       touch("mode");
-      mode_label_->setText(QString("<b>%1</b>  %2").arg(modeName(msg->mode))
-        .arg(QString::fromStdString(msg->mission_state)));
+      mode_label_->setText(QString("<span style='color:%1; font-size:20px; font-weight:bold;'>%2</span>"
+        "&nbsp;&nbsp;<span style='color:#6b7280; font-size:12px;'>%3</span>")
+        .arg(modeColor(msg->mode), modeName(msg->mode),
+        QString::fromStdString(msg->mission_state).toHtmlEscaped()));
     });
 
   // --- vision ---
   light_sub_ = node_->create_subscription<interfaces::msg::TrafficLight>(
     "traffic_light", qos, [this](interfaces::msg::TrafficLight::ConstSharedPtr m) {
       touch("light");
-      light_label_->setText(QString("%1  (%2)").arg(lightName(m->state))
-        .arg(m->confidence, 0, 'f', 2));
+      light_chip_->setText(lightChip(m->state));
     });
   sign_sub_ = node_->create_subscription<interfaces::msg::Sign>(
     "sign", qos, [this](interfaces::msg::Sign::ConstSharedPtr m) {
       touch("sign");
-      sign_label_->setText(QString("<b>%1</b>  area %2  (%3)").arg(signName(m->type))
-        .arg(m->area_ratio, 0, 'f', 3).arg(m->confidence, 0, 'f', 2));
+      const QString name = signText(m->type);
+      sign_chip_->setText(name.isEmpty() ? grayChip() :
+        chip(QString("%1 %2").arg(name).arg(m->confidence, 0, 'f', 2), "#1565c0"));
     });
   barrier_sub_ = node_->create_subscription<interfaces::msg::Barrier>(
     "barrier", qos, [this](interfaces::msg::Barrier::ConstSharedPtr m) {
       touch("barrier");
-      barrier_label_->setText(QString("%1  %2  (%3)").arg(onOff(m->detected))
-        .arg(barrierName(m->state)).arg(m->confidence, 0, 'f', 2));
+      using B = interfaces::msg::Barrier;
+      barrier_chip_->setText(!m->detected ? grayChip() :
+        m->state == B::CLOSED ? chip("닫힘", "#d32f2f") :
+        m->state == B::OPEN ? chip("열림", "#2e7d32") : chip("?", "#757575"));
     });
 
   // --- 송신 ---
-  // cmd_vel 은 stm_bridge 가 받아 바로 바퀴로 보낸다 (수동 주행 체크 시에만 발행)
+  // cmd_vel 은 stm_bridge 가 받아 바로 바퀴로 보낸다 (키보드 주행 체크 시 / 정지 때만 발행)
   cmd_pub_ = node_->create_publisher<geometry_msgs::msg::Twist>(cmd_topic, 10);
   mode_pub_ = node_->create_publisher<interfaces::msg::ControlMode>("control_mode", 10);
   start_pub_ = node_->create_publisher<std_msgs::msg::Empty>("mission_start", 10);
 }
 
-// 토픽 key 를 방금 받았다고 기록 (처음 받으면 로그, 램프는 즉시 초록)
+void MainWindow::refreshMotor()
+{
+  QStringList parts;
+  if (!wheel_text_.isEmpty()) {parts << wheel_text_;}
+  if (!cmd_text_.isEmpty()) {parts << cmd_text_;}
+  motor_label_->setText(parts.isEmpty() ? "<span style='color:#9e9e9e'>모터 -</span>" :
+    "<span style='font-family:monospace;'>" + parts.join("&nbsp;&nbsp;│&nbsp;&nbsp;") + "</span>");
+}
+
+// 토픽 key 를 방금 받았다고 기록 (처음 받으면 로그)
 void MainWindow::touch(const QString & key)
 {
   auto & s = stats_[key];
@@ -509,23 +484,35 @@ void MainWindow::touch(const QString & key)
   }
   s.last.start();
   ++s.count;
-  // 매 메시지마다 setStyleSheet 하면 느리므로 색이 바뀔 때만
-  if (s.lamp && !s.lamp->styleSheet().contains("green")) {
-    s.lamp->setStyleSheet("color:green;");
-  }
+}
+
+bool MainWindow::fresh(const QString & key) const
+{
+  const auto it = stats_.find(key);
+  return it != stats_.end() && it->second.last.isValid() && it->second.last.elapsed() <= kStaleMs;
 }
 
 void MainWindow::refreshLamps()
 {
   // 1초마다 호출 -> count 가 곧 Hz
   for (auto & [key, s] : stats_) {
-    if (!s.lamp || !s.last.isValid()) {
-      continue;   // 한 번도 안 받은 토픽은 회색 그대로
+    if (s.lamp && s.last.isValid()) {
+      const bool stale = s.last.elapsed() > kStaleMs;
+      QString text = s.lamp->text();
+      text.replace(QRegularExpression("color:#[0-9a-f]+"), stale ? "color:#d32f2f" : "color:#2e7d32");
+      s.lamp->setText(text);
+      s.lamp->setToolTip(QString("%1: %2 Hz").arg(s.topic).arg(s.count));
     }
-    const bool stale = s.last.elapsed() > kStaleMs;
-    s.lamp->setStyleSheet(stale ? "color:#d32f2f;" : "color:green;");
-    s.lamp->setText(QString("●  %1 Hz").arg(s.count));
     s.count = 0;
+  }
+  // 인식 결과가 끊기면 마지막 값을 계속 보여주지 않고 "-"
+  if (!fresh("light")) {light_chip_->setText(grayChip());}
+  if (!fresh("sign")) {sign_chip_->setText(grayChip());}
+  if (!fresh("barrier")) {barrier_chip_->setText(grayChip());}
+  if (!fresh("psd")) {
+    for (auto * l : psd_value_) {
+      l->setStyleSheet("font-size:16px; font-weight:bold; color:#9e9e9e;");
+    }
   }
 }
 
@@ -553,19 +540,24 @@ void MainWindow::sendManualCmd()
   was_moving_ = moving;
 }
 
-// 모드 버튼: control_mode 를 한 번 발행 (mission_state 에 "turtle_gui" 를 넣어 GUI 가 보낸 것임을 표시)
-void MainWindow::sendControlMode(uint8_t mode)
+// STOP 버튼: control_mode STOP 을 한 번 발행 (mission_state "turtle_gui" = GUI 가 보낸 것) + cmd_vel 0
+//   task_planner 는 GUI STOP 을 받으면 미션을 멈춘다. 다시 가려면 자율주행 시작
+void MainWindow::sendStop()
 {
+  manual_enable_->setChecked(false);
+  pressed_keys_.clear();
   interfaces::msg::ControlMode msg;
   msg.header.stamp = node_->now();
-  msg.mode = mode;
+  msg.mode = interfaces::msg::ControlMode::STOP;
   msg.mission_state = "turtle_gui";
   mode_pub_->publish(msg);
-  log(QString("control_mode 발행: %1").arg(modeName(mode)));
+  cmd_pub_->publish(geometry_msgs::msg::Twist());
+  was_moving_ = false;
+  log("STOP: control_mode STOP + cmd_vel 0");
 }
 
 // 자율주행 시작 버튼: task_planner 에 mission_start 를 보낸다 (처음부터 다시 시작, GUI 오버라이드 해제)
-//   수동 주행 cmd_vel 과 섞이지 않도록 수동 주행 체크는 끈다
+//   키보드 주행 cmd_vel 과 섞이지 않도록 키보드 주행 체크는 끈다
 void MainWindow::sendMissionStart()
 {
   manual_enable_->setChecked(false);
@@ -574,9 +566,14 @@ void MainWindow::sendMissionStart()
 }
 
 // 앱 전체 키 입력 가로채기. W/A/S/D/Space 는 여기서 처리하고 true 를 반환해 다른 위젯에 안 넘긴다
+//   단, 파라미터 값/검색칸 같은 글자 입력칸에 포커스가 있으면 그 칸에 글자를 넘긴다
 bool MainWindow::eventFilter(QObject * obj, QEvent * event)
 {
   if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
+    const QWidget * focus = QApplication::focusWidget();
+    if (qobject_cast<const QLineEdit *>(focus) || qobject_cast<const QAbstractSpinBox *>(focus)) {
+      return QMainWindow::eventFilter(obj, event);
+    }
     auto * ke = static_cast<QKeyEvent *>(event);
     const int key = ke->key();
     if (key == Qt::Key_W || key == Qt::Key_A || key == Qt::Key_S || key == Qt::Key_D) {
@@ -590,7 +587,7 @@ bool MainWindow::eventFilter(QObject * obj, QEvent * event)
       }
       return true;
     }
-    // Space: 즉시 정지 (수동 주행 체크와 상관없이 정지 명령 발행)
+    // Space: 즉시 정지 (키보드 주행 체크와 상관없이 cmd_vel 0 발행)
     if (key == Qt::Key_Space) {
       if (event->type() == QEvent::KeyPress && !ke->isAutoRepeat()) {
         pressed_keys_.clear();
@@ -609,23 +606,34 @@ void MainWindow::log(const QString & text)
     QDateTime::currentDateTime().toString("hh:mm:ss  ") + text);
 }
 
-// 카메라 화면 하나 (제목 상자 + 영상 + 정보 줄)
+// 카메라 화면 하나 (제목 줄 + 영상)
 QWidget * MainWindow::buildCameraView(CameraView & view, const QString & title)
 {
-  auto * box = new QGroupBox(title);
-  auto * layout = new QVBoxLayout(box);
-  layout->setContentsMargins(4, 4, 4, 4);
+  auto * frame = new QFrame;
+  frame->setObjectName("cam");
+  frame->setStyleSheet("#cam { background:#ffffff; border:1px solid #dde1e6; border-radius:8px; }");
+  auto * layout = new QVBoxLayout(frame);
+  layout->setContentsMargins(6, 4, 6, 6);
+  layout->setSpacing(4);
+  auto * head = new QHBoxLayout;
+  auto * t = new QLabel(title);
+  t->setStyleSheet("font-weight:bold; color:#374151;");
+  view.info = new QLabel("");
+  view.info->setStyleSheet("color:#9ca3af; font-size:11px;");
+  view.info->setToolTip(view.topic);
+  head->addWidget(t);
+  head->addStretch();
+  head->addWidget(view.info);
   view.image = new QLabel("수신 대기 중\n" + view.topic);
   view.image->setAlignment(Qt::AlignCenter);
-  view.image->setMinimumSize(240, 180);
+  view.image->setMinimumSize(200, 120);
   // Ignored: 들어온 영상 크기에 맞춰 라벨이 커지지 않고, 레이아웃이 정한 크기를 따른다
   view.image->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-  view.image->setStyleSheet("background:#202020; color:#aaaaaa;");
-  view.info = new QLabel("-");
+  view.image->setStyleSheet("background:#1f2328; color:#8b949e; border-radius:4px;");
+  layout->addLayout(head);
   layout->addWidget(view.image, 1);
-  layout->addWidget(view.info);
   view.fps_timer.start();
-  return box;
+  return frame;
 }
 
 // 카메라 토픽 구독. 압축(JPEG) 이면 Qt 가 바로 디코딩하고, 아니면 raw 픽셀을 QImage 로 바꾼다
@@ -675,7 +683,6 @@ void MainWindow::subscribeCamera(CameraView & view)
         onFrame(*v, img);
       });
   }
-  log(QString("카메라 구독: %1").arg(view.topic));
 }
 
 // 프레임 하나를 화면에 표시하고 fps 갱신 (1초마다 받은 프레임 수로 계산)
@@ -686,9 +693,9 @@ void MainWindow::onFrame(CameraView & view, const QImage & image)
   if (view.fps_timer.elapsed() >= 1000) {
     view.fps = view.frames * 1000.0 / view.fps_timer.restart();
     view.frames = 0;
+    view.info->setText(QString("%1x%2  %3 fps").arg(image.width()).arg(image.height())
+      .arg(view.fps, 0, 'f', 1));
   }
-  view.info->setText(QString("%1 x %2   %3 fps   %4").arg(image.width()).arg(image.height())
-    .arg(view.fps, 0, 'f', 1).arg(view.topic));
   // 라벨 크기에 맞춰 비율을 유지하며 축소/확대
   view.image->setPixmap(QPixmap::fromImage(image).scaled(
       view.image->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));

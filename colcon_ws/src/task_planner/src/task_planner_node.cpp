@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "interfaces/msg/barrier.hpp"
 #include "interfaces/msg/control_mode.hpp"
@@ -48,33 +49,28 @@ public:
   TaskPlannerNode()
   : Node("task_planner")
   {
-    min_confidence_ = declare_parameter("min_confidence", 0.5);
-    sign_area_ratio_threshold_ = declare_parameter("sign_area_ratio_threshold", 0.05);
-    psd_obstacle_threshold_ = declare_parameter("psd_obstacle_threshold", 0.25);
-    psd_clear_threshold_ = declare_parameter("psd_clear_threshold", 0.35);
-    psd_clear_count_ = declare_parameter("psd_clear_count", 10);
-    barrier_cross_duration_ = declare_parameter("barrier_cross_duration", 3.0);
-    // 차단바가 이 위치(이미지 세로 비율, 0 상단~1 하단)보다 가까워져야 정지/통과 판단.
-    // 멀리서 잠깐 잘못 보이거나, 닫힌 채로 멀리 있을 때 미리 서버리지 않고 정해진 위치까지 접근하게 함
-    barrier_stop_y_ratio_ = declare_parameter("barrier_stop_y_ratio", 0.5);
-    // 모델이 "열림(bar_open)"을 잘 못 맞혀서, 차단바가 아예 안 보이는 것도 "치워짐"으로 봄.
-    // 한 프레임만 놓쳐도 바로 출발하면 위험하니 이만큼 연속으로 못 봐야 인정 (psd_clear_count 와 같은 방식)
-    barrier_lost_count_ = declare_parameter("barrier_lost_count", 10);
-    // false: 차단바 인식으로 STOP 을 보내지 않음 (grid_drive 가 차단바 앞 막다른 길에서 알아서 멈추고,
-    //   열리면 다시 감). TO_BARRIER 에서 계속 LANE
-    barrier_stop_ = declare_parameter("barrier_stop", true);
-    // 주차 노드의 PARKING 이 이만큼 안 오면 주차 노드가 운전을 그만둔 것으로 봄
-    parking_quiet_sec_ = declare_parameter("parking_quiet_sec", 0.5);
+    loadParams();
+    // 시작할 때만 읽는 파라미터. 설명의 "재시작" 을 보고 turtle_gui 가 ↻ 표시
+    rcl_interfaces::msg::ParameterDescriptor restart;
+    restart.description = "재시작해야 반영 (시작할 때만 읽음)";
     // 테스트용: 특정 상태부터 바로 시작 (기본 WAIT_LIGHT = 실제 미션과 동일하게 처음부터)
     //   예: start_state:=TO_BARRIER 로 차단바 구간만 따로 테스트
-    start_state_ = stateFromName(declare_parameter("start_state", std::string("WAIT_LIGHT")));
+    start_state_ = stateFromName(declare_parameter("start_state", std::string("WAIT_LIGHT"), restart));
     state_ = start_state_;
     // true: GUI "자율주행 시작"(mission_start) 을 받을 때까지 대기 (grid_drive_bringup 에서 사용)
-    started_ = !declare_parameter("wait_start", false);
-    parking_sign_area_ratio_threshold_ =
-      declare_parameter("parking_sign_area_ratio_threshold", 0.03);
-    parking_sign_hits_needed_ = declare_parameter("parking_sign_hits_needed", 3);
-    const double tick_rate = declare_parameter("tick_rate", 20.0);
+    started_ = !declare_parameter("wait_start", false, restart);
+    const double tick_rate = declare_parameter("tick_rate", 20.0, restart);
+    // 나머지는 실행 중에 바꾸면 (turtle_gui 파라미터 탭, ros2 param set) loadParams 로 바로 반영
+    rcl_interfaces::msg::ParameterDescriptor ro;
+    ro.read_only = true;
+    ro.description = "turtle_gui 표시용: 파라미터를 바꾸면 바로 반영되는 노드";
+    declare_parameter("live_params", true, ro);
+    param_cb_ = add_post_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {
+        loadParams();
+        for (const auto & q : ps) {
+          RCLCPP_INFO(get_logger(), "파라미터 %s = %s", q.get_name().c_str(), q.value_to_string().c_str());
+        }
+      });
 
     const auto qos = rclcpp::SensorDataQoS();
     light_sub_ = create_subscription<interfaces::msg::TrafficLight>(
@@ -132,6 +128,41 @@ public:
   }
 
 private:
+  // 처음이면 선언, 이미 있으면 지금 값 (실행 중 바뀐 값) 을 읽는다
+  template<typename T>
+  T param(const std::string & name, const T & def)
+  {
+    if (!has_parameter(name)) {
+      return declare_parameter(name, def);
+    }
+    return get_parameter(name).get_value<T>();
+  }
+
+  // 실행 중에 바꿀 수 있는 파라미터 전부. 생성자에서 한 번, 파라미터가 바뀔 때마다 다시
+  void loadParams()
+  {
+    min_confidence_ = param("min_confidence", 0.5);
+    sign_area_ratio_threshold_ = param("sign_area_ratio_threshold", 0.05);
+    psd_obstacle_threshold_ = param("psd_obstacle_threshold", 0.25);
+    psd_clear_threshold_ = param("psd_clear_threshold", 0.35);
+    psd_clear_count_ = param("psd_clear_count", 10);
+    barrier_cross_duration_ = param("barrier_cross_duration", 3.0);
+    // 차단바가 이 위치(이미지 세로 비율, 0 상단~1 하단)보다 가까워져야 정지/통과 판단.
+    // 멀리서 잠깐 잘못 보이거나, 닫힌 채로 멀리 있을 때 미리 서버리지 않고 정해진 위치까지 접근하게 함
+    barrier_stop_y_ratio_ = param("barrier_stop_y_ratio", 0.5);
+    // 모델이 "열림(bar_open)"을 잘 못 맞혀서, 차단바가 아예 안 보이는 것도 "치워짐"으로 봄.
+    // 한 프레임만 놓쳐도 바로 출발하면 위험하니 이만큼 연속으로 못 봐야 인정 (psd_clear_count 와 같은 방식)
+    barrier_lost_count_ = param("barrier_lost_count", 10);
+    // false: 차단바 인식으로 STOP 을 보내지 않음 (grid_drive 가 차단바 앞 막다른 길에서 알아서 멈추고,
+    //   열리면 다시 감). TO_BARRIER 에서 계속 LANE
+    barrier_stop_ = param("barrier_stop", true);
+    // 주차 노드의 PARKING 이 이만큼 안 오면 주차 노드가 운전을 그만둔 것으로 봄
+    parking_quiet_sec_ = param("parking_quiet_sec", 0.5);
+    parking_sign_area_ratio_threshold_ =
+      param("parking_sign_area_ratio_threshold", 0.03);
+    parking_sign_hits_needed_ = param("parking_sign_hits_needed", 3);
+  }
+
   // 테스트용 start_state 파라미터(문자열) -> State. 모르는 이름이면 경고 찍고 WAIT_LIGHT
   State stateFromName(const std::string & name)
   {
@@ -358,6 +389,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr start_sub_;
   rclcpp::Publisher<ControlMode>::SharedPtr mode_pub_;
   rclcpp::TimerBase::SharedPtr tick_timer_;
+  rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr param_cb_;
 };
 
 int main(int argc, char ** argv)

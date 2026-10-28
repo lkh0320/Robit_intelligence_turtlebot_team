@@ -13,16 +13,19 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Widgets)
 
 add_executable(turtle_gui
   src/main.cpp
   src/main_window.cpp
+  src/param_panel.cpp
   include/turtle_gui/main_window.hpp
+  include/turtle_gui/param_panel.hpp
 )
 target_include_directories(turtle_gui PRIVATE include)
 target_link_libraries(turtle_gui Qt5::Widgets)
-ament_target_dependencies(turtle_gui rclcpp sensor_msgs geometry_msgs interfaces std_msgs)
+ament_target_dependencies(turtle_gui rclcpp sensor_msgs geometry_msgs interfaces std_msgs rcl_interfaces)
 
 install(TARGETS turtle_gui
   DESTINATION lib/${PROJECT_NAME})
