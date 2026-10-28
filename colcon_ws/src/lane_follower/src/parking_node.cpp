@@ -376,6 +376,8 @@ private:
     side_arc_speed_ = declare_parameter("side_arc_speed", 0.06);
     side_arc_forward_m_ = declare_parameter("side_arc_forward_m", 0.0);
     side_arc_forward_max_m_ = declare_parameter("side_arc_forward_max_m", 0.30);
+    // 0 보다 크면 거리 (side_arc_forward_m) 대신 이 시간 [s] 만큼 더 전진한 뒤 곡선
+    side_arc_forward_time_ = declare_parameter("side_arc_forward_time", 0.0);
     side_arc_backup_time_ = declare_parameter("side_arc_backup_time", 0.0);
 
     // 8) 90도 돈 뒤 후진
@@ -1209,10 +1211,16 @@ private:
   void start_side_forward(double direction)
   {
     side_direction_ = direction;
-    const double extra_m = std::clamp(side_arc_forward_m_, 0.0, side_arc_forward_max_m_);
+    double extra_m = std::clamp(side_arc_forward_m_, 0.0, side_arc_forward_max_m_);
     if (extra_m != side_arc_forward_m_)
     {
       RCLCPP_WARN(get_logger(), "side_arc_forward_m %.2fm 는 범위 밖 -> %.2fm 로", side_arc_forward_m_, extra_m);
+    }
+    // side_arc_forward_time 이 있으면 시간으로 (최대 2초), 없으면 거리 / 속도
+    const double extra_time = std::clamp(side_arc_forward_time_, 0.0, 2.0);
+    if (extra_time > 0.0)
+    {
+      extra_m = extra_time * speed_;
     }
     if (extra_m <= 0.0)
     {
@@ -1220,7 +1228,7 @@ private:
       end_side_forward();        // 더 안 올라가고 바로 뒤로 곡선
       return;
     }
-    side_forward_time_ = extra_m / speed_;
+    side_forward_time_ = extra_time > 0.0 ? extra_time : extra_m / speed_;
     state_ = State::SIDE_FORWARD;
     state_time_ = 0.0;
     lines_missing_ = 0;
@@ -2336,6 +2344,7 @@ private:
   double side_arc_speed_;
   double side_arc_forward_m_;
   double side_arc_forward_max_m_;
+  double side_arc_forward_time_;
   double side_arc_backup_time_;
   double backup_time_;
   double backup_speed_;

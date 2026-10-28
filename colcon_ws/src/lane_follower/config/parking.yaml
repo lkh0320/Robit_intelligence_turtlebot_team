@@ -70,7 +70,7 @@ parking:
     side_hits_needed: 3             # 연속 이만큼 (PSD 20Hz -> 0.15초). 잡음 거르기
     side_turn_deg: 72.0             # 돌 각도
     side_turn_deg_left: 90.0        # 왼쪽으로 돌 때
-    side_turn_deg_right: 80.0       # 오른쪽으로 돌 때
+    side_turn_deg_right: 88.0       # 오른쪽으로 돌 때
     side_turn_speed: 0.5            # [rad/s] 최대 회전 속도
     side_min_speed: 0.08            # [rad/s] 끝에서 너무 느려 안 돌지 않게
     side_tolerance_deg: 1.0         # 남은 각도가 이 이하면 멈춤
@@ -86,8 +86,9 @@ parking:
     side_arc_radius_gain: 1.2       # 칸에 덜 들어가면(곡선이 급하면) 키우기 1.5, 너무 크면 줄이기 0.8
     side_arc_speed: 0.06            # [m/s] 뒤로 가는 속도
     side_arc_forward_m: 0.0         # [m] 곡선 전에 더 올라가는 거리 조절. 칸 입구 쪽에 서면 +, 끝 쪽에 서면 -
+    side_arc_forward_time: 0.4      # [s] 가로 흰 선 신호 뒤 이만큼 더 전진하고 곡선 (0 = 위 거리 방식)
     side_arc_backup_time: 1.6       # [s] 곡선 뒤에 더 똑바로 후진할 시간 (0 = 안 함)
-    exit_arc_radius_m: 0.30         # [m] 나가는 곡선 반지름. 작게 = 더 안쪽으로 급하게
+    exit_arc_radius_m: 0.33         # [m] 나가는 곡선 반지름. 작게 = 더 안쪽으로 급하게
 
     # 8-1) 도로로 나가기 -> 일반 주행
     leave_turn: true                # false = 예전처럼 도로 흰선에서 멈춤
