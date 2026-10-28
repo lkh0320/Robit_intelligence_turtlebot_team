@@ -12,9 +12,7 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>v4l2_camera</exec_depend>
   <exec_depend>bird_eye_view</exec_depend>
-  <exec_depend>lane_detection</exec_depend>
   <exec_depend>sign_detection</exec_depend>
-  <exec_depend>obstacle_detection</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

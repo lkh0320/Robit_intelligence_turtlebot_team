@@ -11,7 +11,6 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
-find_package(obstacle_detection REQUIRED)   # color_maps.hpp (색 방식 관측)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -22,11 +21,10 @@ find_package(interfaces REQUIRED)
 
 # 주행 노드: 카메라 -> 색 + 도로 세그멘테이션 관측 -> grid_planner -> cmd_vel
 add_executable(grid_drive_node src/grid_drive_node.cpp)
-target_include_directories(grid_drive_node PRIVATE include
-  ${CMAKE_CURRENT_SOURCE_DIR}/../lane_follower/include)   # 교차로 상태 기계 / 차선 추종 (헤더만)
+target_include_directories(grid_drive_node PRIVATE include)
 target_link_libraries(grid_drive_node ${OpenCV_LIBS})
 ament_target_dependencies(grid_drive_node rclcpp sensor_msgs geometry_msgs nav_msgs cv_bridge
-  interfaces obstacle_detection)
+  interfaces)
 
 # TensorRT (젯슨 JetPack) 가 있으면 도로 모델 추론. 없으면 (노트북 등) 색 방식만
 find_package(CUDAToolkit QUIET)
@@ -52,7 +50,6 @@ endif()
 add_executable(replay_frames tools/replay_frames.cpp)
 target_include_directories(replay_frames PRIVATE include)
 target_link_libraries(replay_frames ${OpenCV_LIBS})
-ament_target_dependencies(replay_frames obstacle_detection)
 
 install(TARGETS replay_frames grid_drive_node ${GRID_DRIVE_EXTRA_TARGETS}
   DESTINATION lib/${PROJECT_NAME})
@@ -66,7 +63,6 @@ if(BUILD_TESTING)
   ament_add_gtest(test_grid_planner test/test_grid_planner.cpp)
   target_include_directories(test_grid_planner PRIVATE include)
   target_link_libraries(test_grid_planner ${OpenCV_LIBS})
-  ament_target_dependencies(test_grid_planner obstacle_detection)
   ament_add_gtest(test_road_seg test/test_road_seg.cpp)
   target_include_directories(test_road_seg PRIVATE include)
   target_link_libraries(test_road_seg ${OpenCV_LIBS})

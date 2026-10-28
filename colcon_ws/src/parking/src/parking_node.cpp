@@ -14,10 +14,10 @@
 //
 // [전체 흐름]
 //
-//   (1) WAITING  : 주차 표지판을 기다린다 (운전은 lane_follower)
+//   (1) WAITING  : 주차 표지판을 기다린다 (운전은 grid_drive)
 //          │  주차 표지판이 가까이 보임 (크기 sign_area_ratio_threshold 이상)
 //          ▼
-//   (2) APPROACH : 이 노드가 운전한다 (control_mode = PARKING -> lane_follower 멈춤)
+//   (2) APPROACH : 이 노드가 운전한다 (control_mode = PARKING -> grid_drive 멈춤)
 //          │        오른쪽 흰선만 보고 똑바로 간다 (왼쪽 노란선이 입구로 휘어도 안 따라감)
 //          │        동시에 BEV 왼쪽 아래 칸을 본다:
 //          │          노란선 있음 -> 없음 (입구의 빈 곳이 지나감) -> 다시 있음 (입구 반대쪽 모서리)
@@ -168,7 +168,7 @@ class ParkingNode : public rclcpp::Node
 
   enum class State
   {
-    WAITING,     // 주차 표지판 기다리는 중 (운전은 lane_follower)
+    WAITING,     // 주차 표지판 기다리는 중 (운전은 grid_drive)
     APPROACH,    // 흰선 보고 직진하며 입구 찾는 중 (이 노드가 운전)
     EXTRA,       // 입구 가운데까지 남은 거리만큼 더 직진 (이 노드가 운전)
     TURN,        // 입구에서 왼쪽으로 도는 중 (이 노드가 운전)
@@ -237,9 +237,6 @@ public:
         on_mode(*msg);
       });
 
-    // ---- lane_follower 의 linear_speed 를 물어볼 때 쓴다 ----
-    lane_params_ = std::make_shared<rclcpp::AsyncParametersClient>(this, "lane_follower");
-
     // ---- 보내는 토픽 ----
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
     mode_pub_ = create_publisher<ControlMode>("control_mode", 10);
@@ -284,10 +281,8 @@ private:
     flat_min_pixels_ = declare_parameter("flat_min_pixels", 35);
 
     // 3) 흰선 따라 직진
-    // 직진 속도 [m/s]. use_lane_speed 가 true 면 주차를 시작할 때 lane_follower 의 linear_speed
-    // (GUI 선속도 슬라이더 값) 를 받아와서 그 속도로 간다. 못 받으면 drive_speed 를 쓴다
+    // 직진 속도 [m/s]
     drive_speed_ = declare_parameter("drive_speed", 0.10);
-    use_lane_speed_ = declare_parameter("use_lane_speed", true);
     heading_gain_ = declare_parameter("heading_gain", 1.0);
     offset_gain_ = declare_parameter("offset_gain", 1.0);
     offset_soft_px_ = declare_parameter("offset_soft_px", 300.0);
@@ -680,35 +675,14 @@ private:
 
   void start_approach()
   {
-    choose_speed();
+    speed_ = drive_speed_;
+    RCLCPP_INFO(get_logger(), "주차 직진 속도 %.2f m/s (drive_speed)", speed_);
     state_ = State::APPROACH;
     leaving_ = false;
     gap_ = Gap::BEFORE;
     gap_frames_ = 0;
     state_time_ = 0.0;
     last_image_time_ = now();
-  }
-
-  // 직진 속도 정하기: 우선 drive_speed 로 시작하고, lane_follower 가 답하면 그 linear_speed 로 바꾼다
-  void choose_speed()
-  {
-    speed_ = drive_speed_;
-    if (!use_lane_speed_ || !lane_params_->service_is_ready())
-    {
-      RCLCPP_INFO(get_logger(), "주차 직진 속도 %.2f m/s (drive_speed)", speed_);
-      return;
-    }
-    lane_params_->get_parameters({"linear_speed"},
-      [this](std::shared_future<std::vector<rclcpp::Parameter>> future)
-      {
-        const auto params = future.get();
-        if (!params.empty() && params[0].get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE &&
-          params[0].as_double() > 0.0)
-        {
-          speed_ = params[0].as_double();
-        }
-        RCLCPP_INFO(get_logger(), "주차 직진 속도 %.2f m/s (lane_follower 와 같게)", speed_);
-      });
   }
 
   // 오른쪽 흰선에서 차선 폭 절반만큼 왼쪽 = 차선 가운데를 따라간다. 흰선이 없으면 직진
@@ -2021,7 +1995,7 @@ private:
     }
   }
 
-  // 도로를 똑바로 봄 -> lane_follower 에게 넘긴다 (control_mode = LANE), 주차 노드는 다시 표지판 기다리기
+  // 도로를 똑바로 봄 -> grid_drive 에게 넘긴다 (control_mode = LANE), 주차 노드는 다시 표지판 기다리기
   void finish_leave()
   {
     leaving_ = false;
@@ -2104,7 +2078,7 @@ private:
       return;
     }
 
-    // lane_follower 가 멈춰 있도록 "주차 중" 을 계속 알린다
+    // grid_drive 가 멈춰 있도록 "주차 중" 을 계속 알린다
     publish_mode(ControlMode::PARKING, state_name());
 
     state_time_ += 0.1;
@@ -2269,7 +2243,6 @@ private:
   int64_t line_min_rows_;
   int64_t flat_min_pixels_;
   double drive_speed_;
-  bool use_lane_speed_;
   double heading_gain_;
   double offset_gain_;
   double offset_soft_px_;
@@ -2447,7 +2420,6 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<ControlMode>::SharedPtr mode_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
-  rclcpp::AsyncParametersClient::SharedPtr lane_params_;
 };
 
 int main(int argc, char ** argv)

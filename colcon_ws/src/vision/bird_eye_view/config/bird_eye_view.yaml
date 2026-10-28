@@ -8,14 +8,14 @@ bird_eye_view:
     # 2026-10-13 카메라 각도 수정 후 재보정 (같은 카메라라 f = 369 그대로):
     #   직선 차선 소실점 (333, -40): 노란 선 x = -0.480y + 313.0, 흰 선 x = 0.466y + 352.2 (빨간 정지선 행 제외)
     #   -> 피치 = atan((240 + 40) / 369) = 37.2° 아래. 렌즈 높이는 차선 폭이 예전과 같은 295px 가 되게 24.75cm
-    #   (각도를 바꾸며 렌즈가 살짝 올라간 것으로 봄 -> lane_detection lane_width_px 295 그대로 씀)
+    #   (각도를 바꾸며 렌즈가 살짝 올라간 것으로 봄 -> 차선 폭 295px (parking.yaml lane_width_px) 그대로 씀)
     # 이 카메라 모델로 바닥의 직사각형을 원본에 투영해 사다리꼴을 계산했다 -> BEV 는 가로·세로 모두 1px = 1mm
     #   로봇 정면 기준 좌우 ±20cm, 화면 맨 아래(렌즈 앞 8.9cm)부터 40cm 앞까지 = 바퀴 축 앞 17.9cm ~ 57.9cm
     #   사다리꼴은 화면 중앙(x=0.5) 기준 좌우 대칭 (로봇 정면 = BEV 세로선)
     # 보정 영상의 BEV 에서 두 차선 중심 간격 295~299px (위 -> 아래). 다르게 나오면 피치 각도가 틀린 것
     # 보정 영상의 소실점 x 가 중앙보다 13px 오른쪽 = 로봇이 차선과 약 2° 틀어져 있었음
     # 아랫변이 화면보다 넓어(0~1 밖) BEV 아래 양 모서리는 검게 나온다
-    # 바꾸면 obstacle_detection box_planner.hpp 의 같은 값 (wall_detection planner.src_*, bev_near_mm) 도 같이 고칠 것
+    # 바꾸면 parking.yaml (robot_y_offset_px, lane_width_px) 도 확인. grid_drive 는 floor_obs.hpp 에 따로 보정한 값을 씀
     src_top_y: 0.360
     src_top_left_x: 0.286
     src_top_right_x: 0.714

@@ -1,9 +1,9 @@
 // 미션 상태머신: vision/psd 인식 결과를 보고 "지금 어떤 동작을 해야 하는지"만 결정해서
-//   control_mode 토픽으로 지시한다. 실제 조향/속도 계산(PID, 회피 경로, 주차 기동)은
-//   autonomous driving 쪽 책임이며 이 노드는 관여하지 않는다.
+//   control_mode 토픽으로 지시한다. 실제 조향/속도 계산은 grid_drive (LANE/AVOID) 와
+//   parking_node (PARKING) 책임이며 이 노드는 관여하지 않는다.
 //
-// sub: traffic_light, sign, psd, parking_spot, dxl_state, barrier, parking_active, parking_done,
-//      control_mode (GUI 강제 오버라이드 감지용), mission_start (GUI "자율주행 시작" 버튼)
+// sub: traffic_light, sign, psd, barrier,
+//      control_mode (GUI 강제 오버라이드 / 주차 노드 운전 감지용), mission_start (GUI "자율주행 시작" 버튼)
 // pub: control_mode (interfaces/ControlMode)
 //
 // 상태 순서 (트랙 구성은 고정, 구간 내 장애물/표지판/주차 위치만 랜덤):
@@ -21,13 +21,10 @@
 
 #include "interfaces/msg/barrier.hpp"
 #include "interfaces/msg/control_mode.hpp"
-#include "interfaces/msg/dxl_state.hpp"
-#include "interfaces/msg/parking_spot.hpp"
 #include "interfaces/msg/psd_array.hpp"
 #include "interfaces/msg/sign.hpp"
 #include "interfaces/msg/traffic_light.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/empty.hpp"
 
 class TaskPlannerNode : public rclcpp::Node
@@ -56,9 +53,6 @@ public:
     psd_obstacle_threshold_ = declare_parameter("psd_obstacle_threshold", 0.25);
     psd_clear_threshold_ = declare_parameter("psd_clear_threshold", 0.35);
     psd_clear_count_ = declare_parameter("psd_clear_count", 10);
-    parking_offset_threshold_ = declare_parameter("parking_offset_threshold", 0.05);
-    parking_stop_velocity_threshold_ = declare_parameter("parking_stop_velocity_threshold", 0.02);
-    parking_stable_duration_ = declare_parameter("parking_stable_duration", 0.5);
     barrier_cross_duration_ = declare_parameter("barrier_cross_duration", 3.0);
     // 차단바가 이 위치(이미지 세로 비율, 0 상단~1 하단)보다 가까워져야 정지/통과 판단.
     // 멀리서 잠깐 잘못 보이거나, 닫힌 채로 멀리 있을 때 미리 서버리지 않고 정해진 위치까지 접근하게 함
@@ -75,7 +69,7 @@ public:
     //   예: start_state:=TO_BARRIER 로 차단바 구간만 따로 테스트
     start_state_ = stateFromName(declare_parameter("start_state", std::string("WAIT_LIGHT")));
     state_ = start_state_;
-    // true: GUI "자율주행 시작"(mission_start) 을 받을 때까지 대기 (manual_bringup 에서 사용)
+    // true: GUI "자율주행 시작"(mission_start) 을 받을 때까지 대기 (grid_drive_bringup 에서 사용)
     started_ = !declare_parameter("wait_start", false);
     parking_sign_area_ratio_threshold_ =
       declare_parameter("parking_sign_area_ratio_threshold", 0.03);
@@ -100,24 +94,6 @@ public:
       "psd", qos, [this](interfaces::msg::PsdArray::ConstSharedPtr msg) {
         psd_ = *msg;
         psd_received_ = true;
-      });
-    parking_sub_ = create_subscription<interfaces::msg::ParkingSpot>(
-      "parking_spot", qos, [this](interfaces::msg::ParkingSpot::ConstSharedPtr msg) {
-        parking_ = *msg;
-      });
-    dxl_sub_ = create_subscription<interfaces::msg::DxlState>(
-      "dxl_state", qos, [this](interfaces::msg::DxlState::ConstSharedPtr msg) {dxl_ = *msg;});
-    // parking_node 가 칸에 들어가고 나오는 동안(직접 운전 중) true. 그동안만 PARKING 모드
-    parking_active_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "parking_active", 10, [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
-        parking_active_ = msg->data;
-      });
-    // lane_follower 의 parking_node 가 주차 구간을 끝내면 true 를 보낸다
-    parking_done_sub_ = create_subscription<std_msgs::msg::Bool>(
-      "parking_done", 10, [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
-        if (msg->data) {
-          parking_done_ = true;
-        }
       });
     barrier_sub_ = create_subscription<interfaces::msg::Barrier>(
       "barrier", qos, [this](interfaces::msg::Barrier::ConstSharedPtr msg) {barrier_ = *msg;});
@@ -183,7 +159,6 @@ private:
     manual_override_ = false;
     psd_clear_streak_ = 0;
     barrier_lost_streak_ = 0;
-    parking_timer_running_ = false;
     parking_sign_hits_ = 0;
     parking_done_ = false;
     parking_active_ = false;
@@ -240,12 +215,9 @@ private:
           state_ = State::TO_BARRIER;
           break;
         }
-        // 주차 표지판을 가까이서 연속으로 보거나, 주차칸 인식 노드가 주차 구역을 알려주면 주차 시작
-        if (parking_sign_hits_ >= parking_sign_hits_needed_ ||
-          (parking_.detected && parking_.confidence >= min_confidence_))
-        {
+        // 주차 표지판을 가까이서 연속으로 보면 주차 구역 시작
+        if (parking_sign_hits_ >= parking_sign_hits_needed_) {
           state_ = State::PARKING;
-          parking_timer_running_ = false;
         }
         break;
 
@@ -319,24 +291,6 @@ private:
   bool psd_blocked() const {return psd_received_ && min_psd() < psd_obstacle_threshold_;}
   bool psd_clear() const {return psd_received_ && min_psd() >= psd_clear_threshold_;}
 
-  // 정렬(offset) + 정지(바퀴 속도 0) 가 일정 시간 유지되면 주차 완료로 판단
-  bool parked()
-  {
-    const bool aligned = std::abs(parking_.offset) < parking_offset_threshold_;
-    const bool stopped = std::abs(dxl_.left_velocity) < parking_stop_velocity_threshold_ &&
-      std::abs(dxl_.right_velocity) < parking_stop_velocity_threshold_;
-    if (!aligned || !stopped) {
-      parking_timer_running_ = false;
-      return false;
-    }
-    if (!parking_timer_running_) {
-      parking_timer_running_ = true;
-      parking_stable_since_ = now();
-      return false;
-    }
-    return (now() - parking_stable_since_).seconds() >= parking_stable_duration_;
-  }
-
   void publish_mode(const std::string & mission_state)
   {
     ControlMode msg;
@@ -370,9 +324,6 @@ private:
   double psd_obstacle_threshold_;
   double psd_clear_threshold_;
   int64_t psd_clear_count_;
-  double parking_offset_threshold_;
-  double parking_stop_velocity_threshold_;
-  double parking_stable_duration_;
   double barrier_cross_duration_;
   double barrier_stop_y_ratio_;
   int64_t barrier_lost_count_;
@@ -388,29 +339,21 @@ private:
   bool started_ = true;
   bool manual_override_ = false;
   int64_t psd_clear_streak_ = 0;
-  bool parking_timer_running_ = false;
   int64_t parking_sign_hits_ = 0;
   bool parking_done_ = false;
   bool parking_active_ = false;
-  rclcpp::Time parking_stable_since_;   // parking_timer_running_ 이 true 일 때만 유효
   rclcpp::Time finishing_since_;        // FINISHING 상태 진입 시점에만 설정됨
 
   bool psd_received_ = false;
   interfaces::msg::TrafficLight light_;
   interfaces::msg::Sign sign_;
   interfaces::msg::PsdArray psd_;
-  interfaces::msg::ParkingSpot parking_;
-  interfaces::msg::DxlState dxl_;
   interfaces::msg::Barrier barrier_;
 
   rclcpp::Subscription<interfaces::msg::TrafficLight>::SharedPtr light_sub_;
   rclcpp::Subscription<interfaces::msg::Sign>::SharedPtr sign_sub_;
   rclcpp::Subscription<interfaces::msg::PsdArray>::SharedPtr psd_sub_;
-  rclcpp::Subscription<interfaces::msg::ParkingSpot>::SharedPtr parking_sub_;
-  rclcpp::Subscription<interfaces::msg::DxlState>::SharedPtr dxl_sub_;
   rclcpp::Subscription<interfaces::msg::Barrier>::SharedPtr barrier_sub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr parking_active_sub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr parking_done_sub_;
   rclcpp::Subscription<ControlMode>::SharedPtr mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr start_sub_;
   rclcpp::Publisher<ControlMode>::SharedPtr mode_pub_;

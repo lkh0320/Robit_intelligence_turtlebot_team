@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """로봇 없이 turtle_gui 를 시험하기 위한 가짜 로봇 노드.
 
-발행: image_raw/compressed, vision/lane_debug/compressed, vision/object_debug/compressed,
-      psd, dxl_state, 비전 인식 결과 6종
+발행: image_raw/compressed, grid_drive/debug/compressed, vision/object_debug/compressed,
+      psd, dxl_state, 비전 인식 결과 3종
 구독: cmd_vel -> dxl_state 속도에 반영 (GUI 송신 확인용)
 
 실행: ros2 run turtle_gui fake_robot.py  (다른 터미널에서 turtle_gui 실행)
@@ -12,8 +12,7 @@ import math
 
 import rclpy
 from geometry_msgs.msg import Twist
-from interfaces.msg import (Barrier, DxlState, LaneInfo, ParkingSpot, PsdArray, Sign,
-                            StopLine, TrafficLight)
+from interfaces.msg import Barrier, DxlState, PsdArray, Sign, TrafficLight
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -35,18 +34,15 @@ class FakeRobot(Node):
         super().__init__('fake_robot')
         qos = qos_profile_sensor_data
         self.image_pub = self.create_publisher(CompressedImage, 'image_raw/compressed', qos)
-        self.lane_img_pub = self.create_publisher(
-            CompressedImage, 'vision/lane_debug/compressed', qos)
+        self.grid_img_pub = self.create_publisher(
+            CompressedImage, 'grid_drive/debug/compressed', qos)
         self.object_img_pub = self.create_publisher(
             CompressedImage, 'vision/object_debug/compressed', qos)
         self.psd_pub = self.create_publisher(PsdArray, 'psd', qos)
         self.dxl_pub = self.create_publisher(DxlState, 'dxl_state', qos)
-        self.lane_pub = self.create_publisher(LaneInfo, 'lane_info', qos)
         self.light_pub = self.create_publisher(TrafficLight, 'traffic_light', qos)
-        self.stop_pub = self.create_publisher(StopLine, 'stop_line', qos)
         self.sign_pub = self.create_publisher(Sign, 'sign', qos)
         self.barrier_pub = self.create_publisher(Barrier, 'barrier', qos)
-        self.parking_pub = self.create_publisher(ParkingSpot, 'parking_spot', qos)
         self.create_subscription(Twist, 'cmd_vel', self.on_cmd, 10)
 
         self.cmd = Twist()                        # 마지막으로 받은 cmd_vel
@@ -69,7 +65,7 @@ class FakeRobot(Node):
         msg.header.frame_id = frame
         return msg
 
-    # 30Hz: 가짜 카메라 영상 3종 (원본 / 선 검출 / 객체 인식) 발행
+    # 30Hz: 가짜 카메라 영상 3종 (원본 / grid_drive / 객체 인식) 발행
     def on_image(self):
         if cv2 is None:
             return
@@ -87,14 +83,14 @@ class FakeRobot(Node):
                     (0, 255, 0), 1)
         self.publish_jpeg(self.image_pub, img)
 
-        # 선 검출 화면 흉내: 검출한 선 + 차선 중앙 진행 벡터
+        # grid_drive 화면 흉내: 검출한 선 + 차선 중앙 경로
         lane = img.copy()
         cv2.line(lane, *left, (0, 255, 0), 2)
         cv2.line(lane, *right, (0, 255, 0), 2)
         bottom = ((left[0][0] + right[0][0]) // 2, 240)
         top = ((left[1][0] + right[1][0]) // 2, 100)
         cv2.arrowedLine(lane, bottom, top, (255, 0, 255), 3, tipLength=0.15)
-        self.publish_jpeg(self.lane_img_pub, lane)
+        self.publish_jpeg(self.grid_img_pub, lane)
 
         # 객체 인식 화면 흉내: 공 주변 바운딩 박스 + 라벨
         obj = img.copy()
@@ -143,23 +139,10 @@ class FakeRobot(Node):
         dxl.left_torque = dxl.right_torque = True
         self.dxl_pub.publish(dxl)
 
-        lane = self.stamp(LaneInfo(), 'camera')
-        lane.detected = True
-        lane.offset = 0.3 * math.sin(t)
-        lane.angle = 0.2 * math.cos(t)
-        lane.confidence = 0.9
-        self.lane_pub.publish(lane)
-
         light = self.stamp(TrafficLight(), 'camera')
         light.state = [TrafficLight.RED, TrafficLight.YELLOW, TrafficLight.GREEN][phase]
         light.confidence = 0.8
         self.light_pub.publish(light)
-
-        stop = self.stamp(StopLine(), 'camera')
-        stop.detected = phase == 0
-        stop.y_ratio = 0.7 if stop.detected else 0.0
-        stop.confidence = 0.85 if stop.detected else 0.0
-        self.stop_pub.publish(stop)
 
         sign = self.stamp(Sign(), 'camera')
         sign_phase = int(t / 3) % 5   # 표지판 종류는 5가지라 따로 순환
@@ -173,13 +156,6 @@ class FakeRobot(Node):
         barrier.state = Barrier.CLOSED if phase == 0 else Barrier.OPEN
         barrier.confidence = 0.75
         self.barrier_pub.publish(barrier)
-
-        park = self.stamp(ParkingSpot(), 'camera')
-        park.detected = phase != 0
-        park.empty_side = [ParkingSpot.NONE, ParkingSpot.LEFT, ParkingSpot.RIGHT][phase]
-        park.offset = 0.1
-        park.confidence = 0.6
-        self.parking_pub.publish(park)
 
 
 def main():

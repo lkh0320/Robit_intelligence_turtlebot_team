@@ -24,7 +24,7 @@
 //        soft 면 원호도 탈락 대신 벌점, 속도는 soft_speed_ratio 배 -> 선을 가장 덜 침범하는 쪽으로 천천히 빠져나감
 //
 //   좌표: 로봇 좌표 x 오른쪽, y 앞 [mm, 지도 단위], 원점 = 바퀴 축 가운데. 곡률 + = 오른쪽으로 휨
-//   지도 앞뒤는 실제의 map_y_scale 배 (box_planner odom_scale, 2026-10-14 녹화 분석) -> 원호 / 조향은 실제 축척으로 계산
+//   지도 앞뒤는 실제의 map_y_scale 배 (예전 box_planner odom_scale, 2026-10-14 녹화 분석) -> 원호 / 조향은 실제 축척으로 계산
 #pragma once
 
 #include <algorithm>
@@ -49,7 +49,7 @@ enum class Turn {NONE, LEFT, RIGHT};
 // 1. 바닥 지도 크기 / 변환은 FloorParams (floor_obs.hpp)
 struct Params : FloorParams
 {
-  double map_y_scale = 1.0;            // 지도 앞뒤 [mm] / 실제 [mm] (box_planner odom_scale)
+  double map_y_scale = 1.0;            // 지도 앞뒤 [mm] / 실제 [mm] (예전 box_planner odom_scale)
   // 2. 기억
   bool memory = false;                 // 2026-10-28: 벨트 미끄럼 / 직진 중 틀어짐을 odom 이 못 봐 기억이 어긋남 (replay soft 31 -> 102)
   double memory_back_mm = 250.0;       // 바퀴 축 뒤로 이만큼 지나면 잊음 (지도 단위)
@@ -243,7 +243,7 @@ public:
   }
 
   // 색 방식 관측으로 계획 (원본 BGR)
-  Result plan(const cv::Mat & raw, const Params & p, const obstacle_detection::ColorParams & colors,
+  Result plan(const cv::Mat & raw, const Params & p, const grid_drive::ColorParams & colors,
     Turn turn = Turn::NONE)
   {
     const auto t0 = std::chrono::steady_clock::now();

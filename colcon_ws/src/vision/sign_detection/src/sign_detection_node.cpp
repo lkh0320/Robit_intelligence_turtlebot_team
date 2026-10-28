@@ -78,8 +78,8 @@ public:
     declare_parameter("conf_threshold", 0.5);   // 이보다 낮은 박스는 버림
     declare_parameter("nms_threshold", 0.45);   // 같은 클래스 박스가 이 IoU 넘게 겹치면 하나만
     declare_parameter("debug_jpeg_quality", 70);
-    // [Hz] 이보다 자주 처리하지 않음 (0 이하 = 할 수 있는 만큼). lane_follower 의 표지판 확인 창(sign_confirm_window
-    // 프레임)이 이 속도 기준이라 바꾸면 같이 바꾼다
+    // [Hz] 이보다 자주 처리하지 않음 (0 이하 = 할 수 있는 만큼). 표지판 연속 확인 횟수 (parking sign_hits_needed,
+    // task_planner parking_sign_hits_needed) 가 이 속도 기준이라 바꾸면 같이 바꾼다
     declare_parameter("process_rate", 10.0);
     // OpenCV 연산 스레드 수 (0 이하 = OpenCV 기본, 코어 전부). 적게 주면 한 장은 느려져도 총 CPU 가 준다
     const int threads = static_cast<int>(declare_parameter("num_threads", 0));

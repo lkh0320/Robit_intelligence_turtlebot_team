@@ -16,7 +16,6 @@ CubeMX 재생성 시 `Core/`의 USER CODE 밖은 덮어써지므로 직접 작�
 | `App/psd.c/h` | PSD 거리 센서 3개 (ADC1 채널 0/1/2 = PA0 왼쪽 / PA1 앞 / PA2 오른쪽, DMA). Sharp GP2Y0A21 (10~80cm) 기준 |
 | `App/host.c/h` | 젯슨과 시리얼 통신 (USART6, 인터럽트 수신) |
 | `jetson/stm32_bridge.py` | ROS 2 노드: `/cmd_vel` -> 바퀴 속도 -> STM32 (팀 C++ `stm_bridge` 의 파이썬 버전) |
-| `jetson/lane_follower.py` | ROS 2 노드: `/lane_info` -> `/cmd_vel` (차선 따라가기 PD 제어) |
 | `jetson/teleop_test.py` | ROS 없이 키보드(w/s/a/d)로 속도 명령 테스트 |
 | `jetson/stm32_link.py` | 위 두 스크립트가 쓰는 패킷 코드 |
 | `jetson/psd_test.py` | ROS 없이 PSD 거리 3개를 막대로 보기 |
@@ -101,39 +100,21 @@ STM32CubeIDE: `App` 폴더를 Source Location에 추가하고 (Project Propertie
 - 0.3초 동안 명령이 없으면 정지. 젯슨은 멈춰 있을 때도 20Hz 로 계속 보낸다
 - 팀 C++ `stm_bridge` 는 0x81 상태 패킷을 몰라서 5초마다 `Unknown frame id=0x81` 경고를 찍는다 (동작에는 문제 없음)
 
-## 차선 따라가기 (젯슨, ROS 2)
+## 젯슨 실행 (ROS 2)
 
 ```
-카메라 -> bird_eye_view -> lane_detection --/lane_info--> lane_follower --/cmd_vel--> stm_bridge --시리얼--> STM32
-                     (팀 저장소)                        (jetson/lane_follower.py)     (팀 C++ 또는 stm32_bridge.py)
+카메라 -> grid_drive (주행 계획) --/cmd_vel--> stm_bridge --시리얼--> STM32
 ```
-
-`lane_follower.py` 는 `LaneInfo` 의 offset(차선 중심이 오른쪽이면 +), angle(차선이 오른쪽으로 휘면 +) 로 PD 제어:
-`w = -(kp_offset·offset + kd_offset·d(offset)/dt + kp_angle·angle)`, 많이 꺾을수록 느리게. 차선을 0.5초 못 보면 정지.
 
 ```bash
-# 공통 (터미널마다)
 source /opt/ros/jazzy/setup.bash
 source ~/Robit_intelligence_turtlebot_team/colcon_ws/install/setup.bash
 
-# 1. 카메라 + 비전
-ros2 launch vision_bringup camera_vision.launch.py
-# 2. STM32 브리지 (둘 중 하나)
+# 전체 자율주행 (카메라 + 비전 + STM 브릿지 + grid_drive + 주차 + task_planner)
+ros2 launch grid_drive grid_drive_bringup.launch.py
+# STM32 브리지만
 ros2 launch stm stm_bridge.launch.py
-python3 ~/turrlebot/jetson/stm32_bridge.py --ros-args -p port:=/dev/ttyUSB0
-# 3. 차선 따라가기
-python3 ~/turrlebot/jetson/lane_follower.py --ros-args -p base_speed:=0.05
 ```
-
-| 파라미터 | 기본 | 뜻 |
-|---|---|---|
-| `base_speed` | 0.08 | 직선 속도 (m/s) |
-| `min_speed` | 0.03 | 크게 꺾을 때 최소 속도 |
-| `kp_offset` | 0.8 | 옆으로 벗어난 만큼 돌기 |
-| `kd_offset` | 0.05 | 벗어나는 속도만큼 미리 돌기 (좌우로 흔들리면 키움) |
-| `kp_angle` | 1.0 | 차선이 휜 만큼 돌기 |
-| `max_angular` | 1.2 | 회전 최대 (rad/s) |
-| `lost_timeout` | 0.5 | 차선을 이만큼 못 보면 정지 (s) |
 
 ROS 없이 키보드 테스트: `python3 teleop_test.py /dev/ttyUSB0` (`stm32_link.py` 와 같은 폴더)
 

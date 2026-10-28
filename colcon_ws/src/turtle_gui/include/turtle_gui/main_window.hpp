@@ -20,18 +20,13 @@
 #include "interfaces/msg/barrier.hpp"
 #include "interfaces/msg/control_mode.hpp"
 #include "interfaces/msg/dxl_state.hpp"
-#include "interfaces/msg/lane_info.hpp"
-#include "interfaces/msg/parking_spot.hpp"
 #include "interfaces/msg/psd_array.hpp"
 #include "interfaces/msg/sign.hpp"
-#include "interfaces/msg/stop_line.hpp"
 #include "interfaces/msg/traffic_light.hpp"
-#include "rclcpp/parameter_client.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "std_msgs/msg/empty.hpp"
-#include "std_msgs/msg/string.hpp"
 
 // Qt 클래스 전방 선언: 헤더에서는 포인터만 쓰므로 실제 include 는 main_window.cpp 에서 한다
 class QCheckBox;
@@ -86,9 +81,6 @@ private:
   void setupRos();
   void subscribeCamera(CameraView & view);
   void onFrame(CameraView & view, const QImage & image);
-  // 공사 구간 (lane_follower AVOID / RETURN) 동안 선 검출 칸을 wall_detection 경로 계획 화면으로 바꾼다
-  void setWallView(bool on);
-  void updateLaneView();   // cams_[2]: grid_drive 가 떠 있으면 그 화면, 공사 구간이면 wall, 아니면 선 검출
 
   // 수신 기록 / 램프 갱신 / 송신 / 로그
   void touch(const QString & key);
@@ -107,11 +99,7 @@ private:
   double ang_speed_max_;      // 각속도 슬라이더 상한 [rad/s]
 
   // --- 위젯 ---
-  std::array<CameraView, 4> cams_;   // 0 원본, 1 BEV, 2 선 검출 (공사 구간에서는 경로 계획), 3 객체 인식
-  QGroupBox * lane_box_ = nullptr;   // cams_[2] 제목 바꾸기용
-  QString lane_topic_, wall_topic_, grid_topic_;
-  bool wall_view_ = false;   // 공사 구간 (lane_follower)
-  bool grid_view_ = false;   // grid_drive 디버그 토픽 발행자가 있음
+  std::array<CameraView, 4> cams_;   // 0 원본, 1 BEV, 2 grid_drive 계획, 3 객체 인식
   QProgressBar * psd_bar_[3];        // 0 왼쪽, 1 앞, 2 오른쪽
   QLabel * psd_text_[3];
   QLabel * dxl_label_;
@@ -119,12 +107,9 @@ private:
   QLabel * motor_label_;   // 찾은 모터 수 / ID / 토크
   QLabel * cmd_label_;
   QLabel * mode_label_;
-  QLabel * lane_label_;
   QLabel * light_label_;
-  QLabel * stop_label_;
   QLabel * sign_label_;
   QLabel * barrier_label_;
-  QLabel * parking_label_;
   QCheckBox * manual_enable_;
   QDoubleSpinBox * lin_speed_;
   QDoubleSpinBox * ang_speed_;
@@ -143,20 +128,13 @@ private:
   rclcpp::Subscription<interfaces::msg::DxlState>::SharedPtr dxl_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
   rclcpp::Subscription<interfaces::msg::ControlMode>::SharedPtr mode_sub_;
-  rclcpp::Subscription<interfaces::msg::LaneInfo>::SharedPtr lane_sub_;
   rclcpp::Subscription<interfaces::msg::TrafficLight>::SharedPtr light_sub_;
-  rclcpp::Subscription<interfaces::msg::StopLine>::SharedPtr stop_sub_;
   rclcpp::Subscription<interfaces::msg::Sign>::SharedPtr sign_sub_;
   rclcpp::Subscription<interfaces::msg::Barrier>::SharedPtr barrier_sub_;
-  rclcpp::Subscription<interfaces::msg::ParkingSpot>::SharedPtr parking_sub_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr zone_sub_;   // lane_follower 공사 구간 상태
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<interfaces::msg::ControlMode>::SharedPtr mode_pub_;
   rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr start_pub_;
-
-  // 선속도/각속도 슬라이더를 lane_follower 노드의 linear_speed/max_angular 파라미터에도 반영
-  rclcpp::AsyncParametersClient::SharedPtr lane_param_client_;
 };
 
 #endif  // TURTLE_GUI__MAIN_WINDOW_HPP_

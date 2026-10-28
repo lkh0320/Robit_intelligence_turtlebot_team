@@ -1,4 +1,4 @@
-# 카메라 + 비전 노드 전체 실행
+# 카메라 + 비전 노드 (BEV, 표지판 인식) 실행. 보통은 grid_drive_bringup.launch.py 가 이걸 포함한다
 #   ros2 launch vision_bringup camera_vision.launch.py
 # 옵션 예:
 #   video_device:=/dev/video1                        카메라 장치 변경
@@ -7,8 +7,8 @@
 # 카메라 밝기/노출은 v4l2-ctl 로 맞춰 /etc/turtlebot-camera.conf 에 저장한다 (camera/README.md).
 # v4l2_camera 노드는 켜질 때 장치 설정을 자기 기본값으로 되돌리므로, 같은 파일을 노드 파라미터로도 넘기고
 # (GUI 에 보이는 값), 노드가 적용 순서를 지키지 않아 거부되는 항목(색온도 등)을 위해 3초 뒤 다시 적용한다.
-#   lane:=false sign:=false obstacle:=false          원하는 노드만 끄기
-# 선 검출은 lane_detection (슬라이딩 윈도우). 2026-10-14 path_planner / map_planner / hybrid 는 지움
+#   sign:=false                                      표지판 인식 끄기
+# 2026-10-29 lane_detection / obstacle_detection 은 지움 (주행은 grid_drive 가 원본 영상을 직접 봄)
 import os
 
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
@@ -95,14 +95,10 @@ def generate_launch_description():
                               description='v4l2 카메라 설정 파일 (없으면 카메라 기본값)'),
         DeclareLaunchArgument('camera_params', default_value='',
                               description='카메라 파라미터 YAML (기본: 없음, 장치에 저장된 설정 그대로)'),
-        DeclareLaunchArgument('lane', default_value='true'),
         DeclareLaunchArgument('sign', default_value='true'),
-        DeclareLaunchArgument('obstacle', default_value='true'),
 
-        # 카메라 -> BEV -> 각 비전 노드 순서로 데이터가 흐른다
+        # 카메라 -> BEV (주차 노드 / GUI 용), 표지판 인식은 원본을 본다
         OpaqueFunction(function=camera),
         include('bird_eye_view'),
-        include('lane_detection', IfCondition(LaunchConfiguration('lane'))),
         include('sign_detection', IfCondition(LaunchConfiguration('sign'))),
-        include('obstacle_detection', IfCondition(LaunchConfiguration('obstacle'))),
     ])

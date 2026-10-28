@@ -3,14 +3,6 @@
 //         odom (nav_msgs/Odometry)                   stm_bridge, 프레임 사이 이동량 -> planner.onMove
 //         control_mode (interfaces/ControlMode)      LANE / AVOID 일 때만 주행
 //         sign (interfaces/Sign)                     LEFT / RIGHT 를 보면 turn_hold_sec 동안 그쪽 목표 가점
-//         lane_info, cross_line (lane_detection)     intersection_lane 이 true 면 교차로를 예전 sliding 방식으로
-//
-// 교차로 (intersection_lane, 2026-10-28): 격자 계획은 최단 경로라 교차로 U턴에서 안쪽 선을 밟았다.
-//   lane_follower 의 교차로 상태 기계 (include/lane_follower/intersection_turn.hpp, 표지판 -> T자 가로 선 -> 한쪽 바퀴 회전
-//   -> 고리 -> 출구) 와 차선 추종 (controller.hpp, lane_info 의 차선 가운데) 을 그대로 쓴다. 상태가 IDLE 이 아니면
-//   (표지판 확인 ~ 출구) 그 명령을 보내고, IDLE 로 돌아오면 다시 격자 계획.
-//   intersection.* / lane.* 값은 lane_follower.yaml (2026-10-27 튜닝) 에서 복사. 그때는 stm wheel_radius 0.05 라
-//   속도 / odom 회전이 모두 cmd_vel 단위 -> 그 값을 그대로 쓰려고 odom 이동량에 cmd_scale 을 곱해 넣고 명령은 그대로 보냄
 //   발행: cmd_vel (geometry_msgs/Twist)
 //         grid_drive/debug/compressed               원본 + 도로 마스크 | 계획 그림 (구독자가 있을 때만)
 //
@@ -41,10 +33,6 @@
 #include "grid_drive/road_seg.hpp"
 #include "interfaces/msg/barrier.hpp"
 #include "interfaces/msg/control_mode.hpp"
-#include "interfaces/msg/lane_info.hpp"
-#include "geometry_msgs/msg/vector3_stamped.hpp"
-#include "lane_follower/controller.hpp"
-#include "lane_follower/intersection_turn.hpp"
 #include "interfaces/msg/sign.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -215,92 +203,6 @@ public:
           bar_closed_t_ = now();
         }
       });
-    // 교차로를 예전 sliding 방식으로 (맨 위 설명)
-    xturn_on_ = declare_parameter("intersection_lane", false);
-    xp_.enabled = declare_parameter("intersection.enabled", xp_.enabled);
-    xp_.sign_min_confidence = declare_parameter("intersection.sign_min_confidence", xp_.sign_min_confidence);
-    xp_.sign_min_area = declare_parameter("intersection.sign_min_area", xp_.sign_min_area);
-    xp_.sign_confirm_count = static_cast<int>(declare_parameter("intersection.sign_confirm_count", static_cast<int64_t>(xp_.sign_confirm_count)));
-    xp_.sign_confirm_window = static_cast<int>(declare_parameter("intersection.sign_confirm_window", static_cast<int64_t>(xp_.sign_confirm_window)));
-    xp_.sign_instant_confidence = declare_parameter("intersection.sign_instant_confidence", xp_.sign_instant_confidence);
-    xp_.arm_max_dist = declare_parameter("intersection.arm_max_dist", xp_.arm_max_dist);
-    xp_.require_cross_line = declare_parameter("intersection.require_cross_line", xp_.require_cross_line);
-    xp_.require_cross_line_grace = declare_parameter("intersection.require_cross_line_grace", xp_.require_cross_line_grace);
-    xp_.approach_align = declare_parameter("intersection.approach_align", xp_.approach_align);
-    xp_.approach_align_kp = declare_parameter("intersection.approach_align_kp", xp_.approach_align_kp);
-    xp_.approach_align_max = declare_parameter("intersection.approach_align_max", xp_.approach_align_max);
-    xp_.approach_align_fresh = declare_parameter("intersection.approach_align_fresh", xp_.approach_align_fresh);
-    xp_.approach_slow_linear = declare_parameter("intersection.approach_slow_linear", xp_.approach_slow_linear);
-    xp_.align_enabled = declare_parameter("intersection.align_enabled", xp_.align_enabled);
-    xp_.align_kp = declare_parameter("intersection.align_kp", xp_.align_kp);
-    xp_.align_max_angular = declare_parameter("intersection.align_max_angular", xp_.align_max_angular);
-    xp_.align_min_angular = declare_parameter("intersection.align_min_angular", xp_.align_min_angular);
-    xp_.align_tol = declare_parameter("intersection.align_tol", xp_.align_tol);
-    xp_.align_ok_count = static_cast<int>(declare_parameter("intersection.align_ok_count", static_cast<int64_t>(xp_.align_ok_count)));
-    xp_.align_max_time = declare_parameter("intersection.align_max_time", xp_.align_max_time);
-    xp_.align_lost_time = declare_parameter("intersection.align_lost_time", xp_.align_lost_time);
-    xp_.cross_recent_time = declare_parameter("intersection.cross_recent_time", xp_.cross_recent_time);
-    xp_.approach_time = declare_parameter("intersection.approach_time", xp_.approach_time);
-    xp_.approach_linear = declare_parameter("intersection.approach_linear", xp_.approach_linear);
-    xp_.turn_pivot = declare_parameter("intersection.turn_pivot", xp_.turn_pivot);
-    xp_.wheel_separation = declare_parameter("intersection.wheel_separation", xp_.wheel_separation);
-    xp_.turn_linear = declare_parameter("intersection.turn_linear", xp_.turn_linear);
-    xp_.turn_angular = declare_parameter("intersection.turn_angular", xp_.turn_angular);
-    xp_.turn_search_angular = declare_parameter("intersection.turn_search_angular", xp_.turn_search_angular);
-    xp_.turn_min_yaw = declare_parameter("intersection.turn_min_yaw", xp_.turn_min_yaw);
-    xp_.turn_switch_max_yaw = declare_parameter("intersection.turn_switch_max_yaw", xp_.turn_switch_max_yaw);
-    xp_.turn_max_yaw = declare_parameter("intersection.turn_max_yaw", xp_.turn_max_yaw);
-    xp_.exit_ok_count = static_cast<int>(declare_parameter("intersection.exit_ok_count", static_cast<int64_t>(xp_.exit_ok_count)));
-    xp_.exit_min_confidence = declare_parameter("intersection.exit_min_confidence", xp_.exit_min_confidence);
-    xp_.exit_max_angle = declare_parameter("intersection.exit_max_angle", xp_.exit_max_angle);
-    xp_.exit_max_offset = declare_parameter("intersection.exit_max_offset", xp_.exit_max_offset);
-    xp_.exit_lead_angle = declare_parameter("intersection.exit_lead_angle", xp_.exit_lead_angle);
-    xp_.exit_turn_side_only = declare_parameter("intersection.exit_turn_side_only", xp_.exit_turn_side_only);
-    xp_.rearm_dist = declare_parameter("intersection.rearm_dist", xp_.rearm_dist);
-    xp_.after_enabled = declare_parameter("intersection.after_enabled", xp_.after_enabled);
-    xp_.after_dist = declare_parameter("intersection.after_dist", xp_.after_dist);
-    xp_.after_max_yaw = declare_parameter("intersection.after_max_yaw", xp_.after_max_yaw);
-    xp_.after_max_retries = static_cast<int>(declare_parameter("intersection.after_max_retries", static_cast<int64_t>(xp_.after_max_retries)));
-    xp_.out_enabled = declare_parameter("intersection.out_enabled", xp_.out_enabled);
-    xp_.out_right_enabled = declare_parameter("intersection.out_right_enabled", xp_.out_right_enabled);
-    xp_.out_trigger_yaw = declare_parameter("intersection.out_trigger_yaw", xp_.out_trigger_yaw);
-    xp_.out_island_offset = declare_parameter("intersection.out_island_offset", xp_.out_island_offset);
-    xp_.out_island_min_yaw = declare_parameter("intersection.out_island_min_yaw", xp_.out_island_min_yaw);
-    xp_.out_min_dist = declare_parameter("intersection.out_min_dist", xp_.out_min_dist);
-    xp_.out_max_dist = declare_parameter("intersection.out_max_dist", xp_.out_max_dist);
-    xp_.out_approach_time = declare_parameter("intersection.out_approach_time", xp_.out_approach_time);
-    xp_.out_turn_min_yaw = declare_parameter("intersection.out_turn_min_yaw", xp_.out_turn_min_yaw);
-    xp_.out_turn_max_yaw = declare_parameter("intersection.out_turn_max_yaw", xp_.out_turn_max_yaw);
-    xp_.out_follow = declare_parameter("intersection.out_follow", xp_.out_follow);
-    xp_.out_guard_dist = declare_parameter("intersection.out_guard_dist", xp_.out_guard_dist);
-    xp_.out_guard_max_offset = declare_parameter("intersection.out_guard_max_offset", xp_.out_guard_max_offset);
-    xp_.out_arc_linear = declare_parameter("intersection.out_arc_linear", xp_.out_arc_linear);
-    xp_.out_arc_angular = declare_parameter("intersection.out_arc_angular", xp_.out_arc_angular);
-    xp_.out_arc_max_dist = declare_parameter("intersection.out_arc_max_dist", xp_.out_arc_max_dist);
-    xp_.out_hold_time = declare_parameter("intersection.out_hold_time", xp_.out_hold_time);
-    gains_.linear_speed = declare_parameter("lane.linear_speed", gains_.linear_speed);
-    gains_.min_linear_speed = declare_parameter("lane.min_linear_speed", gains_.min_linear_speed);
-    gains_.kp = declare_parameter("lane.kp", gains_.kp);
-    gains_.kd = declare_parameter("lane.kd", gains_.kd);
-    gains_.ka = declare_parameter("lane.ka", gains_.ka);
-    gains_.max_angular = declare_parameter("lane.max_angular", gains_.max_angular);
-    gains_.slow_down_angle = declare_parameter("lane.slow_down_angle", gains_.slow_down_angle);
-    gains_.low_confidence = declare_parameter("lane.low_confidence", gains_.low_confidence);
-    gains_.d_filter_alpha = declare_parameter("lane.d_filter_alpha", gains_.d_filter_alpha);
-    lane_timeout_ = declare_parameter("lane.lane_timeout", 0.7);
-    lane_lost_hold_ = declare_parameter("lane.lost_hold_sec", 0.5);
-    if (xturn_on_) {
-      lane_sub_ = create_subscription<interfaces::msg::LaneInfo>(
-        "lane_info", rclcpp::SensorDataQoS(), [this](interfaces::msg::LaneInfo::ConstSharedPtr m) {
-          lane_ = *m;
-          lane_stamp_ = now();
-          lane_rx_ = true;
-        });
-      cross_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
-        "cross_line", rclcpp::SensorDataQoS(), [this](geometry_msgs::msg::Vector3Stamped::ConstSharedPtr m) {
-          xturn_.onCrossLine(m->vector.z > 0, m->vector.y);
-        });
-    }
     sign_sub_ = create_subscription<Sign>(
       "sign", rclcpp::SensorDataQoS(), [this](Sign::ConstSharedPtr m) {
         if (m->type == Sign::CONSTRUCTION && m->confidence >= sign_conf_) {
@@ -308,11 +210,6 @@ public:
             RCLCPP_INFO(get_logger(), "공사 구간 표지판 -> 공사 모드 %.0fs", construction_hold_);
           }
           construction_until_ = now() + rclcpp::Duration::from_seconds(construction_hold_);
-        }
-        if (xturn_on_) {
-          xturn_.onSign(m->type, m->confidence, m->area_ratio, xp_);
-          logXturn();
-          return;   // 좌/우는 교차로 상태 기계가 맡음 (격자 turn_ 안 씀)
         }
         if ((m->type == Sign::LEFT || m->type == Sign::RIGHT) && m->confidence >= sign_conf_) {
           const auto dir = m->type == Sign::LEFT ? grid_drive::Turn::LEFT : grid_drive::Turn::RIGHT;
@@ -399,96 +296,6 @@ private:
     }
   }
 
-  void logXturn()
-  {
-    if (xturn_.takeChanged()) {
-      RCLCPP_INFO(get_logger(), "[교차로] %s -> %s", xturn_.lastReason().c_str(), xturn_.describe().c_str());
-    }
-  }
-
-  // 교차로 상태 기계 + 차선 추종. 이번 프레임을 맡았으면 true (명령은 cmd_vel 단위로 이미 보냄)
-  bool intersectionDrive()
-  {
-    using IT = lane_follower::IntersectionTurn;
-    const auto t = now();
-    const double dt = have_x_tick_ ? std::clamp((t - x_tick_).seconds(), 0.0, 0.3) : 0.0;
-    x_tick_ = t;
-    have_x_tick_ = true;
-    const bool lane_fresh = lane_rx_ && (t - lane_stamp_).seconds() <= lane_timeout_;
-    IT::LaneObs obs;
-    obs.lost = lane_fresh && !lane_.detected;
-    obs.ok = lane_fresh && lane_.detected;
-    obs.fresh = lane_rx_ && lane_stamp_ != x_lane_used_;
-    if (lane_rx_) {
-      x_lane_used_ = lane_stamp_;
-    }
-    obs.confidence = lane_.confidence;
-    obs.angle = lane_.angle;
-    obs.offset = lane_.offset;
-    obs.left = lane_.left_detected;
-    obs.right = lane_.right_detected;
-    const IT::Cmd c = xturn_.update(obs, xp_, dt);
-    logXturn();
-    if (xturn_.phase() == IT::Phase::IDLE) {
-      if (x_active_) {
-        x_active_ = false;
-        planner_.reset();   // 교차로 동안 쌓인 기억 / 직전 경로 버림
-        RCLCPP_INFO(get_logger(), "[교차로] 끝 -> 격자 계획");
-      }
-      return false;
-    }
-    if (!x_active_) {
-      x_active_ = true;
-      lane_ctl_.reset();
-      have_lane_cmd_ = false;
-      RCLCPP_INFO(get_logger(), "[교차로] 시작 -> sliding 차선 추종 / 회전");
-    }
-    double v = 0, w = 0;
-    if (c.active) {
-      lane_ctl_.reset();
-      v = c.v;
-      w = c.w;
-      if (c.hold && have_lane_cmd_) {
-        v = lane_v_;
-        w = lane_w_;
-      }
-    } else if (obs.ok) {
-      const auto lc = lane_ctl_.step(lane_.offset, lane_.angle, lane_.confidence,
-          lane_ok_prev_ ? dt : 0.0, gains_);
-      v = lc.v;
-      w = lc.w;
-      double w_add = 0, v_max = 0;
-      if (xturn_.crossAssist(xp_, w_add, v_max)) {
-        w = std::clamp(w + w_add, -gains_.max_angular, gains_.max_angular);
-        if (v_max > 0) {
-          v = std::min(v, v_max);
-        }
-      }
-      lane_v_ = v;
-      lane_w_ = w;
-      have_lane_cmd_ = true;
-      last_lane_ok_ = t;
-    } else if (have_lane_cmd_ && (t - last_lane_ok_).seconds() <= lane_lost_hold_) {
-      v = lane_v_;   // 차선을 잠깐 놓침 -> 직전 명령
-      w = lane_w_;
-    } else {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "[교차로] 차선 못 찾음 -> 정지 (%s)",
-        xturn_.describe().c_str());
-    }
-    lane_ok_prev_ = obs.ok && !c.active;
-    geometry_msgs::msg::Twist tw;   // cmd_vel 단위 그대로 (lane_follower 튜닝값)
-    tw.linear.x = v;
-    tw.angular.z = w;
-    cmd_pub_->publish(tw);
-    sent_moving_ = v != 0 || w != 0;
-    // 격자로 돌아갈 때 이어지게 실제 단위로 필터 상태를 맞춤
-    v_f_ = v / cmd_scale_;
-    w_f_ = w / cmd_scale_;
-    w_hist_.clear();
-    stop_sent_ = false;
-    return true;
-  }
-
   void publishCmd(double v, double w)
   {
     geometry_msgs::msg::Twist t;
@@ -548,11 +355,6 @@ private:
       // 주차 노드 등에서 넘겨받을 때 이미 달리는 중이면 그 속도에서 이어감 (0 부터 가속하면 한 번 멈칫함)
       v_f_ = have_odom_ ? std::max(0.0, odom_.twist.twist.linear.x) : 0.0;
     }
-    if (!driving() && was_driving_ && xturn_on_) {
-      xturn_.cancelManeuver();
-      logXturn();
-      x_active_ = false;
-    }
     was_driving_ = driving();
 
     // 프레임 사이 바퀴 이동 (실제 mm, 왼쪽 + rad)
@@ -578,10 +380,6 @@ private:
           } else if (now() > exit_deadline_) {
             exit_armed_ = false;
           }
-        }
-        if (xturn_on_) {   // lane_follower 튜닝 단위 (cmd_vel) 로
-          xturn_.onMove(ds * cmd_scale_, std::remainder(yaw - prev_yaw_, 2 * M_PI) * cmd_scale_, xp_);
-          logXturn();
         }
       }
       prev_x_ = q.position.x;
@@ -715,9 +513,7 @@ private:
       last_ok_ = now();
     }
     const bool hold = driving() && !bar_stopped_ && lost && sent_moving_ && (now() - last_ok_).seconds() <= road_hold_sec_;
-    if (xturn_on_ && driving() && !bar_stopped_ && intersectionDrive()) {
-      // 교차로: 위에서 보냄
-    } else if (hold) {
+    if (hold) {
       publishCmd(v_f_, w_f_);
       stop_sent_ = false;
     } else if (creep) {
@@ -796,11 +592,6 @@ private:
       !driving() ? "STOP" : bar_stopped_ ? "BAR WAIT" : no_road ? "NO ROAD" : "RUN", r.v, r.w, r.dead_end ? "END " : r.soft ? "SOFT " : "", r.pivot ? "PIVOT " : "", turn,
       rs.detections, rs.best_conf, ms_road, ms);
     cv::putText(left, text, {6, 20}, cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 2);
-    if (xturn_on_ && xturn_.phase() != lane_follower::IntersectionTurn::Phase::IDLE) {
-      // 교차로 상태 (이 동안 명령은 sliding 차선 추종 / 회전, 오른쪽 격자 그림은 참고용)
-      const std::string xs = "X " + xturn_.describe() + (lane_.detected ? "  lane o" : "  lane x");
-      cv::putText(left, xs, {6, 44}, cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 255), 2);
-    }
 
     cv::Mat right, out;
     if (no_road) {   // 계획 안 함: 지도 칸은 비우고 표시만
@@ -821,7 +612,7 @@ private:
   }
 
   grid_drive::Params p_;
-  obstacle_detection::ColorParams colors_;
+  grid_drive::ColorParams colors_;
   grid_drive::GridPlanner planner_;
   grid_drive::RoadSegParams seg_;
 #ifdef GRID_DRIVE_TENSORRT
@@ -862,20 +653,7 @@ private:
   bool corner_armed_ = true;
   double corner_until_ = 0, last_curve_t_ = 0;
   double turn_flip_delay_ = 0;
-  int last_curve_sign_ = 0;
-  // 교차로 sliding 방식 (intersection_lane)
-  bool xturn_on_ = false, x_active_ = false, have_x_tick_ = false, lane_rx_ = false;
-  bool have_lane_cmd_ = false, lane_ok_prev_ = false;
-  lane_follower::IntersectionTurn xturn_;
-  lane_follower::TurnParams xp_;
-  lane_follower::Gains gains_;
-  lane_follower::Controller lane_ctl_;
-  interfaces::msg::LaneInfo lane_;
-  rclcpp::Time lane_stamp_{0, 0, RCL_ROS_TIME}, x_lane_used_{0, 0, RCL_ROS_TIME}, x_tick_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time last_lane_ok_{0, 0, RCL_ROS_TIME};
-  double lane_timeout_ = 0.7, lane_lost_hold_ = 0.5, lane_v_ = 0, lane_w_ = 0;
-  rclcpp::Subscription<interfaces::msg::LaneInfo>::SharedPtr lane_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr cross_sub_;   // 좌/우 기억 중 마지막 곡선 방향 (+1 오른쪽, -1 왼쪽, 0 없음)
+  int last_curve_sign_ = 0;   // 좌/우 기억 중 마지막 곡선 방향 (+1 오른쪽, -1 왼쪽, 0 없음)
   grid_drive::Turn turn_ = grid_drive::Turn::NONE;
   rclcpp::Time turn_until_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_stamp_, last_image_{0, 0, RCL_ROS_TIME};

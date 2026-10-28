@@ -79,8 +79,8 @@ int main(int argc, char ** argv)
   if (const char * e = std::getenv("LINE_MARGIN")) {
     p.line_margin_mm = std::atof(e);
   }
-  obstacle_detection::ColorParams colors;
-  colors.white_l_min = 170;   // lane_detection.yaml 2026-10-26
+  grid_drive::ColorParams colors;
+  colors.white_l_min = 170;   // 예전 lane_detection.yaml 2026-10-26
   grid_drive::GridPlanner planner;
   std::vector<double> t_map, t_search, t_follow, t_all;
   int no_path = 0, pivot = 0, soft = 0, n = 0;

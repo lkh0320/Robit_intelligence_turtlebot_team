@@ -19,7 +19,7 @@ int main(int argc, char ** argv)
 {
   const std::string in = argv[1];
   grid_drive::FloorParams p;
-  obstacle_detection::ColorParams colors;
+  grid_drive::ColorParams colors;
   colors.white_l_min = 170;
   std::vector<double> scales;
   for (double s = 0.6; s <= 3.01; s += 0.2) {

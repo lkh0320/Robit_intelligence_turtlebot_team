@@ -52,16 +52,6 @@ QString lightName(uint8_t s)
   }
 }
 
-QString sideName(uint8_t s)
-{
-  // ParkingSpot / WallObstacle 은 NONE=0, LEFT=1, RIGHT=2
-  switch (s) {
-    case 1: return "LEFT";
-    case 2: return "RIGHT";
-    default: return "NONE";
-  }
-}
-
 QString signName(uint8_t s)
 {
   using M = interfaces::msg::Sign;
@@ -121,8 +111,6 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   psd_max_range_ = node_->declare_parameter("psd_max_range", 0.80);
   // 수동 주행 속도: 시작값과 슬라이더 상한 (GUI 에서 바로 바꿀 수 있고, 여기서는 처음 값만 정한다)
   lin_speed_init_ = node_->declare_parameter("linear_speed", 0.10);
-  // lane_follower.yaml 의 max_angular(1.5) 와 맞춰둠 - 안 맞으면 슬라이더를 건드리는 순간
-  // lane_follower 의 max_angular 를 이 값으로 덮어써서 코너링이 갑자기 약해짐
   ang_speed_init_ = node_->declare_parameter("angular_speed", 1.5);
   lin_speed_max_ = node_->declare_parameter("max_linear_speed", 1.0);   // 실제 상한은 stm_bridge max_wheel_speed / 펌웨어 MAX_WHEEL_MPS
   ang_speed_max_ = node_->declare_parameter("max_angular_speed", 10.0);
@@ -134,16 +122,9 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   cams_[1].key = "cam_bev";
   cams_[1].topic = QString::fromStdString(
     node_->declare_parameter("bev_image_topic", std::string("image_bev/compressed")));
-  cams_[2].key = "cam_lane";
+  // grid_drive (격자 계획 주행): 원본 + 도로 마스크 | 계획 지도 + 경로
+  cams_[2].key = "cam_grid";
   cams_[2].topic = QString::fromStdString(
-    node_->declare_parameter("lane_image_topic", std::string("vision/lane_debug/compressed")));
-  lane_topic_ = cams_[2].topic;
-  // 공사 구간 (AVOID / RETURN) 동안 cams_[2] 에 띄울 화면. wall_detection 은 보는 사람이 있을 때만 그리므로
-  // 공사 구간에서만 구독한다
-  wall_topic_ = QString::fromStdString(
-    node_->declare_parameter("wall_image_topic", std::string("vision/wall_debug/compressed")));
-  // grid_drive (격자 계획 주행) 가 떠 있으면 cams_[2] 에 원본 + 도로 마스크 | 계획 지도 를 띄운다 (1초마다 발행자 확인)
-  grid_topic_ = QString::fromStdString(
     node_->declare_parameter("grid_image_topic", std::string("grid_drive/debug/compressed")));
   cams_[3].key = "cam_object";
   cams_[3].topic = QString::fromStdString(
@@ -159,17 +140,15 @@ MainWindow::MainWindow(rclcpp::Node::SharedPtr node, QWidget * parent)
   resize(size);
 
   // 왼쪽: 카메라 4개 (2x2) + 로그 / 오른쪽: 상태 + 조종
-  //   원본         | Bird's Eye View
-  //   선·벡터 검출 | 객체 인식
+  //   원본               | Bird's Eye View
+  //   격자 계획 주행     | 객체 인식
   // (카메라 밝기/노출은 GUI 가 아니라 Jetson 에서 v4l2-ctl 로 설정: vision_bringup/camera/README.md)
   auto * left = new QWidget;
   auto * left_layout = new QVBoxLayout(left);
   auto * cam_grid = new QGridLayout;
   cam_grid->addWidget(buildCameraView(cams_[0], "원본"), 0, 0);
   cam_grid->addWidget(buildCameraView(cams_[1], "Bird's Eye View"), 0, 1);
-  auto * lane_view = buildCameraView(cams_[2], "선 · 벡터 검출");
-  lane_box_ = qobject_cast<QGroupBox *>(lane_view);
-  cam_grid->addWidget(lane_view, 1, 0);
+  cam_grid->addWidget(buildCameraView(cams_[2], "격자 계획 주행 (grid_drive): 원본 + 도로 | 지도 + 경로"), 1, 0);
   cam_grid->addWidget(buildCameraView(cams_[3], "객체 인식"), 1, 1);
   for (int i = 0; i < 2; ++i) {
     cam_grid->setRowStretch(i, 1);
@@ -247,7 +226,7 @@ QWidget * MainWindow::buildStatusPanel()
   // 왼쪽 열: 카메라/하드웨어, 오른쪽 열: 비전 인식 결과
   addTopicRow(grid, row++, "cam_raw", "카메라 원본");
   addTopicRow(grid, row++, "cam_bev", "BEV 화면");
-  addTopicRow(grid, row++, "cam_lane", "선 검출 화면");
+  addTopicRow(grid, row++, "cam_grid", "grid_drive 화면");
   addTopicRow(grid, row++, "cam_object", "객체 인식 화면");
   addTopicRow(grid, row++, "psd", "psd");
   addTopicRow(grid, row++, "dxl", "dxl_state");
@@ -255,12 +234,9 @@ QWidget * MainWindow::buildStatusPanel()
   addTopicRow(grid, row++, "mode", "control_mode");
   row = 0;
   auto * grid2 = new QGridLayout;
-  addTopicRow(grid2, row++, "lane", "lane_info");
   addTopicRow(grid2, row++, "light", "traffic_light");
-  addTopicRow(grid2, row++, "stop", "stop_line");
   addTopicRow(grid2, row++, "sign", "sign");
   addTopicRow(grid2, row++, "barrier", "barrier");
-  addTopicRow(grid2, row++, "parking", "parking_spot");
   grid->addLayout(grid2, 0, 2, row, 1);
   layout->addWidget(topic_box);
 
@@ -298,18 +274,12 @@ QWidget * MainWindow::buildStatusPanel()
   // 비전
   auto * vision_box = new QGroupBox("비전 인식");
   auto * vision_form = new QFormLayout(vision_box);
-  lane_label_ = new QLabel("-");
   light_label_ = new QLabel("-");
-  stop_label_ = new QLabel("-");
   sign_label_ = new QLabel("-");
   barrier_label_ = new QLabel("-");
-  parking_label_ = new QLabel("-");
-  vision_form->addRow("차선", lane_label_);
   vision_form->addRow("신호등", light_label_);
-  vision_form->addRow("정지선", stop_label_);
   vision_form->addRow("표지판", sign_label_);
   vision_form->addRow("차단바", barrier_label_);
-  vision_form->addRow("주차", parking_label_);
   layout->addWidget(vision_box);
 
   layout->addStretch();
@@ -396,19 +366,6 @@ QWidget * MainWindow::buildControlPanel()
   ang_speed_ = make_speed(1, "각속도 (A/D)", "rad/s", ang_speed_init_, ang_speed_max_, 0.1);
   speed_grid->setColumnStretch(1, 1);
   layout->addLayout(speed_grid);
-
-  // 같은 슬라이더를 lane_follower 쪽에도 반영: 선속도 -> linear_speed, 각속도 -> max_angular
-  // (lane_follower 는 자체 제어식으로 w 를 계산하므로 각속도는 "그 값으로 돈다"가 아니라 상한 역할)
-  connect(lin_speed_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double v) {
-      if (lane_param_client_) {
-        lane_param_client_->set_parameters({rclcpp::Parameter("linear_speed", v)});
-      }
-    });
-  connect(ang_speed_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double v) {
-      if (lane_param_client_) {
-        lane_param_client_->set_parameters({rclcpp::Parameter("max_angular", v)});
-      }
-    });
 
   // 화면 버튼 (누르고 있는 동안 이동)
   // 버튼을 누르면 키보드로 그 키를 누른 것과 똑같이 pressed_keys_ 에 넣는다
@@ -516,33 +473,12 @@ void MainWindow::setupRos()
         .arg(QString::fromStdString(msg->mission_state)));
     });
 
-  // lane_follower 공사 구간 상태 ("AVOID 1 (L) | 이유"). 상태가 바뀔 때만 오므로 마지막 것을 늦게 켜도 받게
-  zone_sub_ = node_->create_subscription<std_msgs::msg::String>(
-    node_->declare_parameter("construction_topic", std::string("lane_follower/construction")),
-    rclcpp::QoS(1).reliable().transient_local(), [this](std_msgs::msg::String::ConstSharedPtr m) {
-      const QString s = QString::fromStdString(m->data);
-      log("[공사] " + s);
-      setWallView(s.startsWith("AVOID") || s.startsWith("RETURN"));
-    });
-
   // --- vision ---
-  lane_sub_ = node_->create_subscription<interfaces::msg::LaneInfo>(
-    "lane_info", qos, [this](interfaces::msg::LaneInfo::ConstSharedPtr m) {
-      touch("lane");
-      lane_label_->setText(QString("%1  offset %2  angle %3 rad  (%4)").arg(onOff(m->detected))
-        .arg(m->offset, 0, 'f', 2).arg(m->angle, 0, 'f', 2).arg(m->confidence, 0, 'f', 2));
-    });
   light_sub_ = node_->create_subscription<interfaces::msg::TrafficLight>(
     "traffic_light", qos, [this](interfaces::msg::TrafficLight::ConstSharedPtr m) {
       touch("light");
       light_label_->setText(QString("%1  (%2)").arg(lightName(m->state))
         .arg(m->confidence, 0, 'f', 2));
-    });
-  stop_sub_ = node_->create_subscription<interfaces::msg::StopLine>(
-    "stop_line", qos, [this](interfaces::msg::StopLine::ConstSharedPtr m) {
-      touch("stop");
-      stop_label_->setText(QString("%1  y %2  (%3)").arg(onOff(m->detected))
-        .arg(m->y_ratio, 0, 'f', 2).arg(m->confidence, 0, 'f', 2));
     });
   sign_sub_ = node_->create_subscription<interfaces::msg::Sign>(
     "sign", qos, [this](interfaces::msg::Sign::ConstSharedPtr m) {
@@ -556,22 +492,12 @@ void MainWindow::setupRos()
       barrier_label_->setText(QString("%1  %2  (%3)").arg(onOff(m->detected))
         .arg(barrierName(m->state)).arg(m->confidence, 0, 'f', 2));
     });
-  parking_sub_ = node_->create_subscription<interfaces::msg::ParkingSpot>(
-    "parking_spot", qos, [this](interfaces::msg::ParkingSpot::ConstSharedPtr m) {
-      touch("parking");
-      parking_label_->setText(QString("%1  빈칸 <b>%2</b>  offset %3  (%4)").arg(onOff(m->detected))
-        .arg(sideName(m->empty_side)).arg(m->offset, 0, 'f', 2).arg(m->confidence, 0, 'f', 2));
-    });
 
   // --- 송신 ---
   // cmd_vel 은 stm_bridge 가 받아 바로 바퀴로 보낸다 (수동 주행 체크 시에만 발행)
   cmd_pub_ = node_->create_publisher<geometry_msgs::msg::Twist>(cmd_topic, 10);
   mode_pub_ = node_->create_publisher<interfaces::msg::ControlMode>("control_mode", 10);
   start_pub_ = node_->create_publisher<std_msgs::msg::Empty>("mission_start", 10);
-
-  // 선속도/각속도 슬라이더 -> lane_follower 의 linear_speed/max_angular 파라미터
-  // (lane_follower 가 안 떠 있어도 요청이 조용히 무시될 뿐 에러는 안 남)
-  lane_param_client_ = std::make_shared<rclcpp::AsyncParametersClient>(node_, "lane_follower");
 }
 
 // 토픽 key 를 방금 받았다고 기록 (처음 받으면 로그, 램프는 즉시 초록)
@@ -591,11 +517,6 @@ void MainWindow::touch(const QString & key)
 
 void MainWindow::refreshLamps()
 {
-  const bool grid = node_->count_publishers(grid_topic_.toStdString()) > 0;
-  if (grid != grid_view_) {
-    grid_view_ = grid;
-    updateLaneView();
-  }
   // 1초마다 호출 -> count 가 곧 Hz
   for (auto & [key, s] : stats_) {
     if (!s.lamp || !s.last.isValid()) {
@@ -758,38 +679,6 @@ void MainWindow::subscribeCamera(CameraView & view)
 }
 
 // 프레임 하나를 화면에 표시하고 fps 갱신 (1초마다 받은 프레임 수로 계산)
-void MainWindow::setWallView(bool on)
-{
-  if (on == wall_view_) {
-    return;
-  }
-  wall_view_ = on;
-  updateLaneView();
-}
-
-void MainWindow::updateLaneView()
-{
-  const QString topic = grid_view_ ? grid_topic_ : wall_view_ ? wall_topic_ : lane_topic_;
-  auto & view = cams_[2];
-  if (topic == view.topic) {
-    return;
-  }
-  view.sub.reset();
-  view.topic = topic;
-  subscribeCamera(view);
-  view.frames = 0;
-  view.fps = 0.0;
-  view.fps_timer.restart();
-  view.image->clear();
-  view.image->setText("수신 대기 중\n" + view.topic);
-  const QString title = grid_view_ ? "격자 계획 주행 (grid_drive): 원본 + 도로 | 지도 + 경로" :
-    wall_view_ ? "공사 구간 경로 계획 (box_planner)" : "선 · 벡터 검출";
-  if (lane_box_) {
-    lane_box_->setTitle(title);
-  }
-  log("선 검출 칸 -> " + title);
-}
-
 void MainWindow::onFrame(CameraView & view, const QImage & image)
 {
   touch(view.key);

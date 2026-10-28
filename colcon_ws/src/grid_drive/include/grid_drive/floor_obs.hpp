@@ -6,7 +6,7 @@
 //     box     장애물 (박스 바닥 네모)
 //     offroad 주행 불가 영역 (트랙 밖 바닥 등). 비어 있으면 모름 (색 방식은 못 구함)
 //   인식 방법
-//     observeColor: 원본을 바닥 지도로 편 뒤 LAB 색 마스크 (obstacle_detection/color_maps.hpp 그대로)
+//     observeColor: 원본을 바닥 지도로 편 뒤 LAB 색 마스크 (color_maps.hpp)
 //     observeSegmentation: 세그멘테이션 모델 (YOLO-seg 등) 의 원본 화면 클래스 마스크를 같은 변환으로 바닥 지도에 편다
 //       road (주행 가능) 가 있으면 offroad = 보인 곳 중 road 아닌 곳
 //     merge: 둘을 함께 쓸 때 (선 / 박스 / 주행 불가는 합침)
@@ -21,7 +21,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include "obstacle_detection/color_maps.hpp"
+#include "grid_drive/color_maps.hpp"
 
 namespace grid_drive
 {
@@ -58,7 +58,7 @@ inline cv::Size fineSize(const FloorParams & p)
     static_cast<int>(std::lround(p.far_mm / p.cell_mm))};
 }
 
-// 바닥 지도 칸 -> 원본 (raw_size 크기 영상) 변환 행렬 (box_planner::mapToRaw 와 같은 식, 세로만 바퀴 축까지)
+// 바닥 지도 칸 -> 원본 (raw_size 크기 영상) 변환 행렬 (예전 box_planner::mapToRaw 와 같은 식, 세로만 바퀴 축까지)
 inline cv::Mat fineToRaw(const FloorParams & p, cv::Size raw_size)
 {
   const float w = static_cast<float>(raw_size.width), h = static_cast<float>(raw_size.height);
@@ -148,7 +148,7 @@ inline cv::Mat boxFootprintRadial(const cv::Mat & box, const FloorParams & p, in
 }
 
 inline FloorObs observeColor(
-  const cv::Mat & raw, const FloorParams & p, const obstacle_detection::ColorParams & colors)
+  const cv::Mat & raw, const FloorParams & p, const grid_drive::ColorParams & colors)
 {
   FloorObs o;
   cv::Mat small;
@@ -156,11 +156,11 @@ inline FloorObs observeColor(
   cv::warpPerspective(small, o.ground, fineToRaw(p, small.size()), fineSize(p),
     cv::INTER_LINEAR | cv::WARP_INVERSE_MAP, cv::BORDER_CONSTANT);
   o.valid = visibleMask(p, small.size());
-  obstacle_detection::ColorParams c = colors;
+  grid_drive::ColorParams c = colors;
   c.box_min_area = std::max(4, static_cast<int>(colors.box_min_area / (p.cell_mm * p.cell_mm)));
   c.box_depth_px = std::max(1, static_cast<int>(std::lround(p.box_depth_mm / p.cell_mm)));
   c.box_gap_px = std::max(1, static_cast<int>(std::lround(p.box_gap_mm / p.cell_mm)));
-  const auto m = obstacle_detection::buildColorMaps(o.ground, c);
+  const auto m = grid_drive::buildColorMaps(o.ground, c);
   const cv::Mat hidden = ~o.valid;
   o.line = m.line_wall.clone();
   o.box = p.box_radial ? boxFootprintRadial(m.box, p, c.box_min_area) : m.box_blocked.clone();

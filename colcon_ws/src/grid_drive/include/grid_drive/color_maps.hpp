@@ -1,5 +1,5 @@
-// 바닥 지도의 색 마스크 + 거리 변환 (box_planner 가 쓴다, ROS 없이 테스트 가능)
-//   (2026-10-14 지운 path_planner 의 buildMaps 를 옮겨 온 것)
+// 바닥 지도의 색 마스크 + 거리 변환 (floor_obs observeColor 가 쓴다, ROS 없이 테스트 가능)
+//   (2026-10-29 지운 obstacle_detection 패키지에서 옮겨 온 것)
 //   - LAB 색 마스크로 노란 선 / 흰 선 / 박스(어두운 적갈색)를 찾는다
 //     박스는 어둡고 a 가 높다 (L ≈ 23, a ≈ 145, b ≈ 138). 빨간 정지선은 더 밝고 더 붉어서 a / b - a 로 빠진다
 //   - 박스는 바닥 접점(열마다 아래부터 처음 만난 박스 픽셀)부터 위로 box_depth_px 만큼만 막힘으로 칠한다 (바닥 네모)
@@ -15,12 +15,12 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
-namespace obstacle_detection
+namespace grid_drive
 {
 
 struct ColorParams
 {
-  // OpenCV LAB: L 0~255, a/b 는 128 이 무채색. 선 색은 lane_detection.yaml 과 같게
+  // OpenCV LAB: L 0~255, a/b 는 128 이 무채색. 선 색은 parking.yaml 과 같게
   // (2026-10-01 실측: 노란 선 b≈188, 흰 선 L≈230~250, 바닥 L≈85)
   int yellow_l_min = 80;
   int yellow_b_min = 150;
@@ -141,4 +141,4 @@ inline ColorMaps buildColorMaps(const cv::Mat & bgr, const ColorParams & p)
   return m;
 }
 
-}  // namespace obstacle_detection
+}  // namespace grid_drive
