@@ -135,6 +135,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "std_msgs/msg/empty.hpp"
 
 // 이 노드가 보내는 control_mode 의 mission_state 앞에 붙는 이름 (내가 보낸 걸 다시 받으면 무시하려고)
 static const char * const MY_TAG = "parking_node";
@@ -217,6 +218,18 @@ public:
       "odom", 10, [this](nav_msgs::msg::Odometry::ConstSharedPtr msg)
       {
         on_odom(*msg);
+      });
+    // GUI "자율주행 시작" (mission_start): 지난 시험에서 그만둔 / 끝난 상태를 지우고 표지판 기다리기부터
+    //   (예전에는 GUI LANE 버튼만 다시 시작시켜서, STOP 으로 그만둔 뒤 미션을 시작하면 주차를 안 했다)
+    start_sub_ = create_subscription<std_msgs::msg::Empty>(
+      "mission_start", 10, [this](std_msgs::msg::Empty::ConstSharedPtr)
+      {
+        if (i_am_driving())
+        {
+          give_up("자율주행 다시 시작");
+        }
+        rearm_until_s_ = 0.0;
+        reset();
       });
     mode_sub_ = create_subscription<ControlMode>(
       "control_mode", 10, [this](ControlMode::ConstSharedPtr msg)
@@ -2420,6 +2433,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Subscription<interfaces::msg::PsdArray>::SharedPtr psd_sub_;
   rclcpp::Subscription<ControlMode>::SharedPtr mode_sub_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr start_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<ControlMode>::SharedPtr mode_pub_;

@@ -66,6 +66,11 @@ public:
     // 모델이 "열림(bar_open)"을 잘 못 맞혀서, 차단바가 아예 안 보이는 것도 "치워짐"으로 봄.
     // 한 프레임만 놓쳐도 바로 출발하면 위험하니 이만큼 연속으로 못 봐야 인정 (psd_clear_count 와 같은 방식)
     barrier_lost_count_ = declare_parameter("barrier_lost_count", 10);
+    // false: 차단바 인식으로 STOP 을 보내지 않음 (grid_drive 가 차단바 앞 막다른 길에서 알아서 멈추고,
+    //   열리면 다시 감). TO_BARRIER 에서 계속 LANE
+    barrier_stop_ = declare_parameter("barrier_stop", true);
+    // 주차 노드의 PARKING 이 이만큼 안 오면 주차 노드가 운전을 그만둔 것으로 봄
+    parking_quiet_sec_ = declare_parameter("parking_quiet_sec", 0.5);
     // 테스트용: 특정 상태부터 바로 시작 (기본 WAIT_LIGHT = 실제 미션과 동일하게 처음부터)
     //   예: start_state:=TO_BARRIER 로 차단바 구간만 따로 테스트
     start_state_ = stateFromName(declare_parameter("start_state", std::string("WAIT_LIGHT")));
@@ -120,6 +125,21 @@ public:
     // (turtle_gui/main_window.cpp sendControlMode 참고). 이걸 보면 수동 개입으로 보고 멈춘다.
     mode_sub_ = create_subscription<ControlMode>(
       "control_mode", 10, [this](ControlMode::ConstSharedPtr msg) {
+        // 주차 노드 (parking_node.cpp) 는 칸에 들어갔다 나오는 동안 0.1초마다 PARKING 을 직접 보내고,
+        // 끝나면 "parking_node:leave_done" 으로 LANE 을 보낸다. 그동안 이 노드가 LANE 을 보내면 모드가
+        // 오가며 grid_drive / 주차 노드가 번갈아 운전해 덜덜 떤다 -> 주차 노드가 운전 중이면 아무것도 안 보냄
+        if (msg->mission_state.rfind("parking_node:", 0) == 0) {
+          if (msg->mode == ControlMode::PARKING) {
+            parking_active_ = true;
+            parking_seen_ = now();
+          } else {
+            parking_active_ = false;
+            if (msg->mission_state == "parking_node:leave_done") {
+              parking_done_ = true;
+            }
+          }
+          return;
+        }
         if (msg->mission_state == "turtle_gui" && !manual_override_) {
           manual_override_ = true;
           RCLCPP_WARN(get_logger(), "GUI 강제 모드 감지, 상태머신 정지 (노드 재시작 전까지 유지)");
@@ -176,6 +196,13 @@ private:
     if (!started_ || manual_override_) {
       return;   // 시작 전이거나 GUI가 제어권을 가져간 상태: 아무것도 보내지 않는다
     }
+    // 주차 노드가 운전 중 (PARKING 을 받은 지 parking_quiet_sec 이내): 모드를 보내지 않음
+    if (parking_active_ && (now() - parking_seen_).seconds() < parking_quiet_sec_) {
+      if (state_ == State::TO_PARKING) {
+        state_ = State::PARKING;   // 주차 노드가 표지판을 보고 먼저 시작함
+      }
+      return;
+    }
 
     std::string mission_state;
     switch (state_) {
@@ -209,13 +236,15 @@ private:
 
       case State::TO_PARKING:
         mission_state = "LANE_FOLLOW";
+        if (parking_done_) {   // 주차 노드가 이미 주차를 끝냄
+          state_ = State::TO_BARRIER;
+          break;
+        }
         // 주차 표지판을 가까이서 연속으로 보거나, 주차칸 인식 노드가 주차 구역을 알려주면 주차 시작
         if (parking_sign_hits_ >= parking_sign_hits_needed_ ||
           (parking_.detected && parking_.confidence >= min_confidence_))
         {
           state_ = State::PARKING;
-          parking_done_ = false;
-          parking_active_ = false;
           parking_timer_running_ = false;
         }
         break;
@@ -230,7 +259,7 @@ private:
 
       case State::TO_BARRIER:
         mission_state = "LANE_FOLLOW";
-        if (barrier_.detected && barrier_.confidence >= min_confidence_) {
+        if (barrier_stop_ && barrier_.detected && barrier_.confidence >= min_confidence_) {
           if (barrier_.state == interfaces::msg::Barrier::OPEN) {
             // 이미 열려 있으면 정해진 위치까지 기다릴 필요 없이 바로 통과
             state_ = State::FINISHING;
@@ -324,8 +353,9 @@ private:
       case State::TO_OBSTACLE: return ControlMode::LANE;
       case State::AVOIDING: return ControlMode::AVOID;
       case State::TO_PARKING: return ControlMode::LANE;
-      // 주차 구역 안: 평소엔 LANE (왼쪽 노란선 따라가기), parking_node 가 칸에 들어가는 동안만 PARKING
-      case State::PARKING: return parking_active_ ? ControlMode::PARKING : ControlMode::LANE;
+      // 주차 구역 안: LANE. 주차 노드가 칸에 들어갔다 나오는 동안은 주차 노드가 PARKING 을 직접 보내고
+      // 이 노드는 아무것도 안 보냄 (tick 참고)
+      case State::PARKING: return ControlMode::LANE;
       case State::TO_BARRIER: return ControlMode::LANE;
       case State::BARRIER_WAIT: return ControlMode::STOP;
       case State::FINISHING: return ControlMode::LANE;
@@ -347,6 +377,9 @@ private:
   double barrier_stop_y_ratio_;
   int64_t barrier_lost_count_;
   int64_t barrier_lost_streak_ = 0;
+  bool barrier_stop_ = true;
+  double parking_quiet_sec_ = 0.5;
+  rclcpp::Time parking_seen_{0, 0, RCL_ROS_TIME};
   double parking_sign_area_ratio_threshold_;
   int64_t parking_sign_hits_needed_;
 

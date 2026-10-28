@@ -22,7 +22,7 @@ ament_target_dependencies(lane_follower_node rclcpp geometry_msgs std_msgs senso
 # 주차 노드: 주차 표지판(또는 PARKING 모드)을 보면 주차하고 다시 라인 주행으로 돌려준다
 add_executable(parking_node src/parking_node.cpp)
 target_link_libraries(parking_node ${OpenCV_LIBS})
-ament_target_dependencies(parking_node rclcpp geometry_msgs sensor_msgs nav_msgs interfaces cv_bridge)
+ament_target_dependencies(parking_node rclcpp geometry_msgs std_msgs sensor_msgs nav_msgs interfaces cv_bridge)
 
 install(TARGETS lane_follower_node parking_node
   DESTINATION lib/${PROJECT_NAME})

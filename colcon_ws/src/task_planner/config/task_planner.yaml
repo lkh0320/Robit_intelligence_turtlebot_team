@@ -11,6 +11,8 @@ task_planner:
     parking_stable_duration: 0.5           # [s] 정렬+정지가 이 시간 유지되면 주차 완료로 판정
     parking_sign_area_ratio_threshold: 0.03 # 주차 표지판 크기/화면 크기, 이보다 커야 PARKING 진입
     parking_sign_hits_needed: 3            # 주차 표지판을 연속으로 이만큼 봐야 PARKING 진입
+    parking_quiet_sec: 0.5                 # [s] 주차 노드가 PARKING 을 보내는 동안 (이 시간 안에 받았으면) 이 노드는 모드를 안 보냄
+    barrier_stop: false                    # 차단바 인식으로 정지 (2026-10-28 끔: grid_drive 가 차단바 앞에서 알아서 멈춤). 다시 쓰려면 true
     barrier_cross_duration: 3.0            # [s] 차단바 통과 후 정지까지 임시 고정시간
                                             # TODO(vision): 터널 입구 인식 메시지 생기면 교체
     barrier_stop_y_ratio: 0.5              # 차단바가 화면 세로 비율로 이만큼(0 상단~1 하단) 가까워져야 정지

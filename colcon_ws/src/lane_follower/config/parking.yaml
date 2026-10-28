@@ -75,6 +75,7 @@ parking:
     side_min_speed: 0.08            # [rad/s] 끝에서 너무 느려 안 돌지 않게
     side_tolerance_deg: 1.0         # 남은 각도가 이 이하면 멈춤
     odom_timeout: 0.5               # [s] odom 이 이보다 오래 안 오면 odom 없는 걸로 봄
+    side_odom_scale: 1.0
 
     # 7-1) 90도 멈추는 기준: 격자 맞추기
     side_snap: true                 # false = 예전 방식
