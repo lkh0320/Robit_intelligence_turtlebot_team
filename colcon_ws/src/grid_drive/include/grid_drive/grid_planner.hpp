@@ -96,6 +96,11 @@ struct Params : FloorParams
   double escape_cost = 8.0;            // 그 칸 비용
   double soft_forbid_cost = 15.0;      // soft: 진입 금지 칸 비용
   double soft_cross_cost = 60.0;       // soft: 선 / 박스 칸 자체에 더함
+  // soft 에서도 로봇 앞 soft_line_block_mm [실제 mm] 보다 먼 곳은 선 중심에서 soft_line_keep_mm 안을 못 지나감 (선을 건너는 경로 금지).
+  //   공사 표지판 앞 코너에서 앞이 박스 / 띠로 막히자 soft 경로가 왼쪽 노란선을 건너 옆 끝 목표로 가 선을 넘었다 (실격,
+  //   2026-10-30 drive41 283.8s / drive42 39.6s, 76.2s). 0 = 예전 (벌점만)
+  double soft_line_block_mm = 0.0;
+  double soft_line_keep_mm = 60.0;
   double soft_arc_weight = 300.0;      // soft: 원호가 진입 금지 칸을 지나는 비율 x 이 값 [mm]
   // soft: 띠 안으로 들어간 깊이 (0 = 띠 가장자리 ~ 1 = 선 위) x 이 값을 더함. 0 이면 띠 안은 다 같은 값이라
   //   최단 경로 = 안쪽 선에 붙음 (2026-10-29 left1: 교차로 진입 / U턴 내내 soft 로 안쪽 선 밟음)
@@ -119,6 +124,8 @@ struct Params : FloorParams
   double turn_weight_mm = 900.0;       // turn 이면 (가로 위치 / half_width) x 이 값 만큼 그쪽 가점
   double turn_side_bonus_mm = 400.0;   // turn 쪽 옆쪽 끝 목표 가점
   double turn_wrong_side_mm = 3000.0;  // turn 반대쪽 옆쪽 끝 목표 벌점
+  bool turn_block_wrong = false;       // true: turn 반대쪽 목표는 아예 안 고름 (옆 끝, 또는 가운데에서 turn_block_x_mm 넘게 반대쪽)
+  double turn_block_x_mm = 100.0;
   // 5. 다듬기
   double sample_mm = 20.0;
   int smooth_iters = 4;
@@ -131,6 +138,30 @@ struct Params : FloorParams
   double arc_step_mm = 10.0;
   double curvature_weight = 10.0;      // |k| / max_curvature x 이 값 [mm]
   double change_weight = 15.0;         // |k - 직전 k| / max_curvature x 이 값 [mm]
+  // 지연 보정: 새 명령이 바퀴에 먹기 전 lead_mm 만큼 지금 곡률 lead_k [1/mm, 오른쪽 +] 로 더 간다고 보고
+  //   그 자리에서 원호를 고름 (0 = 끔). 속도를 올리자 지연 (~0.25s) 때문에 직선에서 출렁이고 코너 안쪽을 밟았다
+  double lead_mm = 0.0;
+  double lead_k = 0.0;
+  // 경로 추종 (track_len_mm > 0 이면 원호 맞춤 대신): 로봇 (lead 자리) 에서 가장 가까운 경로 점의 옆 거리 e,
+  //   경로 방향 차 th, 경로 곡률 k_path 로 k = k_path + 2 th / L + e / L^2 (L = track_len_mm, 임계 감쇠).
+  //   원호 하나를 앞 follow_mm 에 맞추면 코너 전부터 꺾어 안쪽을 밟았다 (2026-10-29 drive32/33 안쪽 40~90mm).
+  //   막히면 (진입 금지) 원호 맞춤으로 돌아감
+  double track_len_mm = 0.0;
+  double track_preview_mm = 80.0;      // 경로 곡률을 재는 구간 [실제 mm] (가장 가까운 점부터 앞으로)
+  double track_outer_mm = 0.0;         // 굽은 길에서 바깥으로 이만큼 [실제 mm] 비켜 따라감 (반지름 300mm 이하 곡선에서 다)
+  double track_bend_mm = 300.0;        // 길이 어느 쪽으로 휘는지 재는 앞 구간 [실제 mm]. 계획 경로는 처음에 안쪽으로 먼저
+                                       //   붙어서 가까운 곡률은 부호가 뒤집힐 수 있음
+  // 바깥 비킴 맞추기 (1 = 켬): 비킨 원호가 선 띠 (빨간 칸) 에 들어가면 비킴을 반 / 0 으로 줄여 덜 들어가는 것을 고름.
+  //   SOFT (거의 항상) 에서는 띠에 들어가도 안 막혀서 비킴 90mm 가 그대로 바깥 선을 넘었다 (2026-10-30 drive39:
+  //   첫 왼쪽 코너 / 교차로 U턴 / 지그재그 끝). 0 = 예전
+  double track_outer_fit = 0.0;
+  // 코너 앞 감속 (0 = 끔, 1 = 앞 곡률을 지금 곡률처럼): track_bend_mm 앞까지 경로가 꺾이는 정도로 미리 감속.
+  //   지금 원호 곡률로만 감속하면 0.5 m/s 로 코너에 들어가 늦게 꺾고 바깥 선에 닿아 제자리 회전 (drive39 39.2s)
+  double track_slow_ahead = 0.0;
+  // 따라가는 원호가 이 거리 [실제 mm] 보다 멀리서 막히면 막힌 것으로 안 봄 (경로는 막힌 곳을 피해 있고 다음 프레임에 다시 고름).
+  //   좁은 박스 사이 길에서 원호 하나가 길 안에 다 안 들어가 제자리 회전 / 좌우 끝 원호로 튀어 움찔댔다 (2026-10-30 drive41
+  //   195~202s, 경로는 깨끗했음). 0 = 예전 (check_mm 안 어디서 막혀도 탈락)
+  double track_block_ok_mm = 0.0;
   // 출력
   double linear = 0.10;                // [m/s]
   double min_linear = 0.04;
@@ -152,6 +183,7 @@ struct Result
   bool dead_end_box = false;           // 막는 것이 박스 (차단바)
   double v = 0, w = 0;                 // cmd_vel [m/s], [rad/s] (w + = 왼쪽, ROS)
   double curvature = 0;                // 고른 원호 [1/mm 실제], + 오른쪽
+  double track_outer_used = 0;         // 이번에 쓴 바깥 비킴 [mm] (track_outer_fit 로 줄었는지 디버그)
   int goal_kind = 0;                   // 0 위쪽, 1 왼쪽 끝, 2 오른쪽 끝
   cv::Point2d goal;                    // 목표 (로봇 좌표)
   std::vector<cv::Point2d> raw_path;   // 격자 경로 (로봇 좌표, 지도 단위)
@@ -541,6 +573,9 @@ private:
           if (lines.at<uint8_t>(y, x) || boxes.at<uint8_t>(y, x) || off_g_.at<uint8_t>(y, x)) {
             sc += static_cast<float>(p.soft_cross_cost);
           }
+          if (p.soft_line_block_mm > 0 && fy / p.map_y_scale > p.soft_line_block_mm && dline < p.soft_line_keep_mm && ds > esc) {
+            sc = -1.0f;
+          }
           soft_cost_.at<float>(y, x) = sc;
         } else {
           c = 1.0f;
@@ -687,6 +722,11 @@ private:
           }
         } else {
           const double dir = turn == Turn::LEFT ? -1.0 : 1.0;   // 가고 싶은 쪽 x 부호
+          if (p.turn_block_wrong &&
+            ((kind == 1 && dir > 0) || (kind == 2 && dir < 0) || dir * q.x < -p.turn_block_x_mm))
+          {
+            continue;
+          }
           score -= p.turn_weight_mm * dir * q.x / p.half_width_mm;
           if ((kind == 1 && dir < 0) || (kind == 2 && dir > 0)) {
             score -= p.turn_side_bonus_mm;
@@ -847,28 +887,156 @@ private:
     const int n = std::max(1, p.arc_count);
     double best = std::numeric_limits<double>::infinity();
     double best_k = 0;
-    for (int a = 0; a < n; ++a) {
-      const double k = n == 1 ? 0.0 : p.max_curvature * (2.0 * a / (n - 1) - 1.0);
-      std::vector<cv::Point2d> pts;
-      bool blocked = false;
-      double err = 0;
-      int cnt = 0, inside = 0;
-      for (double s = 0; s <= p.follow_mm + 1e-6; s += p.arc_step_mm) {
-        const cv::Point2d q = arcPoint(k, s, p);
-        pts.push_back(q);
-        const cv::Point c = toCell(q, p);
-        if (s <= p.check_mm && c.x >= 0 && c.y >= 0 && c.x < gs.width && c.y < gs.height &&
-          forbid_.at<uint8_t>(c) && std::hypot(c.x - start.x, c.y - start.y) > esc)
-        {
-          if (!r.soft) {
-            blocked = true;
-            break;
+    // 지연 보정: 원호 시작 자리 / 방향 (실제 축척, 오른쪽 + 방향각)
+    const double lead_k = std::clamp(p.lead_k, -p.max_curvature, p.max_curvature);
+    const cv::Point2d lead0 = p.lead_mm > 0 ? arcPoint(lead_k, p.lead_mm, p) : cv::Point2d(0, 0);
+    const cv::Point2d lead(lead0.x, lead0.y / p.map_y_scale);
+    const double lead_th = p.lead_mm > 0 ? lead_k * p.lead_mm : 0.0;
+    const double lc = std::cos(lead_th), ls = std::sin(lead_th);
+    double block_s = 0;   // arcOf 가 막힌 곳 (원호 위 거리)
+    auto arcOf = [&](double k, bool & blocked, int & inside, double & err, int & cnt) {
+        std::vector<cv::Point2d> pts;
+        blocked = false;
+        block_s = 0;
+        inside = cnt = 0;
+        err = 0;
+        for (double s = 0; s <= p.follow_mm + 1e-6; s += p.arc_step_mm) {
+          const cv::Point2d q0 = arcPoint(k, s, p);
+          const double lx = q0.x, ly = q0.y / p.map_y_scale;
+          const cv::Point2d q(lead.x + lx * lc + ly * ls, (lead.y - lx * ls + ly * lc) * p.map_y_scale);
+          pts.push_back(q);
+          const cv::Point c = toCell(q, p);
+          if (s <= p.check_mm && c.x >= 0 && c.y >= 0 && c.x < gs.width && c.y < gs.height &&
+            forbid_.at<uint8_t>(c) && std::hypot(c.x - start.x, c.y - start.y) > esc)
+          {
+            if (!r.soft) {
+              blocked = true;
+              block_s = s;
+              break;
+            }
+            ++inside;
           }
-          ++inside;
+          err += refDist({q.x, q.y / p.map_y_scale});
+          ++cnt;
         }
-        err += refDist({q.x, q.y / p.map_y_scale});
-        ++cnt;
+        return pts;
+      };
+    bool tracked = false;
+    double k_ahead = 0;   // 앞 꺾임 [1/mm] (track 방식에서만)
+    if (p.track_len_mm > 0 && ref.size() >= 2) {
+      // 경로를 lead 자리 / 방향 기준으로 (x 오른쪽, y 앞)
+      std::vector<cv::Point2d> loc;
+      loc.reserve(ref.size());
+      for (const auto & q : ref) {
+        const double dx = q.x - lead.x, dy = q.y - lead.y;
+        loc.emplace_back(dx * lc - dy * ls, dx * ls + dy * lc);
       }
+      // 원점에서 가장 가까운 선분 위 점
+      double bd = std::numeric_limits<double>::infinity();
+      size_t bi = 0;
+      double bt = 0;
+      for (size_t i = 1; i < loc.size(); ++i) {
+        const cv::Point2d a = loc[i - 1], ab = loc[i] - a;
+        const double l2 = ab.dot(ab);
+        const double t = l2 > 0 ? std::clamp(-a.dot(ab) / l2, 0.0, 1.0) : 0.0;
+        const double d = cv::norm(a + ab * t);
+        if (d < bd) {
+          bd = d;
+          bi = i;
+          bt = t;
+        }
+      }
+      const cv::Point2d a = loc[bi - 1], ab = loc[bi] - a, near = a + ab * bt;
+      const double th = std::atan2(ab.x, ab.y);   // 경로 방향 (+ 오른쪽)
+      // 경로 곡률: 가장 가까운 점부터 track_preview_mm 앞까지 방향 변화 / 길이
+      double acc = cv::norm(loc[bi] - near), th2 = th, len = acc;
+      for (size_t i = bi + 1; i < loc.size() && acc < p.track_preview_mm; ++i) {
+        const cv::Point2d d = loc[i] - loc[i - 1];
+        const double l = cv::norm(d);
+        if (l < 1e-6) {
+          continue;
+        }
+        th2 = std::atan2(d.x, d.y);
+        acc += l;
+        len = acc;
+      }
+      const double k_path = len > 1.0 ? std::remainder(th2 - th, 2 * M_PI) / len : 0.0;
+      const double L = p.track_len_mm;
+      // 바깥으로 비킴: track_bend_mm 앞까지 오른쪽으로 휘면 경로보다 왼쪽을 목표로
+      double outer = 0;
+      if (p.track_outer_mm > 0) {
+        double acc2 = cv::norm(loc[bi] - near), th3 = th, len2 = acc2;
+        for (size_t i = bi + 1; i < loc.size() && acc2 < p.track_bend_mm; ++i) {
+          const cv::Point2d d = loc[i] - loc[i - 1];
+          const double l = cv::norm(d);
+          if (l < 1e-6) {
+            continue;
+          }
+          th3 = std::atan2(d.x, d.y);
+          acc2 += l;
+          len2 = acc2;
+        }
+        const double k_bend = len2 > 1.0 ? std::remainder(th3 - th, 2 * M_PI) / len2 : 0.0;
+        outer = p.track_outer_mm * std::clamp(k_bend * 300.0, -1.0, 1.0);
+      }
+      // 앞 꺾임 (코너 앞 감속): track_bend_mm 과 그 반 구간 중 큰 방향 변화 / 길이
+      {
+        double acc3 = cv::norm(loc[bi] - near), th4 = th;
+        for (size_t i = bi + 1; i < loc.size() && acc3 < p.track_bend_mm; ++i) {
+          const cv::Point2d d = loc[i] - loc[i - 1];
+          const double l = cv::norm(d);
+          if (l < 1e-6) {
+            continue;
+          }
+          th4 = std::atan2(d.x, d.y);
+          acc3 += l;
+          if (acc3 > 30.0) {
+            k_ahead = std::max(k_ahead, std::abs(std::remainder(th4 - th, 2 * M_PI)) / std::max(acc3, p.track_bend_mm * 0.5));
+          }
+        }
+      }
+      // 비킴 1 -> 0.5 -> 0: 선 띠에 덜 들어가는 것 (같으면 큰 비킴)
+      const double scales[3] = {1.0, 0.5, 0.0};
+      const int ns = (p.track_outer_fit > 0 && outer != 0) ? 3 : 1;
+      int best_in = std::numeric_limits<int>::max();
+      double k_sel = 0;
+      std::vector<cv::Point2d> pts_sel;
+      for (int si = 0; si < ns; ++si) {
+        const double o = outer * scales[si];
+        const double kk = std::clamp(k_path + 2.0 * th / L + (near.x - o) / (L * L), -p.max_curvature, p.max_curvature);
+        bool blocked;
+        int inside, cnt;
+        double err;
+        std::vector<cv::Point2d> pts = arcOf(kk, blocked, inside, err, cnt);
+        if (blocked) {
+          if (p.track_block_ok_mm <= 0 || block_s < p.track_block_ok_mm) {
+            continue;
+          }
+          inside = 100000 - static_cast<int>(block_s);   // 막히지 않은 것보다 뒤, 멀리서 막힐수록 앞
+        }
+        if (inside < best_in) {
+          best_in = inside;
+          k_sel = kk;
+          pts_sel = std::move(pts);
+          r.track_outer_used = o;
+        }
+        if (inside == 0) {
+          break;
+        }
+      }
+      if (best_in != std::numeric_limits<int>::max()) {
+        arcs_.push_back(pts_sel);
+        tracked = true;
+        best = 0;
+        best_k = k_sel;
+      }
+    }
+    for (int a = 0; a < n && !tracked; ++a) {
+      const double k = n == 1 ? 0.0 : p.max_curvature * (2.0 * a / (n - 1) - 1.0);
+      bool blocked;
+      double err;
+      int cnt, inside;
+      const std::vector<cv::Point2d> pts = arcOf(k, blocked, inside, err, cnt);
       arcs_.push_back(pts);
       if (blocked || cnt == 0) {
         continue;
@@ -885,7 +1053,7 @@ private:
       r.follow_ok = true;
       r.curvature = best_k;
       prev_k_ = best_k;
-      const double kr = std::abs(best_k) / p.max_curvature;
+      const double kr = std::min(1.0, std::max(std::abs(best_k), p.track_slow_ahead * k_ahead) / p.max_curvature);
       double v = std::max(p.min_linear, p.linear * (1.0 - p.slow_curvature * kr));
       if (r.soft) {
         v *= p.soft_speed_ratio;

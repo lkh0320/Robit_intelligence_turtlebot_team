@@ -309,3 +309,114 @@ TEST(GridPlanner, SoftDepthKeepsLaneCenter)
   EXPECT_LT(off_center(r1), 25.0);
   EXPECT_LT(off_center(r1), off_center(r0) - 20.0);
 }
+
+// 지연 보정: 직선 차선에서 지금 왼쪽으로 돌고 있으면 (지연 동안 더 왼쪽으로 감) 오른쪽 원호를 고름
+TEST(GridPlanner, LeadCountersCurrentTurn)
+{
+  Params p = params();
+  FloorObs o = empty(p);
+  line(p, o, -180, 0, -180, farReal(p));
+  line(p, o, 180, 0, 180, farReal(p));
+  GridPlanner g0;
+  const auto r0 = g0.plan(o, p);
+  ASSERT_TRUE(r0.follow_ok);
+  p.lead_mm = 100.0;
+  p.lead_k = -0.5 * p.max_curvature;   // 왼쪽으로 도는 중
+  GridPlanner g1;
+  const auto r1 = g1.plan(o, p);
+  ASSERT_TRUE(r1.follow_ok);
+  EXPECT_GT(r1.curvature, r0.curvature + 0.1 * p.max_curvature);   // 더 오른쪽
+}
+
+// 경로 추종 (track_len_mm): 앞 300mm 직진 뒤 오른쪽으로 휘는 차선. 원호 맞춤은 코너 전부터 꺾고 (안쪽 밟음),
+//   추종은 로봇 자리 경로가 곧으니 거의 안 꺾음
+TEST(GridPlanner, TrackWaitsForCorner)
+{
+  Params p = params();
+  FloorObs o = empty(p);
+  const cv::Point2d c(450, 300);
+  for (double rad : {450.0 - 180, 450.0 + 180}) {
+    line(p, o, c.x - rad, 0, c.x - rad, c.y);
+    for (double a = 0; a < 1.2; a += 0.05) {
+      line(p, o, c.x - rad * std::cos(a), c.y + rad * std::sin(a),
+        c.x - rad * std::cos(a + 0.05), c.y + rad * std::sin(a + 0.05));
+    }
+  }
+  GridPlanner g0;
+  const auto r0 = g0.plan(o, p);
+  ASSERT_TRUE(r0.follow_ok);
+  p.track_len_mm = 200.0;
+  GridPlanner g1;
+  const auto r1 = g1.plan(o, p);
+  ASSERT_TRUE(r1.follow_ok);
+  EXPECT_LT(std::abs(r1.curvature), std::abs(r0.curvature));
+  EXPECT_LT(std::abs(r1.curvature), 0.3 * p.max_curvature);
+}
+
+// 경로 추종: 차선 가운데가 오른쪽 (x 100) 이면 오른쪽으로 꺾음
+TEST(GridPlanner, TrackTurnsTowardPath)
+{
+  Params p = params();
+  p.track_len_mm = 200.0;
+  FloorObs o = empty(p);
+  line(p, o, -80, 0, -80, farReal(p));
+  line(p, o, 280, 0, 280, farReal(p));
+  GridPlanner g;
+  const auto r = g.plan(o, p);
+  ASSERT_TRUE(r.follow_ok);
+  EXPECT_GT(r.curvature, 0.0);
+  EXPECT_LT(r.w, 0.0);
+}
+
+// 경로 추종 바깥 비킴 (track_outer_mm): 오른쪽으로 휘는 차선에서 덜 오른쪽으로 꺾음
+TEST(GridPlanner, TrackOuterTurnsLess)
+{
+  Params p = params();
+  FloorObs o = empty(p);
+  const cv::Point2d c(300, 0);
+  for (double rad : {300.0 - 180, 300.0 + 180}) {
+    for (double a = 0; a < 1.2; a += 0.05) {
+      line(p, o, c.x - rad * std::cos(a), c.y + rad * std::sin(a),
+        c.x - rad * std::cos(a + 0.05), c.y + rad * std::sin(a + 0.05));
+    }
+  }
+  p.track_len_mm = 200.0;
+  GridPlanner g0;
+  const auto r0 = g0.plan(o, p);
+  ASSERT_TRUE(r0.follow_ok);
+  p.track_outer_mm = 40.0;
+  GridPlanner g1;
+  const auto r1 = g1.plan(o, p);
+  ASSERT_TRUE(r1.follow_ok);
+  EXPECT_LT(r1.curvature, r0.curvature);
+}
+
+// 차선 (선 사이 300mm) 이 앞에서 박스로 다 막힘, 왼쪽 선 너머는 빈 바닥: soft 경로가 선을 건너 돌아가면 실격
+//   (2026-10-30 drive42). soft_line_block_mm 켜면 선을 건너는 경로를 안 냄
+TEST(GridPlanner, SoftNeverCrossesLine)
+{
+  Params q = params();
+  q.map_y_scale = 1.0;
+  q.line_margin_mm = 35.0;
+  q.robot_half_width_mm = 100.0;
+  FloorObs o = empty(q);
+  line(q, o, -150, 0, -150, farReal(q));
+  line(q, o, 150, 0, 150, farReal(q));
+  box(q, o, -150, 450, 150, 550);
+  auto crosses = [&](const grid_drive::Result & r) {
+      for (const auto & pt : r.path) {
+        if (pt.y > 100.0 && (pt.x < -150.0 + 30.0 || pt.x > 150.0 - 30.0)) {
+          return true;
+        }
+      }
+      return false;
+    };
+  GridPlanner g0;
+  const auto r0 = g0.plan(o, q);
+  EXPECT_TRUE(r0.path_ok && r0.soft && crosses(r0)) << "예전 동작 (선 건넘) 이 재현돼야 시험이 의미 있음";
+  q.soft_line_block_mm = 100.0;
+  q.soft_line_keep_mm = 60.0;
+  GridPlanner g1;
+  const auto r1 = g1.plan(o, q);
+  EXPECT_FALSE(r1.path_ok && crosses(r1));
+}
