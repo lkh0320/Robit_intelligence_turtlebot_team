@@ -16,12 +16,15 @@ bird_eye_view:
     # 보정 영상의 소실점 x 가 중앙보다 13px 오른쪽 = 로봇이 차선과 약 2° 틀어져 있었음
     # 아랫변이 화면보다 넓어(0~1 밖) BEV 아래 양 모서리는 검게 나온다
     # 바꾸면 parking.yaml (robot_y_offset_px, lane_width_px) 도 확인. grid_drive 는 floor_obs.hpp 에 따로 보정한 값을 씀
-    src_top_y: 0.360
-    src_top_left_x: 0.286
-    src_top_right_x: 0.714
-    src_bottom_y: 1.0
-    src_bottom_left_x: -0.023
-    src_bottom_right_x: 1.023
+    # 2026-10-29 재보정: 카메라가 아래로 숙여짐 (직선 차선 영상에서 예전 값은 두 선이 3.7° 벌어지고 먼 쪽 폭 333px).
+    #   grid_drive floor_obs.hpp 의 10-28 보정에서 역으로 구한 카메라 (f 385, 렌즈 = 축 앞 98mm) 로
+    #   피치 34.2 -> 40.2°, 높이 240 -> 252mm 를 두 선이 평행 + 간격 297mm 되게 맞춤. grid_drive 와 같은 사다리꼴
+    src_top_y: 0.322
+    src_top_left_x: 0.273
+    src_top_right_x: 0.727
+    src_bottom_y: 1.002
+    src_bottom_left_x: -0.036
+    src_bottom_right_x: 1.036
     bev_width: 400           # 출력 크기 [px]
     bev_height: 400
     draw_grid: true          # GUI용 압축 영상에만 격자 표시

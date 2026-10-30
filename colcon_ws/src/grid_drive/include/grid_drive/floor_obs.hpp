@@ -28,8 +28,11 @@ namespace grid_drive
 
 struct FloorParams
 {
-  double src_top_y = 0.392, src_top_left_x = 0.274, src_top_right_x = 0.726;   // 2026-10-28 바닥 표시 보정 (f 399, 카메라 발 = 축 앞 85mm)
-  double src_bottom_y = 1.109, src_bottom_left_x = -0.096, src_bottom_right_x = 1.096;
+  // 2026-10-29 재보정 (카메라가 숙여짐, 10-28 값은 직선 차선이 5.8° 벌어짐): 10-28 값 (top 0.392 / 0.274 / 0.726,
+  //   bottom 1.109 / -0.096 / 1.096) 에서 구한 카메라 f 385, 렌즈 = 축 앞 98mm 그대로 피치 34.2 -> 40.2°, 높이 240 -> 252mm
+  //   bird_eye_view.yaml 과 같은 사다리꼴
+  double src_top_y = 0.322, src_top_left_x = 0.273, src_top_right_x = 0.727;
+  double src_bottom_y = 1.002, src_bottom_left_x = -0.036, src_bottom_right_x = 1.036;
   double bev_size_mm = 400.0;
   double bev_near_mm = 179.0;          // BEV 맨 아래 = 바퀴 축 앞 [mm]
   double cell_mm = 4.0;
