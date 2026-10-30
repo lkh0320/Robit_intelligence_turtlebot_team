@@ -193,7 +193,25 @@ public:
   ParkingNode()
   : Node("parking")
   {
-    declare_all_parameters();
+    loadParams();
+    // 시작할 때만 읽는 파라미터. 설명의 "재시작" 을 보고 turtle_gui 가 ↻ 표시
+    rcl_interfaces::msg::ParameterDescriptor restart;
+    restart.description = "재시작해야 반영 (시작할 때만 읽음)";
+    image_topic_ = declare_parameter("image_topic", std::string("image_bev"), restart);
+    skip_sign_ = declare_parameter("skip_sign", false, restart);
+    // 나머지는 실행 중에 바꾸면 loadParams 로 바로 반영
+    rcl_interfaces::msg::ParameterDescriptor ro;
+    ro.read_only = true;
+    ro.description = "turtle_gui 표시용: 파라미터를 바꾸면 바로 반영되는 노드";
+    declare_parameter("live_params", true, ro);
+    param_cb_ = add_post_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps)
+      {
+        loadParams();
+        for (const auto & q : ps)
+        {
+          RCLCPP_INFO(get_logger(), "파라미터 %s = %s", q.get_name().c_str(), q.value_to_string().c_str());
+        }
+      });
 
     // ---- 받는 토픽 ----
     const auto qos = rclcpp::SensorDataQoS();
@@ -239,12 +257,27 @@ public:
 
     // ---- 보내는 토픽 ----
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
+    // 일반 주행 (grid_drive) 이 보내는 속도를 기억해 둔다 (주차를 같은 속도로 이어가려고)
+    cmd_sub_ = create_subscription<geometry_msgs::msg::Twist>(
+      "cmd_vel", 10, [this](geometry_msgs::msg::Twist::ConstSharedPtr msg)
+      {
+        if (!i_am_driving() && msg->linear.x > 0.0)
+        {
+          seen_drive_v_ = msg->linear.x;
+          seen_drive_t_ = now().seconds();
+        }
+      });
     mode_pub_ = create_publisher<ControlMode>("control_mode", 10);
 
     // ---- 0.1초마다: 모드 알림, 영상 끊김 / 시간 초과 확인 ----
     timer_ = create_wall_timer(std::chrono::milliseconds(100), [this]
       {
         watchdog();
+      });
+    // 0.02초마다: 부드럽게 바꾼 바퀴 명령 보내기 (smooth)
+    smooth_timer_ = create_wall_timer(std::chrono::milliseconds(20), [this]
+      {
+        smooth_step();
       });
 
     // 시험용: 표지판 없이 바로 시작
@@ -260,151 +293,226 @@ public:
 private:
   // ==================== 파라미터 (config/parking.yaml) ====================
 
-  void declare_all_parameters()
+  // 처음이면 선언, 이미 있으면 지금 값 (실행 중 바뀐 값) 을 읽는다
+  template<typename T>
+  T param(const std::string & name, const T & def)
+  {
+    if (!has_parameter(name))
+    {
+      return declare_parameter(name, def);
+    }
+    return get_parameter(name).get_value<T>();
+  }
+
+  // 실행 중에 바꿀 수 있는 파라미터 전부. 생성자에서 한 번, 파라미터가 바뀔 때마다 다시
+  //   (turtle_gui 파라미터 탭 / ros2 param set). 주차 도중에 바꿔도 다음 영상 / 단계부터 그 값
+  void loadParams()
   {
     // 1) 표지판
-    min_confidence_ = declare_parameter("min_confidence", 0.5);
-    sign_area_ratio_threshold_ = declare_parameter("sign_area_ratio_threshold", 0.02);
-    sign_hits_needed_ = declare_parameter("sign_hits_needed", 2);
-    skip_sign_ = declare_parameter("skip_sign", false);
+    min_confidence_ = param("min_confidence", 0.5);
+    sign_area_ratio_threshold_ = param("sign_area_ratio_threshold", 0.02);
+    sign_hits_needed_ = param("sign_hits_needed", 2);
 
     // 2) 색 / 화면
-    image_topic_ = declare_parameter("image_topic", std::string("image_bev"));
-    yellow_l_min_ = declare_parameter("yellow_l_min", 80);
-    yellow_b_min_ = declare_parameter("yellow_b_min", 150);
-    yellow_a_max_ = declare_parameter("yellow_a_max", 135);
-    white_l_min_ = declare_parameter("white_l_min", 190);
-    white_ab_dev_ = declare_parameter("white_ab_dev", 15);
-    bev_center_x_ = declare_parameter("bev_center_x", 0.5);
-    lane_width_px_ = declare_parameter("lane_width_px", 295.0);
-    line_min_rows_ = declare_parameter("line_min_rows", 40);
-    flat_min_pixels_ = declare_parameter("flat_min_pixels", 35);
+    yellow_l_min_ = param("yellow_l_min", 80);
+    yellow_b_min_ = param("yellow_b_min", 150);
+    yellow_a_max_ = param("yellow_a_max", 135);
+    white_l_min_ = param("white_l_min", 190);
+    white_ab_dev_ = param("white_ab_dev", 15);
+    bev_center_x_ = param("bev_center_x", 0.5);
+    lane_width_px_ = param("lane_width_px", 295.0);
+    line_min_rows_ = param("line_min_rows", 40);
+    flat_min_pixels_ = param("flat_min_pixels", 35);
 
     // 3) 흰선 따라 직진
     // 직진 속도 [m/s]
-    drive_speed_ = declare_parameter("drive_speed", 0.10);
-    heading_gain_ = declare_parameter("heading_gain", 1.0);
-    offset_gain_ = declare_parameter("offset_gain", 1.0);
-    offset_soft_px_ = declare_parameter("offset_soft_px", 300.0);
-    max_angular_ = declare_parameter("max_angular", 0.6);
-    robot_y_offset_px_ = declare_parameter("robot_y_offset_px", 179.0);
+    drive_speed_ = param("drive_speed", 0.10);
+    heading_gain_ = param("heading_gain", 1.0);
+    offset_gain_ = param("offset_gain", 1.0);
+    offset_soft_px_ = param("offset_soft_px", 300.0);
+    max_angular_ = param("max_angular", 0.6);
+    robot_y_offset_px_ = param("robot_y_offset_px", 179.0);
 
     // 4) 입구 찾기 (왼쪽 아래 칸)
-    watch_x_max_ = declare_parameter("watch_x_max", 120);
-    watch_rows_ = declare_parameter("watch_rows", 20);
-    watch_bottom_ = declare_parameter("watch_bottom", 390);
-    present_pixels_ = declare_parameter("present_pixels", 80);
-    empty_pixels_ = declare_parameter("empty_pixels", 15);
-    gap_frames_needed_ = declare_parameter("gap_frames_needed", 2);
-    extra_forward_m_ = declare_parameter("extra_forward_m", -0.04);
+    watch_x_max_ = param("watch_x_max", 120);
+    watch_rows_ = param("watch_rows", 20);
+    watch_bottom_ = param("watch_bottom", 390);
+    present_pixels_ = param("present_pixels", 80);
+    empty_pixels_ = param("empty_pixels", 15);
+    gap_frames_needed_ = param("gap_frames_needed", 2);
+    extra_forward_m_ = param("extra_forward_m", -0.04);
 
     // 5) 회전
-    turn_speed_ = declare_parameter("turn_speed", 0.4);
-    turn_min_speed_ = declare_parameter("turn_min_speed", 0.08);
-    turn_slow_angle_deg_ = declare_parameter("turn_slow_angle_deg", 60.0);
-    turn_slow_power_ = declare_parameter("turn_slow_power", 2.0);
-    aligned_deg_ = declare_parameter("aligned_deg", 4.0);
-    parallel_deg_ = declare_parameter("parallel_deg", 15.0);
-    pair_gap_min_px_ = declare_parameter("pair_gap_min_px", 150.0);
-    pair_gap_max_px_ = declare_parameter("pair_gap_max_px", 420.0);
-    single_line_ok_ = declare_parameter("single_line_ok", true);
-    single_line_margin_px_ = declare_parameter("single_line_margin_px", 80.0);
-    turn_min_time_ = declare_parameter("turn_min_time", 1.0);
-    turn_fit_rows_ = declare_parameter("turn_fit_rows", 230);
+    turn_speed_ = param("turn_speed", 0.4);
+    turn_min_speed_ = param("turn_min_speed", 0.08);
+    turn_slow_angle_deg_ = param("turn_slow_angle_deg", 60.0);
+    turn_slow_power_ = param("turn_slow_power", 2.0);
+    aligned_deg_ = param("aligned_deg", 4.0);
+    parallel_deg_ = param("parallel_deg", 15.0);
+    pair_gap_min_px_ = param("pair_gap_min_px", 150.0);
+    pair_gap_max_px_ = param("pair_gap_max_px", 420.0);
+    single_line_ok_ = param("single_line_ok", true);
+    single_line_margin_px_ = param("single_line_margin_px", 80.0);
+    turn_min_time_ = param("turn_min_time", 1.0);
+    turn_fit_rows_ = param("turn_fit_rows", 230);
 
     // 5-1) 제자리 회전 대신 곡선으로 입구에 들어가기
-    entry_arc_ = declare_parameter("entry_arc", true);
-    entry_gap_to_center_m_ = declare_parameter("entry_gap_to_center_m", 0.33);
-    entry_forward_m_ = declare_parameter("entry_forward_m", 0.0);
-    entry_arc_radius_m_ = declare_parameter("entry_arc_radius_m", 0.08);
-    entry_arc_radius_gain_ = declare_parameter("entry_arc_radius_gain", 1.0);
-    entry_arc_min_radius_m_ = declare_parameter("entry_arc_min_radius_m", 0.05);
-    entry_arc_speed_ = declare_parameter("entry_arc_speed", 0.08);
-    entry_check_deg_ = declare_parameter("entry_check_deg", 45.0);
-    entry_pair_stop_ = declare_parameter("entry_pair_stop", true);
-    entry_pair_max_lean_deg_ = declare_parameter("entry_pair_max_lean_deg", 30.0);
-    entry_pair_check_deg_ = declare_parameter("entry_pair_check_deg", 20.0);
+    entry_arc_ = param("entry_arc", true);
+    entry_gap_to_center_m_ = param("entry_gap_to_center_m", 0.33);
+    entry_forward_m_ = param("entry_forward_m", 0.0);
+    // 노란선 끊김을 알아챘을 때 로봇은 이미 (카메라 + 계산 지연) x 속도 만큼 지나와 있다 -> 그만큼 덜 직진
+    //   (park5 녹화: 3번 모두 곡선 끝이 3~4cm 늦음 = 실제 속도 약 0.25 m/s x 0.14초)
+    entry_latency_s_ = param("entry_latency_s", 0.14);
+    entry_arc_radius_m_ = param("entry_arc_radius_m", 0.08);
+    entry_arc_radius_gain_ = param("entry_arc_radius_gain", 1.0);
+    entry_arc_min_radius_m_ = param("entry_arc_min_radius_m", 0.05);
+    entry_arc_speed_base_ = param("entry_arc_speed", 0.08);
+    // 주차장으로 들어가는 곡선만 일반 주행 코너 빠르기로 (곡선 모양은 그대로)
+    entry_turn_match_ = param("entry_turn_match", true);
+    entry_turn_slow_deg_ = param("entry_turn_slow_deg", 45.0);   // 카메라로 이만큼 돈 뒤에는 원래 빠르기 (entry_arc_speed)
+    leave_turn_match_ = param("leave_turn_match", true);   // 도로로 나가는 곡선도 일반 주행 코너 빠르기로
+    leave_slow_ = param("leave_slow", false);              // 나갈 때 노란선 끝이 가까워지면 줄이기
+    entry_turn_w_ = param("entry_turn_w", 0.6);   // [rad/s 명령] 일반 주행 코너 회전 (grid_drive planner.max_angular 1.5 실제 / 2.45)
+    entry_check_deg_ = param("entry_check_deg", 45.0);
+    entry_pair_stop_ = param("entry_pair_stop", true);
+    entry_pair_max_lean_deg_ = param("entry_pair_max_lean_deg", 30.0);
+    entry_pair_check_deg_ = param("entry_pair_check_deg", 20.0);
 
     // 6) 주차장 길 올라가기
-    stem_use_white_ = declare_parameter("stem_use_white", true);
-    same_line_px_ = declare_parameter("same_line_px", 40.0);
-    stem_end_frames_ = declare_parameter("stem_end_frames", 3);
-    stem_min_time_ = declare_parameter("stem_min_time", 2.0);
-    stem_timeout_ = declare_parameter("stem_timeout", 20.0);
+    stem_use_white_ = param("stem_use_white", true);
+    same_line_px_ = param("same_line_px", 40.0);
+    stem_end_frames_ = param("stem_end_frames", 3);
+    stem_min_time_ = param("stem_min_time", 2.0);
+    stem_timeout_ = param("stem_timeout", 20.0);
 
     // 7) 옆 PSD 가 가까우면 반대쪽으로 90도
-    side_psd_threshold_ = declare_parameter("side_psd_threshold", 0.15);
-    side_hits_needed_ = declare_parameter("side_hits_needed", 3);
-    side_turn_base_deg_ = declare_parameter("side_turn_deg", 90.0);
+    side_psd_threshold_ = param("side_psd_threshold", 0.15);
+    side_hits_needed_ = param("side_hits_needed", 3);
+    side_turn_base_deg_ = param("side_turn_deg", 90.0);
     // 왼쪽 / 오른쪽으로 돌 때 각도를 따로 (0 보다 작으면 side_turn_deg 를 씀)
-    side_turn_deg_left_ = declare_parameter("side_turn_deg_left", -1.0);
-    side_turn_deg_right_ = declare_parameter("side_turn_deg_right", -1.0);
-    side_turn_toward_ = declare_parameter("side_turn_toward", true);
-    side_turn_when_ = declare_parameter("side_turn_when", std::string("white"));
-    white_trigger_y_ = declare_parameter("white_trigger_y", 350);
-    side_cam_ = declare_parameter("side_turn_by_camera", true);
-    side_turn_fixed_ = declare_parameter("side_turn_fixed", false);
-    side_odom_scale_ = declare_parameter("side_odom_scale", 1.5);
-    side_cam_min_line_px_ = declare_parameter("side_cam_min_line_px", 60);
-    side_cam_max_step_deg_ = declare_parameter("side_cam_max_step_deg", 20.0);
-    side_cam_lost_frames_ = declare_parameter("side_cam_lost_frames", 5);
-    side_cam_max_extra_deg_ = declare_parameter("side_cam_max_extra_deg", 15.0);
-    white_row_min_pixels_ = declare_parameter("white_row_min_pixels", 150);
-    white_center_ratio_ = declare_parameter("white_center_ratio", 0.6);
-    white_arm_y_ = declare_parameter("white_arm_y", 300);
-    side_clear_threshold_ = declare_parameter("side_clear_threshold", 0.20);
-    side_turn_speed_ = declare_parameter("side_turn_speed", 0.6);
-    side_min_speed_ = declare_parameter("side_min_speed", 0.08);
-    side_slow_angle_deg_ = declare_parameter("side_slow_angle_deg", 30.0);
-    side_slow_power_ = declare_parameter("side_slow_power", 2.0);
-    side_tolerance_deg_ = declare_parameter("side_tolerance_deg", 1.0);
-    odom_timeout_ = declare_parameter("odom_timeout", 0.5);
+    side_turn_deg_left_ = param("side_turn_deg_left", -1.0);
+    side_turn_deg_right_ = param("side_turn_deg_right", -1.0);
+    side_turn_toward_ = param("side_turn_toward", true);
+    side_turn_when_ = param("side_turn_when", std::string("white"));
+    white_trigger_y_ = param("white_trigger_y", 350);
+    side_cam_ = param("side_turn_by_camera", true);
+    side_turn_fixed_ = param("side_turn_fixed", false);
+    side_odom_scale_ = param("side_odom_scale", 1.5);
+    side_cam_min_line_px_ = param("side_cam_min_line_px", 60);
+    side_cam_max_step_deg_ = param("side_cam_max_step_deg", 20.0);
+    side_cam_lost_frames_ = param("side_cam_lost_frames", 5);
+    side_cam_max_extra_deg_ = param("side_cam_max_extra_deg", 15.0);
+    white_row_min_pixels_ = param("white_row_min_pixels", 150);
+    white_center_ratio_ = param("white_center_ratio", 0.6);
+    white_arm_y_ = param("white_arm_y", 300);
+    side_clear_threshold_ = param("side_clear_threshold", 0.20);
+    side_turn_speed_ = param("side_turn_speed", 0.6);
+    side_min_speed_ = param("side_min_speed", 0.08);
+    side_slow_angle_deg_ = param("side_slow_angle_deg", 30.0);
+    side_slow_power_ = param("side_slow_power", 2.0);
+    side_tolerance_deg_ = param("side_tolerance_deg", 1.0);
+    odom_timeout_ = param("odom_timeout", 0.5);
 
     // 7-1) 90도 멈추는 기준: 격자 맞추기
-    side_snap_ = declare_parameter("side_snap", true);
-    side_snap_min_ratio_ = declare_parameter("side_snap_min_ratio", 0.5);
+    side_snap_ = param("side_snap", true);
+    side_snap_min_ratio_ = param("side_snap_min_ratio", 0.5);
 
     // 7-2) 제자리 90도 + 후진 대신 뒤로 가면서 곡선으로 칸에 들어가기
-    side_arc_ = declare_parameter("side_arc", true);
-    side_arc_radius_m_ = declare_parameter("side_arc_radius_m", 0.12);
-    side_arc_radius_gain_ = declare_parameter("side_arc_radius_gain", 1.0);
-    side_arc_speed_ = declare_parameter("side_arc_speed", 0.06);
-    side_arc_forward_m_ = declare_parameter("side_arc_forward_m", 0.0);
-    side_arc_forward_max_m_ = declare_parameter("side_arc_forward_max_m", 0.30);
+    side_arc_ = param("side_arc", true);
+    side_arc_radius_m_ = param("side_arc_radius_m", 0.12);
+    side_arc_radius_gain_ = param("side_arc_radius_gain", 1.0);
+    side_arc_speed_ = param("side_arc_speed", 0.06);
+    side_arc_forward_m_ = param("side_arc_forward_m", 0.0);
+    side_arc_forward_max_m_ = param("side_arc_forward_max_m", 0.30);
     // 0 보다 크면 거리 (side_arc_forward_m) 대신 이 시간 [s] 만큼 더 전진한 뒤 곡선
-    side_arc_forward_time_ = declare_parameter("side_arc_forward_time", 0.0);
-    side_arc_backup_time_ = declare_parameter("side_arc_backup_time", 0.0);
+    side_arc_forward_time_ = param("side_arc_forward_time", 0.0);
+    side_arc_backup_time_ = param("side_arc_backup_time", 0.0);
 
     // 8) 90도 돈 뒤 후진
-    backup_time_ = declare_parameter("backup_time", 3.0);
-    backup_speed_ = declare_parameter("backup_speed", 0.06);
+    backup_time_ = param("backup_time", 3.0);
+    backup_speed_ = param("backup_speed", 0.06);
 
     // 9) 후진 뒤 곡선으로 돌아서 들어왔던 길로 나가기
-    exit_enable_ = declare_parameter("exit_enable", true);
-    exit_arc_speed_ = declare_parameter("exit_arc_speed", 0.08);
-    exit_arc_radius_m_ = declare_parameter("exit_arc_radius_m", 0.0);
-    exit_arc_radius_gain_ = declare_parameter("exit_arc_radius_gain", 2.0);
-    exit_arc_min_radius_m_ = declare_parameter("exit_arc_min_radius_m", 0.12);
-    exit_arc_deg_ = declare_parameter("exit_arc_deg", 90.0);
-    exit_check_ratio_ = declare_parameter("exit_check_ratio", 0.3);
-    exit_line_max_rms_px_ = declare_parameter("exit_line_max_rms_px", 8.0);
-    exit_overshoot_deg_ = declare_parameter("exit_overshoot_deg", 15.0);
-    exit_wait_yellow_deg_ = declare_parameter("exit_wait_yellow_deg", 15.0);
-    exit_stop_y_ = declare_parameter("exit_stop_y", 350);
-    exit_white_max_tilt_deg_ = declare_parameter("exit_white_max_tilt_deg", 30.0);
-    exit_timeout_ = declare_parameter("exit_timeout", 20.0);
+    exit_enable_ = param("exit_enable", true);
+    exit_arc_speed_base_ = param("exit_arc_speed", 0.08);
+    // 일반 주행과 같은 속도로: 주차를 시작할 때 grid_drive 가 보내던 속도를 직진 / 입구 곡선 / 나오는 곡선 / 길 내려가기 /
+    //   도로로 나가는 곡선에 쓴다. 칸으로 들어가는 동안 (흰 선 뒤 전진, 뒤로 곡선, 후진) 은 원래 값 그대로
+    match_drive_speed_ = param("match_drive_speed", true);
+    match_speed_min_ = param("match_speed_min", 0.05);   // 이 범위 밖이면 잘라서 씀 [m/s, 명령 단위]
+    match_speed_max_ = param("match_speed_max", 0.25);
+    match_turn_speed_ = param("match_turn_speed", false);   // false = 곡선은 원래 속도 (entry_arc_speed / exit_arc_speed)
+    // 주차 중이면 start_approach 에서 정한 속도 (일반 주행 속도일 수 있음) 를 그대로 둔다
+    if (!i_am_driving() || !match_turn_speed_)
+    {
+      entry_arc_speed_ = entry_arc_speed_base_;
+      exit_arc_speed_ = exit_arc_speed_base_;
+    }
+    exit_arc_radius_m_ = param("exit_arc_radius_m", 0.0);
+    exit_arc_radius_gain_ = param("exit_arc_radius_gain", 2.0);
+    exit_arc_min_radius_m_ = param("exit_arc_min_radius_m", 0.12);
+    // 9-2) 보면서 나가기: 곡선 중 안내 노란선 (칸 모서리에 붙은 길의 노란선) 이 보이면
+    //   그 선까지 거리 D 와 기운 각 phi 로 "이 반지름으로 돌면 선과 나란해질 때 선에서 exit_guide_offset_m 떨어진다"
+    //   R = (D - offset) / (1 - cos phi) 를 매 영상 다시 계산해서 돈다. phi 가 exit_guide_align_deg 이하면 길 내려가기
+    exit_guide_ = param("exit_guide", true);
+    exit_guide_offset_m_ = param("exit_guide_offset_m", 0.15);     // 끝났을 때 선에서 로봇 가운데까지 (= 길 폭 / 2)
+    exit_guide_align_deg_ = param("exit_guide_align_deg", 4.0);
+    exit_guide_max_radius_m_ = param("exit_guide_max_radius_m", 2.0);
+    // 9-3) 도로로 나가는 왼쪽 곡선도 보면서: 도로 바깥 흰 선에서 leave_guide_offset_m 떨어져 끝나게
+    leave_guide_ = param("leave_guide", true);
+    leave_guide_offset_m_ = param("leave_guide_offset_m", 0.15);   // 끝났을 때 흰 선에서 로봇 가운데까지 (= 차선 폭 / 2)
+    leave_guide_align_deg_ = param("leave_guide_align_deg", 4.0);
+    leave_guide_min_radius_m_ = param("leave_guide_min_radius_m", 0.10);
+    leave_guide_max_rms_px_ = param("leave_guide_max_rms_px", 10.0);   // 이보다 두꺼운 흰 덩어리는 선이 아님 (상자 등)
+
+    // 9-1) 흰 점선 (맞은편 칸 입구) 으로 후진 방향 맞추기 + 나가는 곡선 반지름
+    //   후진하는 동안 점선의 기울기 x dash_gain 만큼 돌면서 후진 -> 점선이 화면에서 가로가 되게 (= 칸과 똑바로)
+    //   나갈 때: 점선까지 거리 - 통로 폭 / 2 = 통로 가운데까지 거리 -> 이 반지름으로 돌면 통로 가운데로 나감
+    dash_align_ = param("dash_align", true);
+    dash_gain_ = param("dash_gain", 0.6);                // 기울기 [rad] x 이 값 = 회전 명령 [rad/s]
+    dash_max_w_ = param("dash_max_w", 0.4);              // [rad/s] 맞추는 회전 최대
+    dash_max_deg_ = param("dash_max_deg", 30.0);         // 이보다 기운 조각은 점선으로 안 봄
+    dash_min_len_px_ = param("dash_min_len_px", 35.0);   // 점선 한 조각 길이 범위 [px] (실제 약 110)
+    dash_max_len_px_ = param("dash_max_len_px", 130.0);
+    dash_max_width_px_ = param("dash_max_width_px", 30.0);   // 조각 두께 최대 [px] (실제 약 20)
+    bev_near_m_ = param("bev_near_m", 0.179);           // BEV 맨 아래 = 바퀴 축 앞 [m]
+    aisle_width_m_ = param("aisle_width_m", 0.31);       // 통로 양쪽 점선 사이 [m] (녹화로 잰 값)
+    exit_dash_gain_ = param("exit_dash_gain", 1.25);     // 실제 반지름 -> 명령 반지름 (0 = 점선 안 씀)
+    // 왼쪽 / 오른쪽으로 나갈 때 따로 (0 보다 작으면 exit_dash_gain 을 씀)
+    exit_dash_gain_left_ = param("exit_dash_gain_left", -1.0);
+    exit_dash_gain_right_ = param("exit_dash_gain_right", -1.0);
+    exit_arc_deg_ = param("exit_arc_deg", 90.0);
+    exit_check_ratio_ = param("exit_check_ratio", 0.3);
+    exit_line_max_rms_px_ = param("exit_line_max_rms_px", 8.0);
+    exit_overshoot_deg_ = param("exit_overshoot_deg", 15.0);
+    exit_wait_yellow_deg_ = param("exit_wait_yellow_deg", 15.0);
+    exit_stop_y_ = param("exit_stop_y", 350);
+    exit_white_max_tilt_deg_ = param("exit_white_max_tilt_deg", 30.0);
+    exit_timeout_ = param("exit_timeout", 20.0);
 
     // 9-1) 길을 내려와 도로로 나갈 때: 들어갈 때처럼 곡선으로 왼쪽 -> 일반 주행(LANE)
-    leave_turn_ = declare_parameter("leave_turn", true);
-    leave_forward_m_ = declare_parameter("leave_forward_m", 0.0);
-    leave_yellow_frames_ = declare_parameter("leave_yellow_frames", 2);
-    leave_rearm_delay_ = declare_parameter("leave_rearm_delay", 20.0);
+    leave_turn_ = param("leave_turn", true);
+    leave_forward_m_ = param("leave_forward_m", 0.0);
+    leave_arc_radius_m_ = param("leave_arc_radius_m", 0.12);   // 도로로 나가는 곡선 처음 반지름 (흰 선 밟으면 줄이기, 노란선 쪽으로 붙으면 키우기)
+    entry_yellow_min_s_ = param("entry_yellow_min_s", 0.5);   // 끊기기 전에 왼쪽 노란선이 이만큼 계속 보여야 입구 (0 = 안 봄)
+    leave_latency_s_ = param("leave_latency_s", 0.0);   // 나갈 때 끊김을 늦게 알아채는 시간 (park12: 늦지 않음 -> 0)
+    leave_yellow_frames_ = param("leave_yellow_frames", 2);
+    // 나가는 길을 이 시간 [s] 내려간 뒤부터 왼쪽 노란선 끊김을 본다
+    leave_min_time_ = param("leave_min_time", 1.0);
+    // 가로 흰 선 / 노란선 끝이 가까워질수록 일반 주행 속도 -> drive_speed 로 줄이기 (돌기 시작할 때는 예전처럼 drive_speed)
+    slow_near_ = param("slow_near", true);
+    stem_slow_start_y_ = param("stem_slow_start_y", 100.0);    // 가로 흰 선이 이 줄에 오면 줄이기 시작, white_trigger_y 에서 drive_speed
+    leave_slow_start_y_ = param("leave_slow_start_y", 100.0);  // 노란선 끝이 이 줄에 오면 줄이기 시작, 끊김 보는 칸 위에서 drive_speed
+    leave_rearm_delay_ = param("leave_rearm_delay", 20.0);
 
     // 안전
-    front_stop_distance_ = declare_parameter("front_stop_distance", 0.10);
-    image_timeout_ = declare_parameter("image_timeout", 0.5);
-    approach_timeout_ = declare_parameter("approach_timeout", 30.0);
-    turn_timeout_ = declare_parameter("turn_timeout", 15.0);
+    front_stop_distance_ = param("front_stop_distance", 0.10);
+    image_timeout_ = param("image_timeout", 0.5);
+    // 바퀴 명령 부드럽게 (속도는 smooth_accel 씩, 곡선은 smooth_curve_m 동안 서서히)
+    smooth_ = param("smooth", true);
+    smooth_accel_ = param("smooth_accel", 0.4);       // [m/s^2 명령] 속도 바뀌는 빠르기 (0.2 -> 0 이 0.5초)
+    smooth_curve_m_ = param("smooth_curve_m", 0.02);  // [m 명령] 반지름 20cm 곡선으로 다 꺾을 때까지 가는 거리
+    approach_timeout_ = param("approach_timeout", 30.0);
+    turn_timeout_ = param("turn_timeout", 15.0);
   }
 
   // ==================== 표지판 / 모드 ====================
@@ -473,6 +581,10 @@ private:
   {
     if (!i_am_driving())
     {
+      if (state_ == State::WAITING && entry_yellow_min_s_ > 0.0)
+      {
+        watch_left_yellow(msg);   // 표지판 기다리는 동안: 왼쪽 아래 노란선이 계속 보이는지만
+      }
       return;
     }
     last_image_time_ = now();
@@ -523,9 +635,14 @@ private:
     }
     else if (state_ == State::ENTRY_ARC)
     {
-      cv::Mat lines_mask;
-      cv::bitwise_or(yellow, white_mask(lab), lines_mask);
-      entry_arc_step(yellow, lines_mask);
+      const cv::Mat white = white_mask(lab);
+      // 도로로 나가는 곡선이면 도로 바깥 흰 선을 보고 돈다 (못 찾으면 원래 방식)
+      if (!(leaving_ && leave_guide_ && leave_arc_by_guide(white)))
+      {
+        cv::Mat lines_mask;
+        cv::bitwise_or(yellow, white, lines_mask);
+        entry_arc_step(yellow, lines_mask);
+      }
     }
     else if (state_ == State::SIDE_FORWARD)
     {
@@ -554,10 +671,12 @@ private:
     }
     else if (state_ == State::BACKUP)
     {
-      // 후진은 시간으로 한다. 곡선으로 돌기 시작할 때의 기준(직선 방향 분포)만 계속 저장해 둔다
+      // 후진은 시간으로 한다. 곡선으로 돌기 시작할 때의 기준(직선 방향 분포)도 계속 저장해 둔다
+      const cv::Mat white = white_mask(lab);
       cv::Mat lines_mask;
-      cv::bitwise_or(yellow, white_mask(lab), lines_mask);
+      cv::bitwise_or(yellow, white, lines_mask);
       last_scene_angles_ = scene_line_angles(lines_mask);
+      update_dash(white);        // 흰 점선 기울기 / 거리 (step_backup 이 보고 방향을 맞춤)
     }
     else if (state_ == State::EXIT_ARC)
     {
@@ -568,7 +687,15 @@ private:
     else if (state_ == State::EXIT_STEM)
     {
       const cv::Mat white = white_mask(lab);
-      if (leave_turn_ && leave_gap_reached(yellow))
+      // 곡선이 막 끝나 길 가운데로 오는 동안은 끊김을 안 봄 (한쪽 노란선이 화면 밖으로 잠깐 빠져서 착각함)
+      if (leave_turn_ && leave_slow_)
+      {
+        slow_by_row(yellow_end_y(yellow), leave_slow_start_y_,
+          static_cast<double>(watch_bottom_ - watch_rows_), "노란선 끝");
+      }
+      // 빨리 가면 leave_min_time 안에 끊김을 지나칠 수 있어서, 같은 거리 (leave_min_time x drive_speed) 를 가도 본다
+      const bool leave_min_ok = state_time_ >= leave_min_time_ || exit_travel_ >= leave_min_time_ * drive_speed_;
+      if (leave_turn_ && leave_gap_reached(yellow, leave_min_ok))
       {
         start_leave_straight();  // 길이 도로와 만남 -> 들어갈 때처럼 조금 직진 + 왼쪽 곡선
         return;
@@ -594,6 +721,10 @@ private:
       if (side_turn_when_ == "white" && check_white_trigger(white))
       {
         return;                  // 회전 시작 (또는 정지)
+      }
+      if (side_turn_when_ == "white")
+      {
+        slow_by_row(last_white_y_, stem_slow_start_y_, static_cast<double>(white_trigger_y_), "가로 흰 선");
       }
       // 노란선 + (흰 점선). 가로로 누운 흰선(주차장 테두리)은 선을 이을 때 빠진다
       cv::Mat lines = yellow;
@@ -676,7 +807,31 @@ private:
   void start_approach()
   {
     speed_ = drive_speed_;
-    RCLCPP_INFO(get_logger(), "주차 직진 속도 %.2f m/s (drive_speed)", speed_);
+    entry_arc_speed_ = entry_arc_speed_base_;
+    exit_arc_speed_ = exit_arc_speed_base_;
+    const bool fresh = seen_drive_t_ >= 0.0 && now().seconds() - seen_drive_t_ < 1.0;
+    if (match_drive_speed_ && fresh)
+    {
+      // 직진은 일반 주행 속도 그대로. 곡선은 match_turn_speed 일 때만. 곡선 반지름은 속도와 상관없이 그대로다
+      speed_ = std::clamp(seen_drive_v_, match_speed_min_, match_speed_max_);
+      if (match_turn_speed_)   // false 면 곡선은 entry_arc_speed / exit_arc_speed 그대로
+      {
+        entry_arc_speed_ = speed_;
+        exit_arc_speed_ = speed_;
+      }
+      RCLCPP_INFO(get_logger(), "주차 직진 속도 = 일반 주행 속도 %.2f m/s (곡선 / 칸 안은 원래 속도)", speed_);
+    }
+    else
+    {
+      RCLCPP_INFO(get_logger(), "주차 직진 속도 %.2f m/s (drive_speed)", speed_);
+    }
+    run_speed_ = speed_;
+    v_out_ = fresh ? std::clamp(seen_drive_v_, 0.0, 0.5) : 0.0;   // 일반 주행이 가던 속도에서 이어서
+    w_out_ = 0.0;
+    k_out_ = 0.0;
+    tgt_v_ = v_out_;           // 첫 영상이 오기 전에 "명령 끊김" 으로 멈추지 않게 (그동안 지금 속도로 직진)
+    tgt_w_ = 0.0;
+    tgt_t_ = now().seconds();
     state_ = State::APPROACH;
     leaving_ = false;
     gap_ = Gap::BEFORE;
@@ -718,6 +873,56 @@ private:
   // 왼쪽 아래 칸의 노란 점 개수로 "입구 반대쪽 모서리가 화면 맨 아래에 닿았는지" 판단
   //   BEFORE: 노란선 있음. 연속으로 비면 -> IN_GAP
   //   IN_GAP: 연속으로 다시 차면 -> 도착 (true)
+  // 왼쪽 아래 칸 (watch_*) 의 노란 점 수로 "노란선이 계속 보인 시간" 을 잰다
+  //   present_pixels 이상이면 보임 (이어짐), empty_pixels 이하가 0.15초 넘게 이어지면 끊김 (새로 잼)
+  void track_left_yellow(int count)
+  {
+    const double t = now().seconds();
+    if (count >= present_pixels_)
+    {
+      if (yellow_run_start_ < 0.0)
+      {
+        yellow_run_start_ = t;
+      }
+      yellow_run_last_ = t;
+    }
+    else if (count <= empty_pixels_ && yellow_run_start_ >= 0.0 && t - yellow_run_last_ > 0.15)
+    {
+      yellow_run_start_ = -1.0;
+    }
+  }
+
+  // 마지막으로 노란선이 계속 보인 시간 [s] (없으면 0)
+  double left_yellow_run() const
+  {
+    return yellow_run_start_ < 0.0 ? 0.0 : yellow_run_last_ - yellow_run_start_;
+  }
+
+  // 표지판 기다리는 동안: 영상의 왼쪽 아래 칸만 잘라서 노란 점 수를 센다 (가볍게)
+  void watch_left_yellow(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
+  {
+    cv_bridge::CvImageConstPtr cv;
+    try
+    {
+      cv = cv_bridge::toCvShare(msg, "bgr8");
+    }
+    catch (const cv_bridge::Exception &)
+    {
+      return;
+    }
+    const cv::Mat & img = cv->image;
+    const int y1 = std::min(static_cast<int>(watch_bottom_) + 1, img.rows);
+    const int y0 = std::max(0, y1 - static_cast<int>(watch_rows_));
+    const int x1 = std::min(static_cast<int>(watch_x_max_), img.cols);
+    if (y1 <= y0 || x1 <= 0)
+    {
+      return;
+    }
+    cv::Mat lab;
+    cv::cvtColor(img(cv::Range(y0, y1), cv::Range(0, x1)), lab, cv::COLOR_BGR2Lab);
+    track_left_yellow(cv::countNonZero(yellow_mask(lab)));
+  }
+
   bool entrance_reached(const cv::Mat & yellow)
   {
     const int y1 = std::min(static_cast<int>(watch_bottom_) + 1, yellow.rows);
@@ -727,7 +932,15 @@ private:
 
     if (gap_ == Gap::BEFORE)
     {
+      track_left_yellow(count);
       gap_frames_ = count <= empty_pixels_ ? gap_frames_ + 1 : 0;
+      if (gap_frames_ >= gap_frames_needed_ && entry_yellow_min_s_ > 0.0 && left_yellow_run() < entry_yellow_min_s_)
+      {
+        RCLCPP_WARN(get_logger(), "끊기기 전에 왼쪽 노란선을 %.2f초만 봄 (< %.2f초) -> 입구가 아님 (표지판을 늦게 봄). 이번엔 주차 안 함",
+          left_yellow_run(), entry_yellow_min_s_);
+        finish_leave();          // 일반 주행에 넘기고 다시 표지판 기다리기
+        return false;
+      }
       if (gap_frames_ >= gap_frames_needed_)
       {
         gap_ = Gap::IN_GAP;
@@ -772,11 +985,14 @@ private:
   //   -> 더 갈 거리 = entry_gap_to_center_m - entry_arc_radius_m + entry_forward_m (음수면 바로 꺾음)
   void start_entry_straight()
   {
-    const double extra_m = std::max(0.0, entry_gap_to_center_m_ - entry_arc_radius_m_ + entry_forward_m_);
+    const double latency_m = speed_ * std::max(0.0, entry_latency_s_);   // 알아채는 동안 이미 간 거리
+    const double extra_m = std::max(0.0, entry_gap_to_center_m_ - entry_arc_radius_m_ + entry_forward_m_ - latency_m -
+      curve_ramp_shift(entry_radius_cmd()));   // 서서히 꺾는 만큼 일찍
     extra_time_ = extra_m / speed_;
     state_ = State::EXTRA;
     state_time_ = 0.0;
-    RCLCPP_INFO(get_logger(), "입구 시작 (노란선 끊김) -> %.1fcm 더 직진한 뒤 곡선으로 왼쪽", extra_m * 100.0);
+    RCLCPP_INFO(get_logger(), "입구 시작 (노란선 끊김) -> %.1fcm 더 직진한 뒤 곡선으로 왼쪽 (지연 보정 -%.1fcm)",
+      extra_m * 100.0, latency_m * 100.0);
     if (extra_time_ <= 0.0)
     {
       start_turn_or_arc();
@@ -804,17 +1020,27 @@ private:
     state_time_ = 0.0;
     // 입구는 확 꺾어도 되니 나가는 곡선의 최소 반지름 (12cm, 두 바퀴 다 앞으로) 대신 entry_arc_min_radius_m 만 지킨다
     //   (반지름이 바퀴 간격 절반 9.5cm 보다 작으면 안쪽 바퀴는 살짝 뒤로 돈다)
-    const double radius_cmd = std::max(entry_arc_radius_m_ * entry_arc_radius_gain_, entry_arc_min_radius_m_);
-    entry_w_ = entry_arc_speed_ / radius_cmd;
+    const double radius_cmd = leaving_ ? leave_radius_cmd() :
+      std::max(entry_arc_radius_m_ * entry_arc_radius_gain_, entry_arc_min_radius_m_);
+    entry_v_ = entry_arc_speed_;
+    if (((!leaving_ && entry_turn_match_) || (leaving_ && leave_turn_match_)) && run_speed_ > entry_v_)
+    {
+      // 주차장으로 들어가는 곡선: 일반 주행이 코너에서 도는 빠르기 (entry_turn_w) 로. 반지름(길)은 그대로라 직진 속도도 같이 오른다
+      entry_v_ = std::max(entry_v_, std::min(run_speed_, entry_turn_w_ * radius_cmd));
+    }
+    entry_w_ = entry_v_ / radius_cmd;
+    entry_v_max_ = entry_v_;
     entry_arc_time_full_ = (M_PI / 2.0) / entry_w_;   // 명령대로 돈다면 90도 걸리는 시간
     entry_arc_limit_ = entry_arc_time_full_ * 2.5;     // 너무 오래 걸리면 포기
     entry_prev_angles_.clear();
     entry_cam_sum_ = 0.0;
     entry_cam_lost_ = 0;
     entry_cam_failed_ = false;
+    leave_guide_active_ = false;
+    leave_last_lean_ = -M_PI / 2.0;
     RCLCPP_INFO(get_logger(), "곡선으로 왼쪽 (반지름 %.0fcm, 명령 반지름 %.0fcm, 속도 %.2fm/s)",
-      entry_arc_radius_m_ * 100.0, radius_cmd * 100.0, entry_arc_speed_);
-    drive(entry_arc_speed_, entry_w_);
+      entry_arc_radius_m_ * 100.0, radius_cmd * 100.0, entry_v_);
+    drive(entry_v_, entry_w_);
   }
 
   // 영상이 올 때마다 (ENTRY_ARC):
@@ -846,6 +1072,14 @@ private:
     // 입구로 들어가는 중: 길의 노란선 두 개가 짝으로 보이면 (덜 돌았어도) 바로 멈추고 두 선 가운데로 올라간다
     //   (entry_pair_stop. 선이 entry_pair_max_lean_deg 보다 많이 기울어 있으면 아직 너무 비스듬해서 더 돈다)
     const double cam_deg = std::abs(entry_cam_sum_) * 180.0 / M_PI;
+    // 빠르게 도는 중이면 entry_turn_slow_deg 넘게 돈 뒤 원래 빠르기로 (반지름은 그대로). 끝까지 빠르면 더 돌아버림
+    if (!leaving_ && entry_v_ > entry_arc_speed_ && (entry_cam_failed_ || cam_deg >= entry_turn_slow_deg_))
+    {
+      entry_w_ *= entry_arc_speed_ / entry_v_;
+      entry_v_ = entry_arc_speed_;
+      RCLCPP_INFO(get_logger(), "입구 곡선 %.0f도 돔 -> 원래 빠르기 (%.2fm/s, %.2frad/s)", cam_deg, entry_v_, entry_w_);
+      drive(entry_v_, entry_w_);
+    }
     if (!leaving_ && entry_pair_stop_ && (entry_cam_failed_ || cam_deg >= entry_pair_check_deg_))
     {
       const std::optional<double> pair_lean = yellow_pair_lean(yellow, static_cast<int>(turn_fit_rows_));
@@ -853,7 +1087,7 @@ private:
       {
         RCLCPP_INFO(get_logger(), "곡선 중 길의 노란선 두 개가 보임 (기울기 %.1f도, 카메라 각도 %.1f도) -> 바로 올라감",
           *pair_lean * 180.0 / M_PI, cam_deg);
-        stop_wheels();
+        end_curve();
         start_stem(*pair_lean);
         return;
       }
@@ -870,7 +1104,7 @@ private:
       {
         RCLCPP_INFO(get_logger(), "곡선 중 %s의 노란선이 세로가 됨 (카메라 각도 %.1f도)", leaving_ ? "도로" : "길",
           std::abs(entry_cam_sum_) * 180.0 / M_PI);
-        stop_wheels();
+        end_curve();
         if (leaving_)
         {
           finish_leave();
@@ -880,7 +1114,7 @@ private:
         return;
       }
     }
-    drive(entry_arc_speed_, entry_w_);
+    drive(entry_v_, entry_w_);
   }
 
   // ==================== (3) TURN: 왼쪽으로 돌기 ====================
@@ -1010,6 +1244,7 @@ private:
     clear_hits_ = 0;
     last_white_y_ = -1.0;
     last_scene_angles_.clear();
+    slow_logged_ = false;
     side_prev_angles_.clear();
     RCLCPP_INFO(get_logger(), "입구 길을 똑바로 봄 (남은 기울기 %.1f도) -> 두 차선 가운데로 올라감",
       lean * 180.0 / M_PI);
@@ -1185,6 +1420,7 @@ private:
   void start_side_forward(double direction)
   {
     side_direction_ = direction;
+    speed_ = drive_speed_;       // 칸으로 들어가는 동안은 원래 속도 (흰 선 뒤 전진 거리가 맞춰 둔 그대로 되게)
     double extra_m = std::clamp(side_arc_forward_m_, 0.0, side_arc_forward_max_m_);
     if (extra_m != side_arc_forward_m_)
     {
@@ -1203,6 +1439,10 @@ private:
       return;
     }
     side_forward_time_ = extra_time > 0.0 ? extra_time : extra_m / speed_;
+    if (smooth_ && smooth_accel_ > 0.0)
+    {
+      side_forward_time_ = std::max(0.0, side_forward_time_ - speed_ / (2.0 * smooth_accel_));   // 서서히 멈추며 더 가는 만큼
+    }
     state_ = State::SIDE_FORWARD;
     state_time_ = 0.0;
     lines_missing_ = 0;
@@ -1698,7 +1938,8 @@ private:
     }
     state_ = State::BACKUP;
     state_time_ = 0.0;
-    RCLCPP_INFO(get_logger(), "%.1f초 후진", backup_duration_);
+    dash_time_ = -1.0;           // 이번 후진에서 본 점선만 쓴다
+    RCLCPP_INFO(get_logger(), "%.1f초 후진%s", backup_duration_, dash_align_ ? " (흰 점선이 보이면 가로가 되게 돌면서)" : "");
     drive(-backup_speed_, 0.0);
   }
 
@@ -1710,12 +1951,96 @@ private:
       finish_backup();
       return;
     }
-    drive(-backup_speed_, 0.0);
+    drive(-backup_speed_, dash_turn());
+  }
+
+  // 후진 중 회전 명령: 점선이 최근 (0.3초 안) 보였으면 기울기에 비례해서, 아니면 0 (똑바로)
+  //   점선이 화면에서 a 만큼 기울었으면 (y 아래 방향 기준, + = 오른쪽이 아래) 로봇이 -a 만큼 돌아야 가로가 된다
+  double dash_turn()
+  {
+    if (!dash_align_ || !dash_fresh(0.3))
+    {
+      return 0.0;
+    }
+    const double w = std::clamp(-dash_gain_ * dash_angle_, -dash_max_w_, dash_max_w_);
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500, "흰 점선 기울기 %.1f도 -> 돌면서 후진 (%.2f rad/s)",
+      dash_angle_ * 180.0 / M_PI, w);
+    return w;
+  }
+
+  bool dash_fresh(double within_s)
+  {
+    return dash_time_ >= 0.0 && now().seconds() - dash_time_ <= within_s;
+  }
+
+  // 흰 마스크 (BEV) 에서 점선 한 조각을 찾아 기울기 / 거리를 기억한다
+  void update_dash(const cv::Mat & white)
+  {
+    const std::optional<cv::Vec2d> dash = find_dash(white);
+    if (!dash)
+    {
+      return;
+    }
+    dash_angle_ = (*dash)[0];
+    dash_dist_ = bev_near_m_ + (white.rows - (*dash)[1]) * 0.001;   // 1px = 1mm
+    dash_time_ = now().seconds();
+  }
+
+  // 점선 조각 찾기: 길이 dash_min_len_px ~ dash_max_len_px, 두께 dash_max_width_px 이하, 가로에서 dash_max_deg 이내인
+  //   흰 덩어리 중 로봇에 가장 가까운 것 (화면 아래). 돌려주는 값: (기울기 [rad, + = 오른쪽이 아래], 가운데 y [px])
+  //   (칸 테두리 실선은 길어서 빠지고, 실선 끝에 붙은 짧은 선도 실선과 한 덩어리라 빠진다)
+  std::optional<cv::Vec2d> find_dash(const cv::Mat & white) const
+  {
+    cv::Mat labels, stats, centroids;
+    const int n = cv::connectedComponentsWithStats(white, labels, stats, centroids, 8, CV_32S);
+    std::optional<cv::Vec2d> best;
+    for (int i = 1; i < n; ++i)
+    {
+      if (stats.at<int>(i, cv::CC_STAT_AREA) < 150)
+      {
+        continue;
+      }
+      std::vector<cv::Point> pts;
+      cv::findNonZero(labels == i, pts);
+      const cv::RotatedRect box = cv::minAreaRect(pts);
+      const double len = std::max(box.size.width, box.size.height);
+      const double wid = std::min(box.size.width, box.size.height);
+      if (len < dash_min_len_px_ || len > dash_max_len_px_ || wid > dash_max_width_px_ || len < 2.5 * wid)
+      {
+        continue;
+      }
+      cv::Vec4f fit;
+      cv::fitLine(pts, fit, cv::DIST_L2, 0, 0.01, 0.01);
+      double ang = std::atan2(fit[1], fit[0]);
+      if (ang > M_PI / 2.0)
+      {
+        ang -= M_PI;
+      }
+      if (ang <= -M_PI / 2.0)
+      {
+        ang += M_PI;
+      }
+      if (std::abs(ang) > dash_max_deg_ * M_PI / 180.0)
+      {
+        continue;
+      }
+      const double cy = box.center.y;
+      if (!best || cy > (*best)[1])
+      {
+        best = cv::Vec2d(ang, cy);
+      }
+    }
+    return best;
   }
 
   void finish_backup()
   {
     stop_wheels();
+    if (dash_align_ && dash_fresh(0.5))
+    {
+      RCLCPP_INFO(get_logger(), "후진 끝: 흰 점선 기울기 %.1f도, 점선까지 %.0fcm", dash_angle_ * 180.0 / M_PI,
+        dash_dist_ * 100.0);
+    }
     if (exit_enable_)
     {
       start_exit_arc();
@@ -1736,6 +2061,18 @@ private:
   //   너무 작으면 안쪽 바퀴가 뒤로 돌거나 멈추므로 exit_arc_min_radius_m 보다 작게는 안 한다
   double exit_arc_radius()
   {
+    // 흰 점선을 방금 봤으면: 통로 가운데까지 거리 (점선까지 - 통로 폭 / 2) 를 실제 반지름으로
+    // 이번에 쓸 비율: 오른쪽으로 나가면 exit_dash_gain_right, 왼쪽이면 _left (0 보다 작으면 exit_dash_gain)
+    const double side_gain = side_direction_ < 0.0 ? exit_dash_gain_right_ : exit_dash_gain_left_;
+    const double gain = side_gain >= 0.0 ? side_gain : exit_dash_gain_;
+    if (dash_align_ && gain > 0.0 && dash_fresh(1.0))
+    {
+      const double real = dash_dist_ - aisle_width_m_ / 2.0;
+      const double cmd = std::clamp(real * gain, exit_arc_min_radius_m_, 0.6);
+      RCLCPP_INFO(get_logger(), "흰 점선까지 %.0fcm -> 통로 가운데까지 %.0fcm -> 명령 반지름 %.0fcm",
+        dash_dist_ * 100.0, real * 100.0, cmd * 100.0);
+      return cmd;
+    }
     double radius = exit_arc_radius_m_;
     if (radius <= 0.0)
     {
@@ -1770,6 +2107,7 @@ private:
     exit_cam_lost_ = 0;
     exit_cam_sum_ = 0.0;
     exit_yellow_seen_ = false;
+    exit_guide_active_ = false;
     RCLCPP_INFO(get_logger(), "%s으로 곡선 %.0f도 (반지름 %.0fcm, 속도 %.2fm/s, %s)",
       side_direction_ < 0.0 ? "오른쪽" : "왼쪽", exit_arc_deg_, radius * 100.0, exit_arc_speed_,
       exit_use_cam_ ? "카메라로 각도 잼" : "시간으로");
@@ -1781,8 +2119,131 @@ private:
   //       (시간으로 어림한 각도가 exit_check_ratio (30%) 를 넘은 뒤부터. 막 돌기 시작할 때 착각하지 않게)
   //   (2) 노란선이 안 보이면 SIDE_TURN 과 같은 방법으로 화면 직선들이 돈 각도를 더해 90도면 끝
   //       (곡선으로 가면 화면이 옆으로도 밀리지만, 직선의 "방향" 은 로봇이 돈 만큼만 바뀐다)
+  // 보면서 나가기 (EXIT_ARC, 영상마다). 안내선을 못 찾으면 false (원래 방식으로)
+  //   안내선 = 나가는 쪽 반대편에 보이는 노란선 (왼쪽으로 나가면 오른쪽, 오른쪽으로 나가면 왼쪽)
+  bool exit_arc_by_guide(const cv::Mat & yellow)
+  {
+    const std::optional<cv::Vec2d> g = find_exit_guide(yellow, side_direction_);
+    if (!g)
+    {
+      if (exit_guide_active_)
+      {
+        drive(exit_arc_speed_, exit_w_);   // 잠깐 놓치면 마지막 곡선 그대로
+        return true;
+      }
+      return false;
+    }
+    const double dist = (*g)[0];
+    const double lean = (*g)[1];
+    const double phi = std::abs(lean);
+    // 나란해졌거나 지나쳤으면 (나가는 방향 x 기울기 > 0) 길 내려가기로
+    if (phi <= exit_guide_align_deg_ * M_PI / 180.0 || side_direction_ * lean > 0.0)
+    {
+      RCLCPP_INFO(get_logger(), "안내 노란선과 나란해짐 (선까지 %.0fcm, 기울기 %.1f도) -> 길 내려가기",
+        dist * 100.0, lean * 180.0 / M_PI);
+      start_exit_stem();
+      return true;
+    }
+    const double need = dist - exit_guide_offset_m_;
+    double radius = exit_arc_min_radius_m_;
+    if (need > 0.0)
+    {
+      radius = std::clamp(need / (1.0 - std::cos(phi)), exit_arc_min_radius_m_, exit_guide_max_radius_m_);
+    }
+    if (!exit_guide_active_)
+    {
+      RCLCPP_INFO(get_logger(), "안내 노란선 보임 (선까지 %.0fcm, 기울기 %.0f도) -> 보면서 나가기 (반지름 %.0fcm)",
+        dist * 100.0, lean * 180.0 / M_PI, radius * 100.0);
+    }
+    exit_guide_active_ = true;
+    exit_w_ = side_direction_ * exit_arc_speed_ / radius;
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500, "보면서 나가기: 선까지 %.0fcm, 기울기 %.0f도 -> 반지름 %.0fcm",
+      dist * 100.0, lean * 180.0 / M_PI, radius * 100.0);
+    drive(exit_arc_speed_, exit_w_);
+    return true;
+  }
+
+  // 안내 노란선 찾기 (BEV, 1px = 1mm). 돌려주는 값: (바퀴 축에서 선까지 수직 거리 [m], 선이 기운 각 [rad, + = 앞쪽이 오른쪽])
+  //   노란 덩어리마다 아래쪽 150줄로 직선 x = a + b*y 를 맞추고, 나가는 반대쪽에 있는 것 중 가장 가까운 것
+  std::optional<cv::Vec2d> find_exit_guide(const cv::Mat & yellow, double direction, double max_rms_px = 0.0) const
+  {
+    cv::Mat labels, stats, centroids;
+    const int n = cv::connectedComponentsWithStats(yellow, labels, stats, centroids, 8, CV_32S);
+    const double axle_y = yellow.rows + bev_near_m_ * 1000.0;   // 바퀴 축의 화면 y (화면 아래 밖)
+    const double cx = bev_center_x_ * yellow.cols;
+    std::optional<cv::Vec2d> best;
+    for (int i = 1; i < n; ++i)
+    {
+      if (stats.at<int>(i, cv::CC_STAT_AREA) < 300)
+      {
+        continue;
+      }
+      std::vector<cv::Point> pts;
+      cv::findNonZero(labels == i, pts);
+      int y_max = 0;
+      for (const auto & p : pts)
+      {
+        y_max = std::max(y_max, p.y);
+      }
+      // 최소제곱 직선 x = a + b*y (아래쪽 150줄만: 위쪽은 길이 휘는 곳일 수 있음)
+      double sn = 0, sy = 0, sx = 0, syy = 0, sxy = 0;
+      for (const auto & p : pts)
+      {
+        if (p.y < y_max - 150)
+        {
+          continue;
+        }
+        sn += 1; sy += p.y; sx += p.x; syy += double(p.y) * p.y; sxy += double(p.x) * p.y;
+      }
+      const double den = sn * syy - sy * sy;
+      if (sn < 50 || std::abs(den) < 1e-6)
+      {
+        continue;
+      }
+      const double b = (sn * sxy - sy * sx) / den;
+      const double a = (sx - b * sy) / sn;
+      const double lean = std::atan(-b);                       // 앞으로 갈수록 x 가 커지면 +
+      if (max_rms_px > 0.0)
+      {
+        // 선이 아닌 덩어리 (도로 옆 흰 상자 등) 는 뺀다: 직선에서 벗어난 정도 (= 두께) 가 크면
+        double se = 0.0;
+        for (const auto & p : pts)
+        {
+          if (p.y >= y_max - 150)
+          {
+            const double e = p.x - (a + b * p.y);
+            se += e * e;
+          }
+        }
+        if (std::sqrt(se / sn) * std::cos(lean) > max_rms_px)
+        {
+          continue;
+        }
+      }
+      if (std::abs(lean) > 70.0 * M_PI / 180.0)
+      {
+        continue;
+      }
+      const double x_axle = (a + b * axle_y - cx) * 0.001;     // 바퀴 축 줄에서 선의 가로 위치 [m] (+ 오른쪽)
+      if (x_axle * direction < 0.0)                            // 왼쪽으로 나가면 (+1) 선은 오른쪽 (+)
+      {
+        continue;
+      }
+      const double dist = std::abs(x_axle) * std::cos(lean);
+      if (!best || dist < (*best)[0])
+      {
+        best = cv::Vec2d(dist, lean);
+      }
+    }
+    return best;
+  }
+
   void exit_arc_by_camera(const cv::Mat & yellow, const cv::Mat & lines_mask)
   {
+    if (exit_guide_ && exit_arc_by_guide(yellow))
+    {
+      return;                    // 안내선을 보고 돌았음
+    }
     exit_yellow_seen_ = false;
     if (state_time_ >= exit_arc_time_full_ * exit_check_ratio_)
     {
@@ -1920,6 +2381,10 @@ private:
       give_up("곡선으로 도는 데 너무 오래 걸림");
       return;
     }
+    if (exit_guide_active_)
+    {
+      return;                    // 안내선을 본 뒤로는 영상이 올 때마다 exit_arc_by_guide() 가 바퀴 명령을 보낸다
+    }
     if (exit_use_cam_)
     {
       return;                    // 바퀴 명령은 영상이 올 때마다 exit_arc_by_camera() 가 보낸다
@@ -1938,12 +2403,19 @@ private:
   void start_exit_stem()
   {
     state_ = State::EXIT_STEM;
+    if (smooth_)
+    {
+      end_curve();
+    }
+    speed_ = run_speed_;         // 칸에서 나왔으니 다시 일반 주행 속도
     state_time_ = 0.0;
     lines_missing_ = 0;
     exit_white_y_ = -1.0;
     leave_present_ = 0;
     leave_seen_ = false;
     leave_empty_ = 0;
+    exit_travel_ = 0.0;
+    slow_logged_ = false;
     RCLCPP_INFO(get_logger(), "들어왔던 길을 두 차선 가운데로 내려감 (%s)",
       leave_turn_ ? "왼쪽 노란선이 끊기면 왼쪽 곡선으로 도로에" : "도로 흰선이 보이면 멈춤");
   }
@@ -1953,7 +2425,7 @@ private:
   // 왼쪽 아래 칸 (들어갈 때 입구를 찾던 칸과 같음) 의 노란선:
   //   연속 leave_yellow_frames 번 보임 (길의 왼쪽 노란선) -> 그 뒤 연속 gap_frames_needed 번 안 보임 = 길이 도로와 만남
   //   (길 위쪽은 흰 점선이라 처음부터 비어 있다 -> 노란선을 먼저 본 뒤에만 "끊김" 으로 친다)
-  bool leave_gap_reached(const cv::Mat & yellow)
+  bool leave_gap_reached(const cv::Mat & yellow, bool allow_break)
   {
     const int y1 = std::min(static_cast<int>(watch_bottom_) + 1, yellow.rows);
     const int y0 = std::max(0, y1 - static_cast<int>(watch_rows_));
@@ -1967,6 +2439,11 @@ private:
         leave_seen_ = true;
         RCLCPP_INFO(get_logger(), "길의 왼쪽 노란선 보임 (%d개) -> 끊기면 도로", count);
       }
+      return false;
+    }
+    if (!allow_break)
+    {
+      leave_empty_ = 0;          // 곡선 직후 (leave_min) 에는 끊김을 세지 않음 ("보임" 은 미리 세 둠)
       return false;
     }
     leave_empty_ = count <= empty_pixels_ ? leave_empty_ + 1 : 0;
@@ -1984,7 +2461,9 @@ private:
   {
     leaving_ = true;
     const double extra_m = std::max(0.0,
-      entry_gap_to_center_m_ - entry_arc_radius_m_ + entry_forward_m_ + leave_forward_m_);
+      entry_gap_to_center_m_ - entry_arc_radius_m_ + entry_forward_m_ + leave_forward_m_ -
+      std::max(0.0, speed_ - drive_speed_) * std::max(0.0, leave_latency_s_) -   // 빠른 만큼 늦게 알아채면 (기본 0)
+      curve_ramp_shift(leave_radius_cmd()));   // 서서히 꺾는 만큼 일찍
     extra_time_ = extra_m / speed_;
     state_ = State::EXTRA;
     state_time_ = 0.0;
@@ -1996,8 +2475,70 @@ private:
   }
 
   // 도로를 똑바로 봄 -> grid_drive 에게 넘긴다 (control_mode = LANE), 주차 노드는 다시 표지판 기다리기
+  // 도로로 나가는 왼쪽 곡선 (ENTRY_ARC + leaving_, 영상마다): 도로 바깥 흰 선 (왼쪽으로 돌면 오른쪽에 보임) 까지
+  //   거리 D 와 기운 각 phi 로 반지름 R = (D - leave_guide_offset_m) / (1 - cos phi) 를 매번 다시 계산한다
+  //   (칸에서 나올 때 exit_arc_by_guide 와 같은 방법). 나란해지면 (또는 지나치면) 일반 주행으로 넘긴다
+  bool leave_arc_by_guide(const cv::Mat & white)
+  {
+    const std::optional<cv::Vec2d> g = find_exit_guide(white, 1.0, leave_guide_max_rms_px_);
+    if (!g)
+    {
+      if (leave_guide_active_)
+      {
+        drive(entry_v_, entry_w_);   // 잠깐 놓치면 마지막 곡선 그대로
+        return true;
+      }
+      return false;
+    }
+    const double dist = (*g)[0];
+    const double lean = (*g)[1];
+    const double phi = std::abs(lean);
+    // 왼쪽으로 돌고 있으니 선은 왼쪽으로 기울어 있다가 (-) 세로가 된다. + 면 지나침
+    // 멀리 기울어 있다가 (-25도 아래) 갑자기 + (지나침) 로 바뀜 = 잘못 봄 -> 하던 곡선 그대로
+    if (lean > 0.0 && leave_last_lean_ <= -25.0 * M_PI / 180.0)
+    {
+      drive(entry_v_, entry_w_);
+      return true;
+    }
+    leave_last_lean_ = lean;
+    if (phi <= leave_guide_align_deg_ * M_PI / 180.0 || lean > 0.0)
+    {
+      RCLCPP_INFO(get_logger(), "도로 흰 선과 나란해짐 (선까지 %.0fcm, 기울기 %.1f도)", dist * 100.0, lean * 180.0 / M_PI);
+      end_curve();
+      finish_leave();
+      return true;
+    }
+    const double need = dist - leave_guide_offset_m_;
+    double radius = leave_guide_min_radius_m_;
+    if (need > 0.0)
+    {
+      radius = std::clamp(need / (1.0 - std::cos(phi)), leave_guide_min_radius_m_, exit_guide_max_radius_m_);
+    }
+    if (!leave_guide_active_)
+    {
+      RCLCPP_INFO(get_logger(), "도로 흰 선 보임 (선까지 %.0fcm, 기울기 %.0f도) -> 보면서 도로로 (반지름 %.0fcm)",
+        dist * 100.0, lean * 180.0 / M_PI, radius * 100.0);
+    }
+    leave_guide_active_ = true;
+    // 빠르게 나가는 중이어도 급한 곡선 (작은 반지름) 은 회전이 entry_turn_w 를 넘지 않게 (예전보다 빨리 돌지는 않음)
+    entry_v_ = std::min(entry_v_max_, std::max(entry_arc_speed_, entry_turn_w_ * radius));
+    entry_w_ = entry_v_ / radius;
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500, "보면서 도로로: 선까지 %.0fcm, 기울기 %.0f도 -> 반지름 %.0fcm",
+      dist * 100.0, lean * 180.0 / M_PI, radius * 100.0);
+    drive(entry_v_, entry_w_);
+    return true;
+  }
+
   void finish_leave()
   {
+    if (smooth_)
+    {
+      geometry_msgs::msg::Twist cmd;
+      cmd.linear.x = v_out_;
+      cmd_pub_->publish(cmd);    // 일반 주행이 이어받을 때까지 0 으로 서지 않게
+      v_out_ = w_out_ = k_out_ = 0.0;
+      tgt_v_ = tgt_w_ = 0.0;
+    }
     leaving_ = false;
     state_ = State::WAITING;
     sign_hits_ = 0;
@@ -2082,6 +2623,10 @@ private:
     publish_mode(ControlMode::PARKING, state_name());
 
     state_time_ += 0.1;
+    if (state_ == State::EXIT_STEM)
+    {
+      exit_travel_ += 0.1 * speed_;
+    }
     if (state_ == State::EXTRA && state_time_ >= extra_time_)
     {
       start_turn_or_arc();
@@ -2136,12 +2681,55 @@ private:
     // 영상이 끊기면 멈춤
     if ((now() - last_image_time_).seconds() > image_timeout_)
     {
-      stop_wheels();
+      hard_stop();
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "영상이 안 옴 -> 정지");
     }
   }
 
   // ==================== 도우미 ====================
+
+  // 선이 화면 아래로 (가까이) 올수록 일반 주행 속도 (run_speed) -> drive_speed 로 줄인다. 다시 빨라지지는 않는다
+  //   y: 선의 줄 번호 (-1 = 안 보임 -> 그대로). start_y 에서 줄이기 시작, end_y 에서 drive_speed
+  void slow_by_row(double y, double start_y, double end_y, const char * what)
+  {
+    if (!slow_near_ || y < 0.0 || run_speed_ <= drive_speed_ || end_y <= start_y)
+    {
+      return;
+    }
+    const double r = std::clamp((y - start_y) / (end_y - start_y), 0.0, 1.0);
+    const double target = run_speed_ + (drive_speed_ - run_speed_) * r;
+    if (target < speed_)
+    {
+      speed_ = target;
+      if (!slow_logged_)
+      {
+        slow_logged_ = true;
+        RCLCPP_INFO(get_logger(), "%s 가까워짐 (y=%.0f) -> 천천히 (%.2f -> %.2f m/s)", what, y, run_speed_, drive_speed_);
+      }
+    }
+  }
+
+  // 왼쪽 칸 [0, watch_x_max) 에서 노란선이 아래 (watch_bottom) 부터 위로 이어지다 끝나는 줄 번호. 없으면 -1
+  //   (길을 내려갈 때 길이 도로와 만나는 곳 = 노란선 끝이 화면 위에서 내려온다. park5 녹화로 확인: 0.1초에 약 25줄씩)
+  double yellow_end_y(const cv::Mat & yellow) const
+  {
+    const int x1 = std::min(static_cast<int>(watch_x_max_), yellow.cols);
+    double end = -1.0;
+    int gap = 0;
+    for (int row = std::min(static_cast<int>(watch_bottom_), yellow.rows - 1); row >= 0; row--)
+    {
+      if (cv::countNonZero(yellow.row(row).colRange(0, x1)) >= 3)
+      {
+        end = row;
+        gap = 0;
+      }
+      else if (++gap > 15)
+      {
+        break;
+      }
+    }
+    return end;
+  }
 
   bool i_am_driving() const
   {
@@ -2191,8 +2779,15 @@ private:
   {
     if (v > 0.0 && front_closer_than(front_stop_distance_))
     {
-      stop_wheels();
+      hard_stop();
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "앞이 막힘 -> 대기");
+      return;
+    }
+    if (smooth_)
+    {
+      tgt_v_ = v;                // 실제로 보내는 건 smooth_step (0.02초마다)
+      tgt_w_ = w;
+      tgt_t_ = now().seconds();
       return;
     }
     geometry_msgs::msg::Twist cmd;
@@ -2213,7 +2808,114 @@ private:
 
   void stop_wheels()
   {
+    if (smooth_ && i_am_driving())
+    {
+      tgt_v_ = 0.0;              // 서서히 멈춤 (지금 곡선 그대로)
+      tgt_w_ = 0.0;
+      tgt_t_ = now().seconds();
+      return;
+    }
+    hard_stop();
+  }
+
+  // 바로 정지 (정면 막힘 / 영상 끊김 / 그만둠)
+  void hard_stop()
+  {
+    v_out_ = w_out_ = k_out_ = 0.0;
+    tgt_v_ = tgt_w_ = 0.0;
     cmd_pub_->publish(geometry_msgs::msg::Twist());
+  }
+
+  // 곡선 끝 -> 직진: 회전은 바로 멈추고 속도는 그대로 (smooth 가 아니면 예전처럼 정지)
+  void end_curve()
+  {
+    if (!smooth_)
+    {
+      stop_wheels();
+      return;
+    }
+    k_out_ = 0.0;
+    w_out_ = 0.0;
+    tgt_w_ = 0.0;
+  }
+
+  static double move_toward(double x, double target, double step)
+  {
+    return x + std::clamp(target - x, -step, step);
+  }
+
+  // 입구 / 도로로 나가는 곡선의 명령 반지름 [m]
+  // 도로로 나가는 곡선의 처음 명령 반지름 [m] (leave_arc_radius_m, 0 이면 들어갈 때와 같게)
+  double leave_radius_cmd() const
+  {
+    if (leave_arc_radius_m_ > 0.0)
+    {
+      return std::max(leave_arc_radius_m_, entry_arc_min_radius_m_);
+    }
+    return entry_radius_cmd();
+  }
+
+  double entry_radius_cmd() const
+  {
+    return std::max(entry_arc_radius_m_ * entry_arc_radius_gain_, entry_arc_min_radius_m_);
+  }
+
+  // 곡선을 서서히 꺾으면 그 거리의 절반만큼 늦게 꺾은 것과 같다 -> 그만큼 일찍 시작 [m 명령]
+  double curve_ramp_shift(double radius) const
+  {
+    if (!smooth_ || smooth_curve_m_ <= 0.0 || radius <= 0.0)
+    {
+      return 0.0;
+    }
+    return 0.5 * smooth_curve_m_ * (0.2 / radius);
+  }
+
+  // 0.02초마다: 목표 (tgt_v_, tgt_w_) 쪽으로 속도는 smooth_accel 씩, 곡률은 간 거리만큼씩 바꿔서 보낸다
+  void smooth_step()
+  {
+    if (!smooth_)
+    {
+      return;
+    }
+    if (!i_am_driving() || now().seconds() - tgt_t_ > 0.3)
+    {
+      if (v_out_ != 0.0 || w_out_ != 0.0)
+      {
+        hard_stop();             // 주차 끝 / 그만둠 / 명령이 끊김 -> 바로 정지
+      }
+      return;
+    }
+    const double dt = 0.02;
+    const double dv = std::max(0.0, smooth_accel_) * dt;
+    if (std::abs(tgt_v_) < 1e-4 && std::abs(tgt_w_) > 1e-4)
+    {
+      v_out_ = move_toward(v_out_, 0.0, dv);            // 제자리 회전
+      w_out_ = move_toward(w_out_, tgt_w_, 3.0 * dt);
+      k_out_ = 0.0;
+    }
+    else
+    {
+      if (std::abs(tgt_v_) >= 1e-4 && v_out_ * tgt_v_ >= 0.0)
+      {
+        const double kt = tgt_w_ / tgt_v_;
+        if (std::abs(v_out_) < 0.02 || smooth_curve_m_ <= 0.0 || tgt_v_ < 0.0)
+        {
+          k_out_ = kt;           // 거의 서 있을 때 (길이 안 바뀜) / 뒤로 갈 때 (점선 맞추기가 바로 반응하게) 는 바로
+        }
+        else
+        {
+          const double rate = (1.0 / 0.2) / smooth_curve_m_;   // [1/m^2] 반지름 20cm 를 smooth_curve_m 동안
+          k_out_ = move_toward(k_out_, kt, rate * std::abs(v_out_) * dt);
+        }
+      }
+      // 멈추는 중이거나 앞뒤가 바뀌는 중이면 지금 곡선 그대로 줄인다
+      v_out_ = move_toward(v_out_, tgt_v_, dv);
+      w_out_ = k_out_ * v_out_;
+    }
+    geometry_msgs::msg::Twist cmd;
+    cmd.linear.x = v_out_;
+    cmd.angular.z = w_out_;
+    cmd_pub_->publish(cmd);
   }
 
   void publish_mode(uint8_t mode, const std::string & detail)
@@ -2270,10 +2972,17 @@ private:
   bool entry_arc_;
   double entry_gap_to_center_m_;
   double entry_forward_m_;
+  double entry_latency_s_;
   double entry_arc_radius_m_;
   double entry_arc_radius_gain_;
   double entry_arc_min_radius_m_;
   double entry_arc_speed_;
+  double entry_v_ = 0.08;          // 이번 ENTRY_ARC 의 직진 속도 [m/s]
+  bool entry_turn_match_;
+  double entry_turn_w_;
+  bool leave_turn_match_, leave_slow_;
+  double entry_v_max_ = 0.08;      // 이번 ENTRY_ARC 의 최고 직진 속도 [m/s]
+  double entry_turn_slow_deg_;
   double entry_check_deg_;
   bool entry_pair_stop_;
   double entry_pair_max_lean_deg_;
@@ -2326,6 +3035,30 @@ private:
   double exit_arc_radius_m_;
   double exit_arc_radius_gain_;
   double exit_arc_min_radius_m_;
+  bool exit_guide_;
+  double exit_guide_offset_m_, exit_guide_align_deg_, exit_guide_max_radius_m_;
+  bool exit_guide_active_ = false; // 이번 EXIT_ARC 에서 안내선을 보고 도는 중
+  bool leave_guide_;
+  double leave_guide_offset_m_, leave_guide_align_deg_, leave_guide_min_radius_m_;
+  double leave_guide_max_rms_px_ = 10.0;
+  double leave_last_lean_ = -M_PI / 2.0;   // 보면서 도로로: 바로 전 영상의 흰 선 기울기 [rad]
+  bool leave_guide_active_ = false; // 이번 도로로 나가는 곡선에서 흰 선을 보고 도는 중
+  bool dash_align_;
+  double dash_gain_, dash_max_w_, dash_max_deg_, dash_min_len_px_, dash_max_len_px_, dash_max_width_px_;
+  double bev_near_m_, aisle_width_m_, exit_dash_gain_;
+  double exit_dash_gain_left_, exit_dash_gain_right_;
+  double leave_min_time_;
+  double leave_latency_s_ = 0.0;
+  double entry_yellow_min_s_ = 0.5;
+  double yellow_run_start_ = -1.0, yellow_run_last_ = -1.0;   // 왼쪽 아래 노란선이 계속 보이기 시작한 / 마지막 시각
+  double leave_arc_radius_m_ = 0.12;
+  bool slow_near_;
+  double stem_slow_start_y_, leave_slow_start_y_;
+  double exit_travel_ = 0.0;       // EXIT_STEM 에서 간 거리 [m, 명령 단위]
+  bool slow_logged_ = false;
+  double dash_angle_ = 0.0;        // 마지막으로 본 흰 점선 기울기 [rad] (+ = 오른쪽이 아래)
+  double dash_dist_ = 0.0;         // 바퀴 축에서 그 점선까지 [m]
+  double dash_time_ = -1.0;        // 그 점선을 본 시각 [s] (-1 = 못 봄)
   double exit_arc_deg_;
   double exit_check_ratio_;
   double exit_line_max_rms_px_;
@@ -2340,6 +3073,11 @@ private:
   double leave_rearm_delay_;
   double front_stop_distance_;
   double image_timeout_;
+  bool smooth_;
+  double smooth_accel_, smooth_curve_m_;
+  double tgt_v_ = 0.0, tgt_w_ = 0.0, tgt_t_ = 0.0;   // 바퀴 명령 목표 (drive)
+  double v_out_ = 0.0, w_out_ = 0.0, k_out_ = 0.0;   // 실제로 보내는 값, 곡률 [1/m]
+  rclcpp::TimerBase::SharedPtr smooth_timer_;
   double approach_timeout_;
   double turn_timeout_;
 
@@ -2351,6 +3089,14 @@ private:
   double state_time_ = 0.0;        // 지금 단계에 들어온 뒤 지난 시간 [s]
   double extra_time_ = 0.0;        // EXTRA 단계에서 더 직진할 시간 [s]
   double speed_ = 0.10;            // 지금 쓰는 직진 속도 [m/s] (주차 시작할 때 정함)
+  bool match_drive_speed_;
+  double match_speed_min_, match_speed_max_;
+  bool match_turn_speed_ = false;
+  double entry_arc_speed_base_ = 0.08, exit_arc_speed_base_ = 0.08;   // yaml 값 (일반 주행 속도로 바꾸기 전)
+  double run_speed_ = 0.10;        // 이번 주차에서 쓰는 "일반 주행 속도"
+  double seen_drive_v_ = 0.0;      // 마지막으로 본 일반 주행 직진 속도 [m/s, 명령 단위]
+  double seen_drive_t_ = -1.0;     // 그 시각 [s]
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
   int64_t lines_missing_ = 0;      // STEM 에서 차선이 둘 다 연속으로 안 보인 프레임 수
   int64_t left_hits_ = 0;          // 왼쪽 PSD 가 연속으로 가까웠던 횟수
   int64_t right_hits_ = 0;         // 오른쪽 PSD 가 연속으로 가까웠던 횟수
@@ -2420,6 +3166,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::Publisher<ControlMode>::SharedPtr mode_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr param_cb_;
 };
 
 int main(int argc, char ** argv)

@@ -22,6 +22,20 @@ parking:
 
     # 3) 흰선 따라 직진 (입구 전까지. 왼쪽 노란선이 휘어도 안 따라감)
     drive_speed: 0.10               # [m/s] 흰선 따라 직진 속도
+    match_drive_speed: true         # 주차를 일반 주행 (grid_drive) 과 같은 속도로 (칸으로 들어가는 동안만 위 값들). false = drive_speed 등 그대로
+    match_turn_speed: false         # false = 곡선 (입구 / 칸 나오기 / 도로로 나가기) 은 entry_arc_speed / exit_arc_speed 그대로. true = 곡선도 일반 주행 속도
+    slow_near: true                # 가로 흰 선 / 나갈 때 노란선 끝이 가까워질수록 drive_speed 까지 천천히 (false = 안 함)
+    stem_slow_start_y: 100.0        # 통로: 가로 흰 선이 화면 이 줄에 오면 줄이기 시작 (작을수록 일찍). white_trigger_y 에서 drive_speed
+    leave_slow_start_y: 100.0       # 나갈 때: 왼쪽 노란선 끝이 이 줄에 오면 줄이기 시작. 끊김 보는 칸 위에서 drive_speed
+    entry_arc_speed: 0.08            # [m/s] 노란선 사이로 들어가는 곡선 속도
+    entry_turn_match: true          # 노란선 사이로 들어가는 곡선만 일반 주행 코너 빠르기로 (곡선 모양은 그대로). false = entry_arc_speed
+    entry_turn_w: 0.6               # [rad/s] 그때 회전 속도 (원래 0.4). 일반 주행 코너 0.55 ~ 0.66
+    leave_turn_match: true          # 도로로 나가는 곡선도 일반 주행 코너 빠르기로 (길은 그대로). false = entry_arc_speed
+    leave_slow: false               # true = 나갈 때 노란선 끝이 가까워지면 drive_speed 까지 줄임
+    smooth: true                    # 바퀴 명령 부드럽게 (속도 / 꺾기 서서히, 곡선 끝에 0 으로 안 멈춤). false = 예전 그대로
+    smooth_accel: 0.4               # [m/s^2] 속도 바뀌는 빠르기 (작게 = 더 부드럽게, 0.2 -> 0 이 0.5초)
+    smooth_curve_m: 0.01            # [m] 곡선으로 서서히 꺾는 거리 (크게 = 더 부드럽게. 그 절반만큼 일찍 꺾어서 길은 그대로)
+    entry_turn_slow_deg: 45.0       # [도] 이만큼 돈 뒤에는 원래 빠르기로 (끝나는 각도가 예전과 같게). 크게 = 더 오래 빠르게 (왼쪽 노란선에 가까워짐)
     heading_gain: 1.0
     offset_gain: 1.0
     offset_soft_px: 300.0
@@ -36,6 +50,7 @@ parking:
     present_pixels: 80              # 이 이상이면 "노란선 있음"
     empty_pixels: 15                # 이 이하면 "노란선 없음"
     gap_frames_needed: 2            # 연속 이만큼 프레임
+    entry_yellow_min_s: 0.5         # [s] 끊기기 전에 왼쪽 노란선이 이만큼 계속 보여야 입구로 침 (표지판을 늦게 봤을 때 엉뚱한 곳에서 안 돌게). 0 = 안 봄
     extra_forward_m: -0.04          # [m] 돌기 전 더 갈 거리 (늦게 돌면 -, 일찍 돌면 +). 자동 계산한 거리에 더해짐
                                     #   실제 시험에서 지나쳐서 돌아서 -0.02 -> -0.04
                                     #   자동 거리(카메라 17.9cm 기준 약 4cm)보다 더 빼도 0 보다 일찍은 안 돎.
@@ -53,7 +68,8 @@ parking:
 
     # 5-1) 곡선으로 입구 들어가기
     entry_forward_m: -0.19            # [m] 노란선 끊긴 뒤 직진 거리 = 0.25 + 이 값 (-0.05 = 20cm, 0.05 = 30cm)
-    entry_arc_radius_gain: 2.5      # 작게 = 더 확 꺾음 (0.8), 크게 = 더 크게 돎 (1.3)
+    entry_latency_s: 0.14           # [s] 노란선 끊김을 알아채는 지연. 속도 x 이 시간만큼 일찍 꺾음 (속도 바꿔도 그대로). 아직 바깥(오른쪽) 노란선 밟으면 키우기
+    entry_arc_radius_gain: 2.2      # 작게 = 더 확 꺾음 (0.8), 크게 = 더 크게 돎 (1.3)
 
     # 6) 주차장 길 올라가기: 양쪽 노란선 가운데로. 노란선이 끝나면 흰 점선(통로 / 칸 경계)을 이어서 따라감
     #    차선(노란선 / 흰 점선)이 다 끝나면 멈춤
@@ -67,11 +83,14 @@ parking:
     side_psd_threshold: 0.15        # [m] 왼쪽이 이 이하 -> 오른쪽으로, 오른쪽이 이 이하 -> 왼쪽으로
     side_hits_needed: 3             # 연속 이만큼 (PSD 20Hz -> 0.15초). 잡음 거르기
     side_turn_deg: 72.0             # 돌 각도
-    side_turn_deg_left: 90.0        # 왼쪽으로 돌 때
-    side_turn_deg_right: 88.0       # 오른쪽으로 돌 때
+    side_turn_deg_left: 96.0        # 왼쪽으로 돌 때
+    side_turn_deg_right: 100.0       # 오른쪽으로 돌 때
+    side_turn_fixed: true
     side_turn_speed: 0.5            # [rad/s] 최대 회전 속도
-    side_min_speed: 0.08            # [rad/s] 끝에서 너무 느려 안 돌지 않게
     side_tolerance_deg: 1.0         # 남은 각도가 이 이하면 멈춤
+    side_slow_angle_deg: 15.0       # 남은 각도가 이보다 작아지면 감속 (30 -> 15)
+    side_slow_power: 1.0            # 감속 모양. 2 = 끝에서 급하게, 1 = 고르게
+    side_min_speed: 0.2             # [rad/s] 가장 느릴 때 (0.08 -> 0.2, 최고의 40%)
     odom_timeout: 0.5               # [s] odom 이 이보다 오래 안 오면 odom 없는 걸로 봄
     side_odom_scale: 1.0
 
@@ -80,18 +99,37 @@ parking:
 
     # 7-2) 뒤로 가면서 곡선으로 칸에 들어가기
     side_arc: true                  # false = 예전처럼 제자리 90도 + 후진
-    side_arc_radius_m: 0.07         # [m] 칸 안으로 들어가는 깊이 (= 곡선 반지름)
+    side_arc_radius_m: 0.09         # [m] 칸 안으로 들어가는 깊이 (= 곡선 반지름)
     side_arc_radius_gain: 1.2       # 칸에 덜 들어가면(곡선이 급하면) 키우기 1.5, 너무 크면 줄이기 0.8
     side_arc_speed: 0.06            # [m/s] 뒤로 가는 속도
     side_arc_forward_m: 0.0         # [m] 곡선 전에 더 올라가는 거리 조절. 칸 입구 쪽에 서면 +, 끝 쪽에 서면 -
     side_arc_forward_time: 0.4      # [s] 가로 흰 선 신호 뒤 이만큼 더 전진하고 곡선 (0 = 위 거리 방식)
-    side_arc_backup_time: 1.6       # [s] 곡선 뒤에 더 똑바로 후진할 시간 (0 = 안 함)
+    side_arc_backup_time: 1.3       # [s] 곡선 뒤에 더 똑바로 후진할 시간 (0 = 안 함)
     exit_arc_radius_m: 0.33         # [m] 나가는 곡선 반지름. 작게 = 더 안쪽으로 급하게
+    # 9-2) 보면서 나가기: 곡선 중 안내 노란선이 보이면 선까지 거리 / 각도로 반지름을 매번 다시 계산
+    exit_guide: true                # false = 예전 고정 곡선
+    exit_guide_offset_m: 0.15       # [m] 끝났을 때 노란선에서 로봇 가운데까지. 선을 밟으면 키우기, 반대쪽으로 붙으면 줄이기
+    exit_guide_align_deg: 4.0       # [도] 노란선 기울기가 이 이하면 길 내려가기
+
+    # 9-1) 흰 점선 (맞은편 칸 입구) 으로 후진 방향 맞추기 + 나가는 곡선 반지름
+    dash_align: true                # false = 예전처럼 똑바로 후진, 나가는 반지름은 exit_arc_radius_m
+    dash_gain: 1.5                  # 점선 기울기 x 이 값 = 후진 중 회전. 덜 맞으면 키우기, 흔들리면 줄이기
+    dash_max_w: 0.4                 # [rad/s] 후진 중 맞추는 회전 최대
+    aisle_width_m: 0.31             # [m] 통로 양쪽 점선 사이 (녹화로 잰 값. 줄자로 재서 고쳐도 됨)
+    exit_dash_gain_left: 1.05       # 왼쪽으로 나갈 때 (장애물 왼쪽)
+    exit_dash_gain_right: 1.45      # 오른쪽으로 나갈 때 (지금 잘 되는 값 그대로)
 
     # 8-1) 도로로 나가기 -> 일반 주행
     leave_turn: true                # false = 예전처럼 도로 흰선에서 멈춤
     leave_forward_m: 0.0            # [m] 나갈 때만 꺾기 시작 조절 (+ 늦게, - 일찍)
+    leave_arc_radius_m: 0.1         # [m] 도로로 나가는 곡선 처음 반지름 (원래 0.20). 흰 선 밟으면 줄이기 (최소 0.10), 노란선 쪽으로 붙으면 키우기
+    leave_latency_s: 0.0            # [s] 나갈 때 빨리 가는 만큼 일찍 꺾는 시간 (0 = 안 함). 늦게 꺾으면 0.05 씩 올리기
+    leave_guide: true               # 도로로 나가는 곡선을 도로 바깥 흰 선을 보며 (false = 예전 고정 곡선)
+    leave_guide_offset_m: 0.15      # [m] 끝났을 때 흰 선에서 로봇 가운데까지. 흰 선을 밟으면 키우기, 노란선 쪽으로 붙으면 줄이기
+    leave_guide_align_deg: 4.0      # [도] 흰 선 기울기가 이 이하면 일반 주행으로
+    leave_guide_max_rms_px: 10.0    # [px] 이보다 두꺼운 흰 덩어리 (도로 옆 상자 등) 는 도로 흰 선으로 안 봄 (선은 3~6)
     leave_rearm_delay: 10.0         # [s] 나온 뒤 이 시간 동안 주차 표지판 무시
+    leave_min_time: 1.0             # [s] 나가는 길을 이만큼 내려간 뒤부터 노란선 끊김을 봄 (곡선 직후 착각 막기)
 
     # 안전
     front_stop_distance: 0.10       # [m]
